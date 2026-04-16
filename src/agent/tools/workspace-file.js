@@ -1,0 +1,149 @@
+import fs from "node:fs";
+import path from "node:path";
+import { BaseTool, ToolResult } from "./base.js";
+
+const MAX_READ = 50_000;
+
+/**
+ * Read, write, or list files in the workspace or project directory.
+ * All paths are resolved relative to the chosen scope with
+ * traversal protection. VersionManager hooks into workspace writes for automatic versioning.
+ */
+export class WorkspaceFileTool extends BaseTool {
+  /**
+   * @param {import('../workspace.js').Workspace} workspace
+   * @param {import('../version-manager.js').VersionManager} [versionManager]
+   */
+  constructor(workspace, versionManager) {
+    super();
+    this._workspace = workspace;
+    this._versionManager = versionManager || null;
+  }
+
+  get name() { return "workspace_file"; }
+
+  get description() {
+    return (
+      "Read, write, or list files. " +
+      "scope='workspace' (default): KC's working directory for rules, skills, workflows, results. " +
+      "scope='project': the user's project folder where KC was launched — source regulations and samples live here. " +
+      "Operations: read (returns file content), write (creates/overwrites a file), list (shows directory contents)."
+    );
+  }
+
+  get inputSchema() {
+    return {
+      type: "object",
+      properties: {
+        operation: {
+          type: "string",
+          enum: ["read", "write", "list"],
+          description: "The file operation to perform",
+        },
+        path: {
+          type: "string",
+          description: "Relative path within the chosen scope. Defaults to '.' for list.",
+        },
+        content: {
+          type: "string",
+          description: "File content to write (required for write operation)",
+        },
+        scope: {
+          type: "string",
+          enum: ["workspace", "project"],
+          description: "Which directory to operate in. 'workspace' (default) = KC's workspace. 'project' = user's project directory.",
+        },
+      },
+      required: ["operation"],
+    };
+  }
+
+  _resolveForScope(filePath, scope) {
+    if (scope === "project") {
+      return this._workspace.resolveProjectPath(filePath);
+    }
+    return this._workspace.resolvePath(filePath);
+  }
+
+  _baseForScope(scope) {
+    if (scope === "project") {
+      return this._workspace.projectDir;
+    }
+    return this._workspace.cwd;
+  }
+
+  async execute(input) {
+    const op = input.operation || "";
+    const filePath = input.path || ".";
+    const content = input.content || "";
+    const scope = input.scope || "workspace";
+
+    if (scope === "project" && !this._workspace.projectDir) {
+      return new ToolResult("No project directory available. KC was launched without a project context.", true);
+    }
+
+    try {
+      if (op === "read") return this._read(filePath, scope);
+      if (op === "write") return this._write(filePath, content, scope);
+      if (op === "list") return this._list(filePath, scope);
+      return new ToolResult(`Unknown operation: ${op}`, true);
+    } catch (err) {
+      return new ToolResult(`File error: ${err.message}`, true);
+    }
+  }
+
+  _read(filePath, scope) {
+    const resolved = this._resolveForScope(filePath, scope);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      return new ToolResult(`File not found: ${filePath}`, true);
+    }
+    let text = fs.readFileSync(resolved, { encoding: "utf-8" });
+    if (text.length > MAX_READ) {
+      text = text.slice(0, MAX_READ) + "\n[truncated]";
+    }
+    return new ToolResult(text);
+  }
+
+  _write(filePath, content, scope) {
+    if (!filePath || filePath === ".") {
+      return new ToolResult("Path required for write operation", true);
+    }
+    const resolved = this._resolveForScope(filePath, scope);
+    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    fs.writeFileSync(resolved, content, "utf-8");
+
+    // Version tracking only for workspace writes
+    let traceId = null;
+    if (scope === "workspace" && this._versionManager) {
+      traceId = this._versionManager.onWrite(filePath, content);
+    }
+
+    const label = scope === "project" ? `[project] ${filePath}` : filePath;
+    let msg = `Wrote ${content.length} chars to ${label}`;
+    if (traceId) msg += ` [trace: ${traceId}]`;
+    return new ToolResult(msg);
+  }
+
+  _list(filePath, scope) {
+    const resolved = this._resolveForScope(filePath, scope);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      return new ToolResult(`Not a directory: ${filePath}`, true);
+    }
+    const entries = fs.readdirSync(resolved, { withFileTypes: true });
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    if (entries.length === 0) {
+      return new ToolResult("(empty directory)");
+    }
+    const base = this._baseForScope(scope);
+    const lines = entries.map((e) => {
+      const rel = path.relative(base, path.join(resolved, e.name));
+      const marker = e.isDirectory() ? "[dir] " : "      ";
+      return `${marker}${rel}`;
+    });
+    return new ToolResult(lines.join("\n"));
+  }
+}

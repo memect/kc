@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+.env
+test_data/review_dashboard.html
+*.log

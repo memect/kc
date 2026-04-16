@@ -1,0 +1,153 @@
+{
+  "_comment": "Model selections per provider. LLM tiers 1-4, VLM tiers 1-3. Edit this file directly to update model assignments.",
+
+  "siliconflow": {
+    "conductor": "Pro/zai-org/GLM-5",
+    "llm": {
+      "tier1": "Pro/zai-org/GLM-5, Pro/moonshotai/Kimi-K2.5",
+      "tier2": "Pro/deepseek-ai/DeepSeek-V3.2, Pro/MiniMaxAI/MiniMax-M2.5",
+      "tier3": "Qwen/Qwen3.5-122B-A10B",
+      "tier4": "Qwen/Qwen3.5-35B-A3B"
+    },
+    "vlm": {
+      "tier1": "Pro/Qwen/Qwen2.5-VL-72B-Instruct",
+      "tier2": "Qwen/Qwen2.5-VL-32B-Instruct",
+      "tier3": "Qwen/Qwen2.5-VL-7B-Instruct"
+    }
+  },
+
+  "aliyun": {
+    "conductor": "qwen3.6-plus",
+    "llm": {
+      "tier1": "qwen3.6-plus",
+      "tier2": "",
+      "tier3": "",
+      "tier4": ""
+    },
+    "vlm": {
+      "tier1": "qwen-vl-max",
+      "tier2": "qwen-vl-plus",
+      "tier3": ""
+    }
+  },
+
+  "volcanocloud": {
+    "conductor": "doubao-seed-2-0-pro-260215",
+    "llm": {
+      "tier1": "doubao-seed-2-0-pro-260215, deepseek-v3-2-251201",
+      "tier2": "glm-4-7-251222, doubao-1-5-pro-32k-250115",
+      "tier3": "doubao-seed-2-0-mini-260215",
+      "tier4": "doubao-seed-2-0-lite-260215, doubao-1-5-lite-32k-250115"
+    },
+    "vlm": {
+      "tier1": "doubao-vision-pro-32k-241028",
+      "tier2": "doubao-vision-lite-32k-241028",
+      "tier3": ""
+    }
+  },
+
+  "anthropic": {
+    "conductor": "claude-sonnet-4-20250514",
+    "llm": {
+      "tier1": "claude-sonnet-4-20250514",
+      "tier2": "claude-sonnet-4-20250514",
+      "tier3": "claude-haiku-4-5-20251001",
+      "tier4": "claude-haiku-4-5-20251001"
+    },
+    "vlm": {
+      "tier1": "claude-sonnet-4-20250514",
+      "tier2": "claude-haiku-4-5-20251001",
+      "tier3": "claude-haiku-4-5-20251001"
+    }
+  },
+
+  "openai": {
+    "conductor": "gpt-4o",
+    "llm": {
+      "tier1": "gpt-4o",
+      "tier2": "gpt-4o-mini",
+      "tier3": "gpt-4o-mini",
+      "tier4": "gpt-4o-mini"
+    },
+    "vlm": {
+      "tier1": "gpt-4o",
+      "tier2": "gpt-4o-mini",
+      "tier3": "gpt-4o-mini"
+    }
+  },
+
+  "zhipu": {
+    "conductor": "glm-4-plus",
+    "llm": {
+      "tier1": "glm-4-plus",
+      "tier2": "glm-4-air",
+      "tier3": "glm-4-flash",
+      "tier4": "glm-4-flash"
+    },
+    "vlm": {
+      "tier1": "glm-4v-plus",
+      "tier2": "glm-4v",
+      "tier3": "glm-4v-flash"
+    }
+  },
+
+  "minimax": {
+    "conductor": "MiniMax-M2.5",
+    "llm": {
+      "tier1": "MiniMax-M2.5",
+      "tier2": "MiniMax-M2.5",
+      "tier3": "MiniMax-M1",
+      "tier4": "MiniMax-M1"
+    },
+    "vlm": {
+      "tier1": "",
+      "tier2": "",
+      "tier3": ""
+    }
+  },
+
+  "openrouter": {
+    "conductor": "anthropic/claude-sonnet-4-20250514",
+    "llm": {
+      "tier1": "anthropic/claude-sonnet-4-20250514",
+      "tier2": "google/gemini-2.5-flash",
+      "tier3": "google/gemini-2.5-flash",
+      "tier4": "google/gemini-2.5-flash"
+    },
+    "vlm": {
+      "tier1": "anthropic/claude-sonnet-4-20250514",
+      "tier2": "google/gemini-2.5-flash",
+      "tier3": "google/gemini-2.5-flash"
+    }
+  },
+
+  "bedrock": {
+    "conductor": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "llm": {
+      "tier1": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "tier2": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "tier3": "anthropic.claude-haiku-4-5-20251001-v1:0",
+      "tier4": "anthropic.claude-haiku-4-5-20251001-v1:0"
+    },
+    "vlm": {
+      "tier1": "anthropic.claude-sonnet-4-20250514-v1:0",
+      "tier2": "anthropic.claude-haiku-4-5-20251001-v1:0",
+      "tier3": "anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
+  },
+
+  "custom": {
+    "conductor": "",
+    "llm": {
+      "tier1": "",
+      "tier2": "",
+      "tier3": "",
+      "tier4": ""
+    },
+    "vlm": {
+      "tier1": "",
+      "tier2": "",
+      "tier3": ""
+    }
+  }
+}

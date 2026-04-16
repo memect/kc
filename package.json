@@ -1,0 +1,32 @@
+{
+  "name": "kc-beta",
+  "version": "0.3.0",
+  "description": "KC Agent — LLM document verification agent (pure Node.js CLI)",
+  "type": "module",
+  "bin": {
+    "kc-beta": "bin/kc-beta.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "template/"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "ink": "^6.0.0",
+    "ink-text-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^19.0.0",
+    "pdfjs-dist": "^4.0.0"
+  },
+  "keywords": [
+    "document-verification",
+    "llm",
+    "agent",
+    "cli"
+  ],
+  "author": "kitchen-engineer42",
+  "license": "MIT"
+}
