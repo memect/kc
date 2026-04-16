@@ -161,4 +161,10 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] NEW auto-model-selection meta-meta skill using Context7 CLI (en + zh)
   - [ ] **TODO:** Manually review and finalize model-tiers.json selections per provider
   - [ ] **TODO:** End-to-end test with each provider to verify model availability
-- [ ] Block 7: Ralph-loop as default
+- [x] Block 7: Ralph-loop as default
+  - [x] TaskManager class — per-rule task tracking, persisted to tasks.json
+  - [x] runTaskLoop() — auto-continues through pending tasks, aggressive compaction between tasks
+  - [x] Task creation from rule catalog on phase transitions
+  - [x] Context safety — 70% safeguard, compact to summary between tasks
+  - [x] TUI TaskDashboard component with progress bar
+  - [x] /tasks slash command

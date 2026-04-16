@@ -10,6 +10,7 @@ import {
   StatusBar,
   CookingSpinner,
   ToolBlock,
+  TaskDashboard,
   HRule,
   InputPrompt,
 } from "./components.js";
@@ -32,6 +33,8 @@ function App({ engine, config }) {
   const [spinnerStatus, setSpinnerStatus] = useState(null);
   const [contextTokens, setContextTokens] = useState(0);
   const [contextLimit, setContextLimit] = useState(config.kcContextLimit || 200000);
+  const [taskList, setTaskList] = useState([]);
+  const [taskProgress, setTaskProgress] = useState(null);
 
   const engineRef = useRef(engine);
   const streamingRef = useRef(false);
@@ -60,7 +63,7 @@ function App({ engine, config }) {
     let accumulated = "";
 
     try {
-      for await (const event of engineRef.current.runTurn(text)) {
+      for await (const event of engineRef.current.runTaskLoop(text)) {
         switch (event.type) {
           case "text_delta":
             accumulated += event.text ?? "";
@@ -110,6 +113,16 @@ function App({ engine, config }) {
             break;
           }
 
+          case "task_progress": {
+            const tp = event.data;
+            setTaskList(engineRef.current.taskManager.getAllTasks());
+            setTaskProgress(tp.progress);
+            if (tp.status === "in_progress") {
+              setSpinnerStatus(`Task: ${tp.title}`);
+            }
+            break;
+          }
+
           case "error":
             addMessage({ role: "system", content: `Error: ${event.message ?? "Unknown error"}` });
             break;
@@ -144,6 +157,7 @@ function App({ engine, config }) {
             "Commands:\n" +
             "  /help                Show this help\n" +
             "  /status              Show session info, model, phase, workspace\n" +
+            "  /tasks               Show task progress\n" +
             "  /clear               Clear conversation history (keep workspace)\n" +
             "  /compact             Summarize older messages to reduce context\n" +
             "  /sessions            List all sessions\n" +
@@ -171,6 +185,13 @@ function App({ engine, config }) {
         });
         return true;
       }
+
+      case "/tasks":
+        addMessage({
+          role: "system",
+          content: engineRef.current.taskManager.formatForDisplay(),
+        });
+        return true;
 
       case "/clear":
         engineRef.current.history = new ConversationHistory(engineRef.current.workspace.cwd);
@@ -322,6 +343,9 @@ function App({ engine, config }) {
   return h(Box, { flexDirection: "column" },
     // Welcome banner
     showWelcome ? h(WelcomeBanner, { projectDir: config.projectDir }) : null,
+
+    // Task dashboard (ralph-loop)
+    taskList.length > 0 ? h(TaskDashboard, { tasks: taskList, progress: taskProgress }) : null,
 
     // Message history
     ...messages.map((msg, i) => {

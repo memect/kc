@@ -52,6 +52,40 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
   );
 }
 
+// --- Task dashboard (ralph-loop) ---
+
+export function TaskDashboard({ tasks, progress }) {
+  if (!tasks || tasks.length === 0) return null;
+
+  const { total, completed } = progress || { total: 0, completed: 0 };
+  const barWidth = 20;
+  const filled = total > 0 ? Math.round((completed / total) * barWidth) : 0;
+  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barWidth - filled);
+
+  // Show at most 8 tasks — current + a few before/after
+  const currentIdx = tasks.findIndex((t) => t.status === "in_progress");
+  const startIdx = Math.max(0, Math.min(currentIdx - 2, tasks.length - 8));
+  const visible = tasks.slice(startIdx, startIdx + 8);
+  const hasMore = tasks.length > 8;
+
+  return h(Box, { flexDirection: "column", marginLeft: 2, marginBottom: 1, borderStyle: "single", borderColor: "gray", paddingLeft: 1, paddingRight: 1 },
+    h(Text, { dimColor: true }, `Tasks [${bar}] ${completed}/${total}`),
+    ...visible.map((t) => {
+      const icon = t.status === "completed" ? "\u2713"
+        : t.status === "in_progress" ? "\u25b8"
+        : t.status === "failed" ? "\u2717"
+        : "\u00b7";
+      const color = t.status === "completed" ? "green"
+        : t.status === "in_progress" ? "cyan"
+        : t.status === "failed" ? "red"
+        : "gray";
+      const label = `${t.ruleId || t.id}  ${t.title}`;
+      return h(Text, { key: t.id, color }, `  ${icon} ${label.slice(0, 50)}`);
+    }),
+    hasMore ? h(Text, { dimColor: true }, `  ... ${tasks.length - 8} more`) : null,
+  );
+}
+
 // --- Welcome banner ---
 
 export function WelcomeBanner({ projectDir } = {}) {

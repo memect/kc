@@ -22,6 +22,7 @@ import { TierDowngradeTool } from "./tools/tier-downgrade.js";
 import { AgentTool } from "./tools/agent-tool.js";
 import { WebSearchTool } from "./tools/web-search.js";
 import { SkillLoader } from "./skill-loader.js";
+import { TaskManager } from "./task-manager.js";
 import { Phase } from "./pipelines/index.js";
 import { ProjectInitializer } from "./pipelines/initializer.js";
 import { RuleExtractionPipeline } from "./pipelines/extraction.js";
@@ -75,6 +76,9 @@ export class AgentEngine {
 
     // Session state persistence
     this.sessionState = new SessionState(this.workspace.cwd);
+
+    // Task manager (ralph-loop)
+    this.taskManager = new TaskManager(this.workspace.cwd);
 
     // Build all tool instances (but register phase-appropriate ones)
     this._buildTools = this._createAllTools();
@@ -199,6 +203,11 @@ export class AgentEngine {
         `Write user-facing exports (reports, results) to the project directory when the user asks.`,
       );
     }
+
+    // Task progress (ralph-loop)
+    const taskContext = this.taskManager.describeForContext();
+    if (taskContext) lines.push("", taskContext);
+
     return lines.join("\n");
   }
 
@@ -489,6 +498,10 @@ export class AgentEngine {
                 });
                 this.currentPhase = pEvent.nextPhase;
                 this._registerToolsForPhase(this.currentPhase);
+
+                // Ralph-loop: create per-rule tasks for the new phase
+                this._createTasksForPhase(this.currentPhase);
+
                 this.saveState();
               }
               yield new AgentEvent({
@@ -505,5 +518,116 @@ export class AgentEngine {
         return;
       }
     }
+  }
+
+  /**
+   * Create per-rule tasks when entering a new phase.
+   * Reads the rule catalog and creates one task per rule for the given phase.
+   */
+  _createTasksForPhase(phase) {
+    const catalogPath = path.join(this.workspace.cwd, "rules", "catalog.json");
+    if (!fs.existsSync(catalogPath)) return;
+
+    try {
+      const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+      const rules = Array.isArray(catalog) ? catalog : [];
+      if (rules.length > 0) {
+        this.taskManager.createRuleTasks(rules, phase);
+      }
+    } catch { /* skip if catalog can't be read */ }
+  }
+
+  /**
+   * Ralph-loop: run a turn, then auto-continue through pending tasks.
+   * Compacts context aggressively between tasks to prevent context blowup.
+   * If no tasks exist, behaves identically to runTurn().
+   *
+   * @param {string} userMessage
+   * @yields {AgentEvent}
+   */
+  async *runTaskLoop(userMessage) {
+    // Run the initial turn (user's request)
+    yield* this.runTurn(userMessage);
+
+    // Auto-continue through pending tasks
+    while (this.taskManager.getNextPending()) {
+      // Context safety: force compaction if above 70%
+      const stats = this.getContextStats();
+      if (stats.percentage > 70) {
+        await this.compact();
+      } else if (this.history.messages.length > 15) {
+        // Light compaction between tasks — keep only recent 8 messages
+        await this.compact(8);
+      }
+
+      const task = this.taskManager.getNextPending();
+      this.taskManager.updateTask(task.id, { status: "in_progress" });
+
+      // Yield task progress event for TUI
+      yield new AgentEvent({
+        type: "task_progress",
+        data: {
+          taskId: task.id,
+          title: task.title,
+          ruleId: task.ruleId,
+          status: "in_progress",
+          progress: this.taskManager.progress,
+        },
+      });
+
+      // Synthesize a task-focused prompt
+      const taskPrompt = `Continue with next task: ${task.title}` +
+        (task.ruleId ? ` (rule: ${task.ruleId})` : "");
+
+      yield* this.runTurn(taskPrompt);
+
+      this.taskManager.updateTask(task.id, { status: "completed" });
+      this.taskManager.save();
+      this.saveState();
+
+      yield new AgentEvent({
+        type: "task_progress",
+        data: {
+          taskId: task.id,
+          title: task.title,
+          status: "completed",
+          progress: this.taskManager.progress,
+        },
+      });
+    }
+  }
+
+  /**
+   * Compact conversation history. Used between tasks and by /compact command.
+   * @param {number} [keepRecent=20] - Number of recent messages to keep
+   */
+  async compact(keepRecent = 20) {
+    const messages = this.history.messages;
+    if (messages.length <= keepRecent) return;
+
+    // Build a brief summary of older messages
+    const older = messages.slice(0, messages.length - keepRecent);
+    const summaryParts = [];
+    for (const msg of older) {
+      if (msg.role === "user" && typeof msg.content === "string") {
+        summaryParts.push(`User: ${msg.content.slice(0, 100)}`);
+      } else if (msg.role === "assistant" && typeof msg.content === "string") {
+        summaryParts.push(`Assistant: ${msg.content.slice(0, 100)}`);
+      }
+    }
+    const summary = summaryParts.slice(-10).join("\n");
+
+    // Replace history with summary + recent messages
+    const recent = messages.slice(-keepRecent);
+    this.history.messages = [
+      { role: "user", content: `[Previous conversation summary]\n${summary}` },
+      { role: "assistant", content: "Understood. Continuing from where we left off." },
+      ...recent,
+    ];
+
+    this.eventLog.append("compact", {
+      removedCount: older.length,
+      keptCount: recent.length,
+    });
   }
 }
