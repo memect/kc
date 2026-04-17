@@ -1,5 +1,71 @@
 # KC Agent CLI — Development Log
 
+## v0.3.1 (2026-04-17)
+
+Audit-and-fix release for the v3 production-readiness work (Blocks 0-7).
+No new features — verified each block works end-to-end and patched bugs
+the original implementation missed. Adds project README and npm metadata.
+
+### Critical fixes
+
+- **`engine.js`: removed duplicate `compact()` definition.** Block 7 had
+  defined a second `compact(keepRecent)` at the end of the file that
+  shadowed the working `compact({ recentCount })` from Block 2 of v0.2.0.
+  The shadowing version tried `this.history.messages = ...`, which throws
+  because `messages` is a getter-only property on `ConversationHistory`.
+  Result: `runTaskLoop` would crash on the first auto-continued task once
+  history grew past 15 messages. Verified end-to-end with a 25-message
+  smoke test post-fix.
+- **`runTaskLoop`: pass compact options as object, not positional.**
+  Updated the two `compact(...)` callsites inside `runTaskLoop` to use
+  the surviving `{ recentCount: 8 }` form. Previously `compact(8)` would
+  destructure `8` as an object, get `undefined`, and silently fall back
+  to keeping 20 messages instead of 8 — defeating the inter-task
+  compaction strategy that prevents context blowup with many rules.
+- **`document-parse.js`: stop polluting VLM output when `canvas` package
+  is missing.** The previous fallback pushed bare `--- Page N (VLM) ---`
+  headers with no content, which inflated the output to look like a
+  successful parse. Now returns `null` immediately so the escalation
+  chain falls through to MineRU.
+
+### Packaging / publish prep
+
+- **`package.json`**: bumped to **0.3.1**. Added `homepage`, `repository`,
+  `bugs` fields pointing at the GitHub repo. Included `README.md` and
+  `QUICKSTART.md` in the npm `files` allowlist so they ship with the
+  installed package.
+- **`README.md`**: new project README describing what KC is, the dual-
+  directory architecture, phase model, ralph-loop, provider matrix, and
+  pointers to docs.
+
+### Verification
+
+Block-by-block smoke tests against the working tree:
+
+- Block 0 — `loadSettings()` returns `effective*()` worker fallback methods
+  that resolve to conductor config when worker config is empty;
+  `model-tiers.json` loads correctly via `getModelTierConfig()`.
+- Block 1 — `Workspace` resolves dual scopes; `..` traversal blocked for
+  both `resolvePath()` and `resolveProjectPath()`.
+- Block 2 — `AGENT.md` template copied to workspace at bootstrap;
+  `engine._readAgentMd()` returns it; `ContextAssembler.build({agentMd})`
+  injects after the agent identity block.
+- Block 3 — `SkillLoader` discovers all 22 skills (en); multi-line YAML
+  `description: >` is parsed correctly for `pdf-review-dashboard`.
+- Block 4 — `document-parse.js` escalation chain (pdfjs → VLM → MineRU)
+  intact; `force_method` accepts `pdfjs|vlm|mineru|ocr`.
+- Block 5 — Production-experience supplements present in
+  `entity-extraction`, `compliance-judgment`, `rule-extraction`,
+  `skill-authoring`, `skill-to-workflow`.
+- Block 6 — `model-tiers.json` populated for all 10 providers; startup
+  warning fires when all worker tiers blank; `auto-model-selection`
+  meta-meta skill discoverable.
+- Block 7 — `TaskManager` CRUD works; `runTaskLoop` no longer crashes
+  during auto-continue; context compaction keeps history bounded between
+  tasks (verified 25 → 10 messages, returns proper result keys).
+
+---
+
 ## v0.3.0 (2026-04-16)
 
 Production-readiness update implementing v3 design blocks 0-6. Focuses on dual-directory workspace, per-project context, skill improvements, and plugin architecture.

@@ -1,6 +1,6 @@
 {
   "name": "kc-beta",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "KC Agent — LLM document verification agent (pure Node.js CLI)",
   "type": "module",
   "bin": {
@@ -9,8 +9,18 @@
   "files": [
     "bin/",
     "src/",
-    "template/"
+    "template/",
+    "README.md",
+    "QUICKSTART.md"
   ],
+  "homepage": "https://github.com/kitchen-engineer42/kc-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kitchen-engineer42/kc-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kitchen-engineer42/kc-cli/issues"
+  },
   "engines": {
     "node": ">=20.0.0"
   },

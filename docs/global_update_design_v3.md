@@ -168,3 +168,19 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] Context safety — 70% safeguard, compact to summary between tasks
   - [x] TUI TaskDashboard component with progress bar
   - [x] /tasks slash command
+
+### v0.3.1 audit pass (2026-04-17)
+
+End-to-end self-test of all seven blocks. Two critical bugs fixed:
+
+- **engine.js had a duplicate `compact()` definition** that shadowed the
+  working one and assigned to a getter-only property — would have crashed
+  `runTaskLoop` on the first auto-continued task. Removed the duplicate
+  and updated the two `runTaskLoop` callsites to pass options as object.
+- **document-parse.js VLM fallback** was pushing empty page placeholders
+  when `canvas` package was missing, inflating output to look like a
+  successful parse. Now returns null and lets the escalation chain
+  fall through to MineRU.
+
+Plus packaging prep for npm: README.md, repository/homepage/bugs metadata,
+README + QUICKSTART included in `files` allowlist.

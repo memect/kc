@@ -551,13 +551,12 @@ export class AgentEngine {
 
     // Auto-continue through pending tasks
     while (this.taskManager.getNextPending()) {
-      // Context safety: force compaction if above 70%
+      // Context safety: force compaction if above 70%, or light compaction if history is long
       const stats = this.getContextStats();
       if (stats.percentage > 70) {
         await this.compact();
       } else if (this.history.messages.length > 15) {
-        // Light compaction between tasks — keep only recent 8 messages
-        await this.compact(8);
+        await this.compact({ recentCount: 8 });
       }
 
       const task = this.taskManager.getNextPending();
@@ -595,39 +594,5 @@ export class AgentEngine {
         },
       });
     }
-  }
-
-  /**
-   * Compact conversation history. Used between tasks and by /compact command.
-   * @param {number} [keepRecent=20] - Number of recent messages to keep
-   */
-  async compact(keepRecent = 20) {
-    const messages = this.history.messages;
-    if (messages.length <= keepRecent) return;
-
-    // Build a brief summary of older messages
-    const older = messages.slice(0, messages.length - keepRecent);
-    const summaryParts = [];
-    for (const msg of older) {
-      if (msg.role === "user" && typeof msg.content === "string") {
-        summaryParts.push(`User: ${msg.content.slice(0, 100)}`);
-      } else if (msg.role === "assistant" && typeof msg.content === "string") {
-        summaryParts.push(`Assistant: ${msg.content.slice(0, 100)}`);
-      }
-    }
-    const summary = summaryParts.slice(-10).join("\n");
-
-    // Replace history with summary + recent messages
-    const recent = messages.slice(-keepRecent);
-    this.history.messages = [
-      { role: "user", content: `[Previous conversation summary]\n${summary}` },
-      { role: "assistant", content: "Understood. Continuing from where we left off." },
-      ...recent,
-    ];
-
-    this.eventLog.append("compact", {
-      removedCount: older.length,
-      keptCount: recent.length,
-    });
   }
 }

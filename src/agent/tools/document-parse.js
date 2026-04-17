@@ -178,17 +178,12 @@ export class DocumentParseTool extends BaseTool {
         const page = await doc.getPage(i + 1);
         const viewport = page.getViewport({ scale: 2.0 }); // Higher res for OCR
 
-        // Use OffscreenCanvas or node-canvas if available, otherwise skip
+        // Render to PNG via node-canvas if available; otherwise skip VLM and let
+        // the escalation chain fall through to MineRU.
         let imageBase64;
         try {
-          // In Node.js, pdfjs can render to a canvas-like object
-          // We'll use the simpler approach: convert page to image via the API
           const { createCanvas } = await import("canvas").catch(() => ({ createCanvas: null }));
-          if (!createCanvas) {
-            // No canvas available — fall back to sending raw text content hint + page number
-            pages.push(`--- Page ${i + 1} (VLM) ---`);
-            continue;
-          }
+          if (!createCanvas) return null;
           const canvas = createCanvas(viewport.width, viewport.height);
           const ctx = canvas.getContext("2d");
           await page.render({ canvasContext: ctx, viewport }).promise;
