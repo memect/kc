@@ -88,7 +88,7 @@ export function TaskDashboard({ tasks, progress }) {
 
 // --- Welcome banner ---
 
-export function WelcomeBanner({ projectDir } = {}) {
+export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
   return h(Box, { flexDirection: "column", marginBottom: 1, borderStyle: "round", borderColor: "gray", paddingLeft: 1, paddingRight: 1 },
     h(Box, null,
       h(Text, { bold: true }, "KC AGENT CLI"),
@@ -101,6 +101,9 @@ export function WelcomeBanner({ projectDir } = {}) {
           h(Text, { dimColor: true }, `Project: ${projectDir}`),
           h(Text, { color: "yellow", dimColor: true }, "KC has full read/write access to this directory. We recommend backing up important files."),
         )
+      : null,
+    pendingInputCount > 0
+      ? h(Text, { color: "cyan" }, `📥 ${pendingInputCount} new file(s) pending in input/ — run /schedule for details`)
       : null,
     h(Text, null, ""),
     h(Text, { dimColor: true }, "Product of Memium / kitchen-engineer42"),

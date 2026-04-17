@@ -106,7 +106,10 @@ For production Input/ documents:
 4. Review the selected results (LLM-as-Judge or manual review by the developer user).
 5. Compute batch accuracy from reviewed results.
 6. Log batch QC report.
-7. If accuracy is acceptable, finalize the batch. If not, trigger evolution loop.
+7. Move processed input docs to `input/archived/` via `archive_file` so the next session sees only fresh arrivals.
+8. If accuracy is acceptable, finalize the batch. If not, trigger evolution loop.
+
+Production input often arrives on a schedule (see `bootstrap-workspace` → "Scheduled Ingestion"). Files in `input/` are auto-prefixed with `<job-id>_<UTC-timestamp>_` by the ingestion wrapper, so each batch carries provenance in its filenames. When a batch fails QC, the prefixes let you trace which scheduled run produced the bad data.
 
 ## Developer User Involvement
 

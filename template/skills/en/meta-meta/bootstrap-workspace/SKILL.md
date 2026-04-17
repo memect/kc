@@ -61,6 +61,17 @@ After the conversation:
 5. Initialize version tracking (a `versions.json` manifest).
 6. Log the bootstrap conversation summary for future reference.
 
+## Scheduled Ingestion (Production)
+
+Once a project is past bootstrap and into production, fresh documents often arrive on a regular cadence — daily regulator drops, hourly API pulls, batch uploads from upstream systems. Use the `schedule_fetch` tool to register ingestion jobs the OS scheduler runs while kc-beta is closed:
+
+- Each job is a shell command (rsync, curl, custom script) that lands files in `$INPUT_DIR`.
+- KC writes a wrapper script under `scripts/ingest/<job-id>.sh`; the user installs the script line into their crontab via `crontab -e`.
+- Newly-arrived files are auto-prefixed with `<job-id>_<UTC-timestamp>_` so origin and arrival time are visible in the filename.
+- View status with `/schedule` or `schedule_fetch list`. Tail of `logs/ingest.log` shows recent runs.
+
+Discuss the cadence with the developer user during bootstrap — knowing the production input rhythm shapes how skills and workflows should be written (batch vs streaming, idempotency requirements, etc.).
+
 ## When to Re-Bootstrap
 
 Return to this skill when:

@@ -5,6 +5,7 @@ import { LLMClient } from "../agent/llm-client.js";
 import { AgentEngine } from "../agent/engine.js";
 import { Workspace } from "../agent/workspace.js";
 import { ConversationHistory } from "../agent/history.js";
+import { Scheduler } from "../agent/scheduler.js";
 import {
   WelcomeBanner,
   StatusBar,
@@ -158,6 +159,7 @@ function App({ engine, config }) {
             "  /help                Show this help\n" +
             "  /status              Show session info, model, phase, workspace\n" +
             "  /tasks               Show task progress\n" +
+            "  /schedule            Show scheduled ingestion jobs and recent log lines\n" +
             "  /clear               Clear conversation history (keep workspace)\n" +
             "  /compact             Summarize older messages to reduce context\n" +
             "  /sessions            List all sessions\n" +
@@ -192,6 +194,30 @@ function App({ engine, config }) {
           content: engineRef.current.taskManager.formatForDisplay(),
         });
         return true;
+
+      case "/schedule": {
+        const sched = new Scheduler(engineRef.current.workspace);
+        const jobs = sched.list();
+        if (jobs.length === 0) {
+          addMessage({ role: "system", content: "No scheduled ingestion jobs. Ask KC to set one up via the schedule_fetch tool." });
+        } else {
+          const lines = jobs.map((j) => {
+            const status = j.enabled ? "✓ enabled" : "· disabled";
+            const hint = j.cron_hint ? `   cron: ${j.cron_hint}` : "   cron: (not set)";
+            return `  ${status}  ${j.id}\n${hint}\n   cmd:  ${j.command}`;
+          });
+          const tail = sched.tailLog(8);
+          const pending = sched.pendingInputCount();
+          addMessage({
+            role: "system",
+            content:
+              `Scheduled jobs:\n${lines.join("\n\n")}\n\n` +
+              `Pending in input/: ${pending} file(s)` +
+              (tail ? `\n\nlogs/ingest.log (last 8):\n${tail}` : ""),
+          });
+        }
+        return true;
+      }
 
       case "/clear":
         engineRef.current.history = new ConversationHistory(engineRef.current.workspace.cwd);
@@ -342,7 +368,13 @@ function App({ engine, config }) {
 
   return h(Box, { flexDirection: "column" },
     // Welcome banner
-    showWelcome ? h(WelcomeBanner, { projectDir: config.projectDir }) : null,
+    showWelcome ? h(WelcomeBanner, {
+      projectDir: config.projectDir,
+      pendingInputCount: (() => {
+        try { return new Scheduler(engineRef.current.workspace).pendingInputCount(); }
+        catch { return 0; }
+      })(),
+    }) : null,
 
     // Task dashboard (ralph-loop)
     taskList.length > 0 ? h(TaskDashboard, { tasks: taskList, progress: taskProgress }) : null,

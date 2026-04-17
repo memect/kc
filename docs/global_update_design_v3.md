@@ -168,6 +168,15 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] Context safety — 70% safeguard, compact to summary between tasks
   - [x] TUI TaskDashboard component with progress bar
   - [x] /tasks slash command
+- [x] Block 9: Allow automatic method of production input (v0.5.0)
+  - [x] `Scheduler` — per-session schedule registry + wrapper-script generator
+  - [x] `schedule_fetch` tool (add/list/remove/enable/disable/print_crontab)
+  - [x] Per-job wrapper scripts at `scripts/ingest/<id>.sh` — portable POSIX `/bin/sh`, uses `find -newer` for new-file detection
+  - [x] Auto-prefix arrivals with `<job-id>_<UTC-timestamp>_` for in-filename provenance
+  - [x] `/schedule` slash command + welcome-banner pending-input count
+  - [x] Bootstrap-workspace + quality-control skill notes (en + zh)
+  - No `kc-beta ingest` subcommand — cron invokes wrapper scripts directly. Works while kc-beta is closed.
+  - Cron install is print-only via `print_crontab`; user runs `crontab -e` manually
 - [x] Block 11: Better File System (v0.4.0)
   - [x] Phase 0 — design doc (`docs/file_system_design.md`) reviewed and approved
   - [x] Phase 1a — git foundation: per-session repo, `.gitignore` template, auto-commit on every workspace write to a tracked path

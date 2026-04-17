@@ -122,6 +122,17 @@ versions.json           # 版本清单（工作空间根目录）
 }
 ```
 
+## 生产环境的定时摄取
+
+项目进入生产后，新文档通常会按固定节奏到达 —— 监管机构每日发布、API 每小时拉取、上游系统批量上传。用 `schedule_fetch` 工具注册摄取任务，让 OS 调度器在 kc-beta 关闭时也能跑：
+
+- 每个任务是一条 shell 命令（rsync、curl、自定义脚本），把文件落到 `$INPUT_DIR`。
+- KC 在 `scripts/ingest/<job-id>.sh` 下生成一个 wrapper 脚本；用户通过 `crontab -e` 把这一行装进自己的 crontab。
+- 新到达的文件会自动前缀成 `<job-id>_<UTC-时间戳>_`，文件名本身就告诉你来源和到达时间。
+- 用 `/schedule` 或 `schedule_fetch list` 查看状态；`logs/ingest.log` 末尾几行展示最近的运行情况。
+
+在初始化阶段就和开发者用户讨论这个节奏 —— 生产侧文档输入节奏直接决定 skill 和工作流的写法（批处理 vs 流式、幂等性要求等等）。
+
 ## 何时需要重新初始化
 
 以下情况需要重新运行本技能：

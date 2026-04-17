@@ -1,5 +1,95 @@
 # KC Agent CLI — Development Log
 
+## v0.5.0 (2026-04-17)
+
+Block 9 — cron / heartbeat document fetching. Adds scheduled ingestion to
+the production loop. KC defines fetch jobs and writes wrapper scripts; the
+user installs the scripts via `crontab -e`. Cron invokes the scripts
+directly — **no `kc-beta` runtime dependency**, ingestion works while
+kc-beta is closed.
+
+### What's new
+
+**Per-session schedule registry** (`schedules.json`). Each entry is a
+shell-type job with `id`, `command`, optional `description`, and
+`cron_hint`. Tracked by git via Block 11's auto-commit.
+
+**Per-job wrapper scripts** at `workspace/scripts/ingest/<id>.sh`.
+Self-contained POSIX `/bin/sh` scripts. KC regenerates them whenever a job
+is added or enabled. Each wrapper:
+
+- Exports `WORKSPACE`, `INPUT_DIR`, `PROJECT_DIR` env vars.
+- Drops a sentinel file (`mktemp`), then runs the user's command.
+- Uses `find -newer` against the sentinel to detect newly-arrived files in
+  `input/` (portable across BSD `find` on macOS and GNU `find` on Linux).
+- Prefixes new arrivals with `<job-id>_<UTC-timestamp>_<original-name>`,
+  skipping files already prefixed (idempotent re-runs).
+- Appends start + exit lines to `logs/ingest.log`.
+- Propagates the user command's exit code so cron's failure email fires.
+
+**`schedule_fetch` tool** — KC manages the registry from inside the agent:
+
+| Operation | What it does |
+|-----------|--------------|
+| `add` | Register a job. Writes `schedules.json` and renders the wrapper script. |
+| `list` | Show registered jobs + tail of `logs/ingest.log`. |
+| `remove` | Delete a job. Removes its wrapper. |
+| `enable` / `disable` | Toggle without removing. Disable removes the wrapper. |
+| `print_crontab` | Generate paste-ready crontab lines for all enabled jobs. |
+
+**`/schedule` slash command** — TUI display of jobs, last log entries, and
+pending-input file count.
+
+**Welcome banner** — shows `📥 N file(s) pending in input/` when there's
+unprocessed material from cron jobs.
+
+### What changed under the hood
+
+- `src/agent/scheduler.js` (NEW) — registry I/O, wrapper rendering, crontab
+  formatting, log tailing, pending-input count.
+- `src/agent/tools/schedule-fetch.js` (NEW) — the `schedule_fetch` tool.
+- `src/agent/engine.js` — registers `ScheduleFetchTool` (12 → 13 core tools).
+- `src/cli/index.js` — `/schedule` slash command, `Scheduler` import,
+  pending-input count passed to `WelcomeBanner`.
+- `src/cli/components.js` — `WelcomeBanner` accepts `pendingInputCount` and
+  renders the cyan note when > 0.
+- `template/skills/{en,zh}/meta-meta/bootstrap-workspace/SKILL.md` — new
+  "Scheduled Ingestion" section.
+- `template/skills/{en,zh}/meta-meta/quality-control/SKILL.md` — short note
+  in "Batch Processing" mentioning the `<job-id>_<timestamp>_` filename
+  convention and `archive_file` cleanup step.
+
+### Why no `kc-beta ingest` subcommand
+
+The OS scheduler invokes the wrapper script directly. KC is involved only
+when the user is interacting (defining jobs, viewing status). The wrapper
+is plain shell, runs everywhere `/bin/sh` exists, and survives KC upgrades
+or breakages.
+
+### Verification
+
+- Wrapper renders correctly for arbitrary user commands; new files arrive
+  with `<job-id>_<UTC-timestamp>_` prefix.
+- Idempotent — running twice doesn't double-prefix existing files.
+- Failing user command propagates exit code (verified with `exit 7`).
+- Disable removes the wrapper script.
+- `print_crontab` generates paste-ready lines using absolute paths.
+- All 22 en + 22 zh skills still index after skill updates.
+- 13 tools registered (was 12).
+
+### What's deferred
+
+- **Auto-trigger KC processing on ingest.** Block 8 (release/run mode) is
+  the right place for headless processing of fresh batches.
+- **OS-specific helpers** (launchd plists, systemd timers, Windows Task
+  Scheduler). Cron is the lingua franca; users on other schedulers know
+  how to convert.
+- **Built-in source-type plugins** (HTTP fetcher, S3 client, Google Drive,
+  etc.). Shell command is universal — compose anything via curl/rclone/
+  `lark-cli`/python.
+
+---
+
 ## v0.4.0 (2026-04-17)
 
 Block 11 — file system refactor. Adopts git as the per-session versioning
