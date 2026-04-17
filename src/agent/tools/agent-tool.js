@@ -5,25 +5,38 @@ import { BaseTool, ToolResult } from "./base.js";
 
 /**
  * Spawn a sub-agent for parallel work.
- * Creates a child AgentEngine sharing the workspace filesystem
- * but with independent conversation history.
- * Results arrive via workspace files.
+ * Creates a child AgentEngine that shares workspace files (rules/, rule_skills/,
+ * workflows/, etc.) but isolates its own persistence under
+ * `sub_agents/<taskId>/` — its own conversation history, event log, and
+ * session-state. Sub-agents inherit the parent's phase so they get the right
+ * tools registered. Results arrive via files written under sub_agents/<taskId>/.
  */
 export class AgentTool extends BaseTool {
-  constructor(workspace, engineFactory) {
+  /**
+   * @param {import('../workspace.js').Workspace} workspace
+   * @param {(opts: {sessionId: string, subagentScope: string, initialPhase: string}) => import('../engine.js').AgentEngine} engineFactory
+   * @param {() => string} getCurrentPhase  Callback returning the parent's current phase (so sub-agents get phase-appropriate tools)
+   */
+  constructor(workspace, engineFactory, getCurrentPhase = () => "bootstrap") {
     super();
     this._workspace = workspace;
     this._engineFactory = engineFactory;
+    this._getCurrentPhase = getCurrentPhase;
     this._runningTasks = new Map();
   }
 
   get name() { return "agent_tool"; }
   get description() {
     return (
-      "Spawn a sub-agent for an independent task. Give it a complete, " +
-      "self-contained task description. The sub-agent works in the same " +
-      "workspace and writes results to files. Use this for parallel rule " +
-      "processing, batch testing, or any work that can run independently."
+      "Spawn a sub-agent for an independent task. The sub-agent must own a " +
+      "non-overlapping unit of work — typically per-rule or per-document — " +
+      "so multiple sub-agents don't have to coordinate through shared mutable " +
+      "files. Do NOT build a lock mechanism inside the sub-agent's task body; " +
+      "concurrent peers + locks bottleneck and fail. The sub-agent's own " +
+      "persistence (history, event log, session-state) lives under " +
+      "sub_agents/<taskId>/; workspace artifacts (rules/, skills/, workflows/) " +
+      "are shared. Give the sub-agent a complete, self-contained task " +
+      "description — it has no conversation context."
     );
   }
 
@@ -52,10 +65,16 @@ export class AgentTool extends BaseTool {
     fs.mkdirSync(taskDir, { recursive: true });
     fs.writeFileSync(path.join(taskDir, "task.md"), taskDesc, "utf-8");
 
-    // Create child engine sharing the same workspace
+    // Create child engine. Critical: pass subagentScope + initialPhase so the
+    // child's persistence is isolated to sub_agents/<taskId>/ AND it has the
+    // same tools registered as the parent (Bug 2 fix).
     let childEngine;
     try {
-      childEngine = this._engineFactory(this._workspace.sessionId);
+      childEngine = this._engineFactory({
+        sessionId: this._workspace.sessionId,
+        subagentScope: taskId,
+        initialPhase: this._getCurrentPhase(),
+      });
     } catch (e) {
       return new ToolResult(`Failed to create sub-agent: ${e.message}`, true);
     }

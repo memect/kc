@@ -10,9 +10,18 @@ import path from "node:path";
 export class SessionState {
   /**
    * @param {string} workspacePath - Session workspace directory
+   * @param {object} [opts]
+   * @param {string} [opts.statePath] - Override absolute path (used for sub-agent isolation, Bug 2)
    */
-  constructor(workspacePath) {
-    this._path = path.join(workspacePath, "session-state.json");
+  constructor(workspacePath, opts = {}) {
+    this._path = opts.statePath || path.join(workspacePath, "session-state.json");
+  }
+
+  /**
+   * Re-point at a new state file. Used by `engine.renameSession()` (Bug 3).
+   */
+  _setWorkspacePath(newWorkspacePath, opts = {}) {
+    this._path = opts.statePath || path.join(newWorkspacePath, "session-state.json");
   }
 
   /** Whether a session state file exists */

@@ -236,6 +236,29 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Regenerate wrapper scripts for all enabled jobs. Used by
+   * `engine.renameSession()` (Bug 3) — wrappers bake in absolute paths to
+   * the workspace, so a rename needs them re-rendered with the new paths.
+   * @returns {{ regenerated: string[], skipped: string[] }}
+   */
+  regenerateAllWrappers() {
+    const out = { regenerated: [], skipped: [] };
+    for (const job of this.list()) {
+      if (job.enabled) {
+        try {
+          this.renderWrapper(job);
+          out.regenerated.push(job.id);
+        } catch {
+          out.skipped.push(job.id);
+        }
+      } else {
+        out.skipped.push(job.id);
+      }
+    }
+    return out;
+  }
+
   // --- helpers ---
 
   _abs(rel) {

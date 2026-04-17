@@ -116,6 +116,19 @@ From here below are more of ideas than actual implementation plans. In each part
 
 ## **Progress Tracker**
 
+### Outstanding TODOs (post v0.5.2)
+
+Items below are explicitly parked. Re-prioritize after v0.5.x manual testing concludes.
+
+- **Block 6** — manually review and finalize model selections for all providers in `src/model-tiers.json`; run end-to-end provider tests
+- **Block 10** — three deferred meta-skill supplements: semantic density preprocessing for long regulations, cross-document rule deduplication (SKU-fusion-style), sharpen `rule-graph` completeness checking with label hierarchies
+- **Block 12** — Feishu as IM channel (entire block, both flavors: rules importer + notification channel)
+- **Block 13** — Hermes / EvoMap research writeup (entire block — read sources, write `docs/v4_architecture_research.md`, no code this round)
+- **Block 8 follow-ups** — release-runner self-test mode (`--selftest`), real HTTP serve framework, batch processor, sandboxing
+- **Block 11 follow-ups** — line-level bbox highlighting in PDF review dashboard (requires OCR coordinate data)
+
+### Per-block status
+
 - [x] Block 0: Align both versions — gap analysis done, kc_reborn frozen, kc_cli is main branch
   - [x] Separate worker LLM config (optional, falls back to conductor)
   - [x] model-tiers.json — standalone file for LLM (tier1-4) and VLM (tier1-3) per provider

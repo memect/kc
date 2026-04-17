@@ -18,6 +18,11 @@ export class CornerCaseRegistry {
     this._load();
   }
 
+  /** Re-point at a new workspace. Used by `engine.renameSession()` (Bug 3). */
+  _setWorkspacePath(newWorkspacePath) {
+    this._path = path.join(newWorkspacePath, "corner_cases.json");
+  }
+
   _load() {
     if (!fs.existsSync(this._path)) return;
     try {

@@ -12,18 +12,26 @@ const JITTER_FRACTION = 0.2;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 520, 522, 524]);
 const NON_RETRYABLE_STATUS = new Set([400, 401, 403, 404, 422]);
 
+// Phrases that indicate the request itself is too large for the model.
+// Some providers return these as 400 (correct), others as 500/503 (incorrect),
+// but in either case retrying just delays the inevitable failure.
+const CONTEXT_LENGTH_PATTERNS = /context_length|context length|maximum context|too many tokens|prompt is too long|input length|input is too long|exceeds.{0,20}context|exceeded the max|reduce the length/i;
+
 /**
  * Determine if an error is retryable.
  * @param {Error} err
  * @returns {boolean}
  */
 function isRetryable(err) {
+  const msg = err.message || "";
+  // Context-length errors are non-retryable regardless of status code
+  if (CONTEXT_LENGTH_PATTERNS.test(msg)) return false;
+
   if (err.status) {
     if (NON_RETRYABLE_STATUS.has(err.status)) return false;
     if (RETRYABLE_STATUS.has(err.status)) return true;
   }
   // Network errors (ECONNRESET, ETIMEDOUT, fetch TypeError, AbortError)
-  const msg = err.message || "";
   if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|UND_ERR|fetch failed|network|socket hang up/i.test(msg)) {
     return true;
   }

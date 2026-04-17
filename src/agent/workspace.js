@@ -127,23 +127,28 @@ export class Workspace {
   }
 
   /**
-   * Rename the workspace folder. Returns the new sessionId.
+   * Rename the workspace folder. Returns `{ sessionId, oldCwd, newCwd }` so
+   * callers can cascade the new path to subsystems that captured cwd at
+   * construction (Bug 3).
    * @param {string} newName
-   * @returns {string}
+   * @returns {{sessionId: string, oldCwd: string, newCwd: string, changed: boolean}}
    */
   rename(newName) {
     newName = newName.trim().replace(/ /g, "_").replace(/\//g, "_");
     if (!newName) throw new Error("Name cannot be empty");
     const newPath = path.join(this.root, newName);
+    const oldCwd = this.path;
     if (fs.existsSync(newPath) && path.resolve(newPath) !== path.resolve(this.path)) {
       throw new Error(`Session '${newName}' already exists`);
     }
+    let changed = false;
     if (path.resolve(newPath) !== path.resolve(this.path)) {
       fs.renameSync(this.path, newPath);
       this.path = path.resolve(newPath);
       this.sessionId = newName;
+      changed = true;
     }
-    return this.sessionId;
+    return { sessionId: this.sessionId, oldCwd, newCwd: this.path, changed };
   }
 
   /**

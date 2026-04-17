@@ -1,5 +1,161 @@
 # KC Agent CLI — Development Log
 
+## v0.5.2 (2026-04-17)
+
+Bug-fix release from manual testing of v0.5.x on real data. Four bugs fixed,
+all v3 design TODOs aggregated into a top-of-doc section so the design tracker
+reflects current state. No new features.
+
+### Bug 1 (P0) — compact / windowing fails at ~300k context
+
+KC died on long sessions. Three independent failure modes compounded:
+
+- `engine.compact()` blasted the entire older history (250k+ tokens) to the
+  LLM as one summarization prompt → 400 → mechanical fallback was useless.
+- `ContextWindow.window()` kept the most recent 30 messages intact even when
+  those alone exceeded budget → next LLM call also 400'd.
+- No pre-flight check meant over-budget requests went out and got rejected.
+
+Fixes:
+- **Pre-flight hard ceiling in `runTurn`** (`_enforceTokenBudget`). Before each
+  `streamChat`, drops oldest non-system messages until under budget. Logs a
+  `context_truncated` event. Drops complete user→assistant→tool turns to keep
+  message structure valid (assistant tool_calls require following tool messages).
+- **Per-message content cap in `ConversationHistory.addRaw`** (default 30k tokens,
+  configurable via `maxMessageTokens`). Belt-and-suspenders: head + tail kept
+  with truncation marker pointing at `logs/events.jsonl` for the full content.
+  Block 11 offloading already prevents tool outputs this big in normal use; this
+  catches old/migrated workspaces and edge cases.
+- **Chunked `compact()`**. Old history split into ~30k-token chunks; each
+  summarized independently; partials concatenated. Single oversized chunk falls
+  back to mechanical for that chunk only. Always succeeds in producing a summary.
+- **Context-length detection in `retry.js`**. Recognizes "context_length",
+  "maximum context", "too many tokens", etc. in error messages — non-retryable
+  regardless of HTTP status. Stops the 10-retry hammer some providers' wrong
+  status codes triggered.
+
+### Bug 4 — status bar stuck on `BOOTSTRAP`
+
+Phase transitions only fired from narrow paths in `pipeline.onToolResult`. KC
+could work conversationally past bootstrap criteria and the status bar would
+still say `BOOTSTRAP`.
+
+Fixes:
+- **`_advancePhase(nextPhase, reason)` helper** centralizes the transition.
+  All paths route through it: pipeline auto-detect, post-turn re-check, task
+  completion, and explicit user request.
+- **`_maybeAutoAdvance()` after every turn AND after every tool-result loop**.
+  If the current phase's `exitCriteriaMet()` returns true, advance to the next
+  phase (per `NEXT_PHASE` map).
+- **Task-completion advance in `runTaskLoop`**. Once every task tagged with
+  the current phase is in a terminal state (completed | failed | skipped),
+  auto-advance.
+- **`phase_advance` tool** for the explicit user-request path. Minimal
+  description (~2 lines) to avoid bloating the system prompt budget. KC calls
+  it when user says "skip ahead". No `/phase` slash command — status bar is
+  display-only.
+
+### Bug 3 — `/rename` didn't actually rename
+
+Regression since 0.2.x. Root cause: persistence subsystems (`ConversationHistory`,
+`EventLog`, `SessionState`, `TaskManager`, `ConfidenceScorer`, `CornerCaseRegistry`)
+captured the workspace path at construction and never updated it. `fs.renameSync`
+moved the dir on disk, but subsequent writes from those subsystems re-created
+the OLD path's files via `mkdir -p`. From the user's perspective: new dir was
+"dead" while old dir kept growing.
+
+Fixes:
+- **`_setWorkspacePath(newCwd)` on every persistence subsystem.**
+- **`engine.renameSession(newName)` orchestrator.** Calls
+  `workspace.rename()`, then cascades the new path to every subsystem.
+- **`Scheduler.regenerateAllWrappers()`.** Block 9 cron wrapper scripts bake in
+  absolute paths to the workspace; after rename they'd be invalidated. Engine
+  calls regen as part of the cascade.
+- **`/rename` TUI handler uses orchestrator** and includes a warning when
+  schedules exist: "Re-install crontab lines via `schedule_fetch print_crontab`."
+
+### Bug 2 — sub-agent shared-state architecture fault
+
+Team reported "wide subagent failure". Audit found the actual cause was bigger
+than lock semantics: `agent_tool` spawned child engines with the same sessionId,
+which meant the child's `ConversationHistory`, `EventLog`, `SessionState`, and
+`TaskManager` ALL pointed at the parent's workspace files. Child writes
+clobbered parent state. Worse: child unconditionally set
+`currentPhase = BOOTSTRAP`, persisted that to the shared `session-state.json`,
+and registered only BUILD-mode tools — even when parent was in DISTILLATION.
+
+Fixes:
+- **Sub-agent isolation refactor.** `AgentEngine` constructor now accepts
+  `{ subagentScope, initialPhase }`:
+  - When `subagentScope` is set, `ConversationHistory` / `EventLog` /
+    `SessionState` redirect their files to `sub_agents/<scope>/`. `TaskManager`
+    is **not constructed** for sub-agents (they don't queue further sub-tasks).
+  - When `initialPhase` is set, `currentPhase` initializes to it and
+    `_registerToolsForPhase(initialPhase)` runs — child gets the same tool
+    surface as parent.
+  - Workspace files (rules/, rule_skills/, workflows/) stay shared — Block 11's
+    git auto-commit serializes those writes; partition-by-rule + last-writer-wins
+    is fine.
+- **`agent_tool` passes `subagentScope: taskId` and `initialPhase: parentPhase`**
+  via the engineFactory. Sharpened tool description to say sub-agents must own
+  non-overlapping units of work and not build lock mechanisms.
+- **`task-decomposition` skill (en + zh)** gains a "Multi-agent coordination —
+  keep it lock-free" subsection capturing the team's lock-failure lesson +
+  KC's preferred patterns (single-dispatcher, partition-by-unit).
+
+### v3 design TODOs aggregated
+
+`docs/global_update_design_v3.md` Progress Tracker now opens with an "Outstanding
+TODOs (post v0.5.2)" section listing the parked work: Block 6 model-tier
+finalization + provider tests, Block 10 deferred supplements, Block 12 Feishu,
+Block 13 Hermes/EvoMap research, Block 8 follow-ups (self-test, real serve mode,
+batch processor), Block 11 follow-ups (PDF bbox highlighting). Re-prioritize
+after v0.5.x manual testing concludes; v0.6 is the post-testing public release.
+
+### Verification
+
+End-to-end smoke (all passing):
+- Bug 1: 50k-token message gets capped to 30k with marker; oversized history
+  triggers `_enforceTokenBudget` (drops to budget); chunked compact splits 100
+  msgs of 500 tokens into 2 chunks.
+- Bug 4: `_advancePhase` works idempotently; tool advances; bad phase
+  rejected; `_maybeAutoAdvance` fires when criteria met; distill tools register
+  on transition into DISTILLATION.
+- Bug 3: rename moves dir, all subsequent writes from history/eventLog/state/
+  tasks/schedules land at new path; wrapper script regenerated with new abs
+  paths; old wrapper gone; clean errors on empty/colliding names.
+- Bug 2: 4 sub-agents (one + 3 concurrent) all isolate persistence under
+  `sub_agents/<scope>/`; parent state files unchanged; sub inherits parent's
+  phase + worker_llm_call tool; sub has no taskManager.
+- Regression: 22 en + 22 zh skills still index; 15 tools registered (was 14);
+  compact still returns proper result keys; tool offloading still works;
+  autoCommit still works; generateTraceId stable.
+
+### Files changed
+
+| File | Bugs | Change |
+|------|------|--------|
+| `src/agent/engine.js` | 1, 2, 3, 4 | constructor accepts subagentScope/initialPhase; `_enforceTokenBudget`; chunked compact; `_advancePhase` + `_maybeAutoAdvance`; `_allCurrentPhaseTasksComplete`; `renameSession` orchestrator; `NEXT_PHASE` constant |
+| `src/agent/history.js` | 1, 2, 3 | `_capContent`; constructor accepts `conversationDir` + `maxMessageTokens`; `_setWorkspacePath` |
+| `src/agent/event-log.js` | 2, 3 | constructor accepts `logDir`; `_setWorkspacePath` |
+| `src/agent/session-state.js` | 2, 3 | constructor accepts `statePath`; `_setWorkspacePath` |
+| `src/agent/task-manager.js` | 3 | `_setWorkspacePath` |
+| `src/agent/confidence-scorer.js` | 3 | `_setWorkspacePath` |
+| `src/agent/corner-case-registry.js` | 3 | `_setWorkspacePath` |
+| `src/agent/workspace.js` | 3 | `rename()` returns `{oldCwd, newCwd, sessionId, changed}` |
+| `src/agent/scheduler.js` | 3 | `regenerateAllWrappers()` |
+| `src/agent/retry.js` | 1 | `CONTEXT_LENGTH_PATTERNS` regex; non-retryable for context-length errors |
+| `src/agent/tools/agent-tool.js` | 2 | engineFactory takes opts; tightened description; new `getCurrentPhase` callback |
+| `src/agent/tools/phase-advance.js` (NEW) | 4 | small tool for KC to advance phase on user request |
+| `src/cli/index.js` | 3 | `/rename` uses `engine.renameSession`; warns about schedules |
+| `src/config.js` | 1 | `maxMessageTokens` (default 30000) |
+| `template/skills/{en,zh}/meta-meta/task-decomposition/SKILL.md` | 2 | "Multi-agent coordination — keep it lock-free" subsection |
+| `docs/global_update_design_v3.md` | — | Outstanding TODOs aggregated at top |
+| `DEV_LOG.md` | — | this entry |
+| `package.json` | — | 0.5.1 → 0.5.2 |
+
+---
+
 ## v0.5.1 (2026-04-17)
 
 Block 8 — release built workflows as a portable app. Adds the third phase

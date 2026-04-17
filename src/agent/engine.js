@@ -15,6 +15,7 @@ import { SnapshotTool } from "./tools/snapshot.js";
 import { ArchiveFileTool } from "./tools/archive-file.js";
 import { ScheduleFetchTool } from "./tools/schedule-fetch.js";
 import { ReleaseTool } from "./tools/release.js";
+import { PhaseAdvanceTool } from "./tools/phase-advance.js";
 import { DocumentParseTool } from "./tools/document-parse.js";
 import { DocumentSearchTool } from "./tools/document-search.js";
 import { WorkerLLMCallTool } from "./tools/worker-llm-call.js";
@@ -28,6 +29,7 @@ import { AgentTool } from "./tools/agent-tool.js";
 import { WebSearchTool } from "./tools/web-search.js";
 import { SkillLoader } from "./skill-loader.js";
 import { TaskManager } from "./task-manager.js";
+import { Scheduler } from "./scheduler.js";
 import { Phase } from "./pipelines/index.js";
 import { ProjectInitializer } from "./pipelines/initializer.js";
 import { RuleExtractionPipeline } from "./pipelines/extraction.js";
@@ -43,6 +45,15 @@ import { estimateTokens, estimateMessagesTokens } from "./token-counter.js";
 // Phases where worker LLM tools are available (DISTILL mode)
 const DISTILL_PHASES = new Set([Phase.DISTILLATION, Phase.PRODUCTION_QC]);
 
+// Linear phase order — used by auto-advance (Bug 4). Last phase has no successor.
+const NEXT_PHASE = {
+  [Phase.BOOTSTRAP]: Phase.EXTRACTION,
+  [Phase.EXTRACTION]: Phase.SKILL_AUTHORING,
+  [Phase.SKILL_AUTHORING]: Phase.SKILL_TESTING,
+  [Phase.SKILL_TESTING]: Phase.DISTILLATION,
+  [Phase.DISTILLATION]: Phase.PRODUCTION_QC,
+};
+
 /**
  * The KC Agent conversation engine.
  *
@@ -57,11 +68,20 @@ export class AgentEngine {
    * @param {import('./llm-client.js').LLMClient} opts.client
    * @param {object} opts.config - Settings from loadSettings()
    * @param {string} [opts.sessionId]
+   * @param {string} [opts.subagentScope] - When set, persistence is isolated to
+   *   sub_agents/<scope>/ inside the workspace. Used by `agent_tool` to spawn
+   *   children that share workspace files but don't trash parent's history /
+   *   tasks / session-state. (Bug 2)
+   * @param {string} [opts.initialPhase] - When set, the engine starts in this phase
+   *   instead of BOOTSTRAP. Used by sub-agents to inherit parent's phase so they
+   *   get the right tools registered. (Bug 2)
    */
-  constructor({ client, config, sessionId }) {
+  constructor({ client, config, sessionId, subagentScope, initialPhase }) {
     this.client = client;
     this.config = config;
     this.context = new ContextAssembler();
+    this._isSubagent = !!subagentScope;
+    this._subagentScope = subagentScope || null;
 
     // Workspace + structural components
     this.workspace = new Workspace(
@@ -70,14 +90,31 @@ export class AgentEngine {
       config.projectDir,
       { gitAutoCommit: config.gitAutoCommit !== false },
     );
-    this.workspace.setPhase(Phase.BOOTSTRAP);
-    this.history = new ConversationHistory(this.workspace.cwd);
+
+    // For sub-agents, persistence (history/events/state) lives under
+    // sub_agents/<scope>/ instead of the workspace root. Workspace files
+    // (rules/, rule_skills/, workflows/) stay shared.
+    let conversationDir, logDir, statePath;
+    if (this._isSubagent) {
+      const scopeRoot = path.join(this.workspace.cwd, "sub_agents", subagentScope);
+      fs.mkdirSync(scopeRoot, { recursive: true });
+      conversationDir = path.join(scopeRoot, "conversation");
+      logDir = path.join(scopeRoot, "logs");
+      statePath = path.join(scopeRoot, "session-state.json");
+    }
+
+    const initialPhaseValue = initialPhase || Phase.BOOTSTRAP;
+    this.workspace.setPhase(initialPhaseValue);
+    this.history = new ConversationHistory(this.workspace.cwd, {
+      conversationDir,
+      maxMessageTokens: this.config.maxMessageTokens,
+    });
     this.versionManager = new VersionManager(this.workspace.cwd);
     this.cornerCases = new CornerCaseRegistry(this.workspace.cwd);
     this.confidence = new ConfidenceScorer(this.workspace.cwd, this.cornerCases);
 
     // Event log (append-only JSONL, source of truth)
-    this.eventLog = new EventLog(this.workspace.cwd);
+    this.eventLog = new EventLog(this.workspace.cwd, { logDir });
 
     // Context windowing
     this.contextWindow = new ContextWindow({
@@ -86,17 +123,18 @@ export class AgentEngine {
     });
 
     // Session state persistence
-    this.sessionState = new SessionState(this.workspace.cwd);
+    this.sessionState = new SessionState(this.workspace.cwd, { statePath });
 
-    // Task manager (ralph-loop)
-    this.taskManager = new TaskManager(this.workspace.cwd);
+    // Task manager (ralph-loop) — sub-agents don't queue further sub-tasks,
+    // so they don't get a TaskManager.
+    this.taskManager = this._isSubagent ? null : new TaskManager(this.workspace.cwd);
 
     // Build all tool instances (but register phase-appropriate ones)
     this._buildTools = this._createAllTools();
     this._phaseSummaries = [];
 
     // Pipeline system (meta-meta skills as code)
-    this.currentPhase = Phase.BOOTSTRAP;
+    this.currentPhase = initialPhaseValue;
     this.pipelines = {
       [Phase.BOOTSTRAP]: new ProjectInitializer(this.workspace),
       [Phase.EXTRACTION]: new RuleExtractionPipeline(this.workspace),
@@ -144,7 +182,8 @@ export class AgentEngine {
         new SnapshotTool(this.workspace),
         new ArchiveFileTool(this.workspace),
         new ScheduleFetchTool(this.workspace),
-        new ReleaseTool(this.workspace, { kcVersion: "0.5.1" }),
+        new ReleaseTool(this.workspace, { kcVersion: "0.5.2" }),
+        new PhaseAdvanceTool((to, reason) => this._advancePhase(to, reason)),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
           mineruApiKey: this.config.mineruApiKey,
@@ -156,9 +195,14 @@ export class AgentEngine {
         new RuleCatalogTool(this.workspace),
         new EvolutionCycleTool(this.workspace, this.cornerCases),
         new DashboardRenderTool(this.workspace),
-        new AgentTool(this.workspace, (sid) => new AgentEngine({
-          client: this.client, config: this.config, sessionId: sid,
-        })),
+        new AgentTool(
+          this.workspace,
+          ({ sessionId, subagentScope, initialPhase }) => new AgentEngine({
+            client: this.client, config: this.config,
+            sessionId, subagentScope, initialPhase,
+          }),
+          () => this.currentPhase,
+        ),
         new WebSearchTool(this.config.tavilyApiKey),
       ],
       // Distillation+ only (DISTILL mode)
@@ -222,9 +266,11 @@ export class AgentEngine {
       );
     }
 
-    // Task progress (ralph-loop)
-    const taskContext = this.taskManager.describeForContext();
-    if (taskContext) lines.push("", taskContext);
+    // Task progress (ralph-loop) — skipped for sub-agents (no taskManager)
+    if (this.taskManager) {
+      const taskContext = this.taskManager.describeForContext();
+      if (taskContext) lines.push("", taskContext);
+    }
 
     return lines.join("\n");
   }
@@ -252,8 +298,63 @@ export class AgentEngine {
   }
 
   /**
+   * Pre-flight hard ceiling (Bug 1). After windowing, if the message
+   * array's total token count still exceeds the model's input budget,
+   * drop oldest non-system messages until under budget. Last-resort
+   * defense against HTTP 400 "context length exceeded".
+   *
+   * Drops complete user→assistant→tool turns to keep message structure
+   * coherent (assistant messages with tool_calls require following tool
+   * messages to be present, per OpenAI/Anthropic contract).
+   */
+  _enforceTokenBudget(messages) {
+    const limit = this.config.kcContextLimit || 200000;
+    const reserve = this.config.kcMaxTokens || 8192;
+    const budget = limit - reserve;
+    let totalTokens = estimateMessagesTokens(messages);
+    if (totalTokens <= budget) return messages;
+
+    // Keep the system message (index 0) and any compaction summary pair if
+    // present (those are user+assistant at the start). Drop oldest content
+    // messages first.
+    const systemIdx = messages[0]?.role === "system" ? 1 : 0;
+    let droppedCount = 0;
+    let droppedTokens = 0;
+
+    while (totalTokens > budget && messages.length > systemIdx + 1) {
+      const removed = messages.splice(systemIdx, 1)[0];
+      droppedCount++;
+      droppedTokens += estimateTokens(JSON.stringify(removed));
+      totalTokens = estimateMessagesTokens(messages);
+
+      // If we just dropped an assistant message that had tool_calls, also drop
+      // its tool result messages so the structure stays valid.
+      if (removed?.role === "assistant" && Array.isArray(removed.tool_calls) && removed.tool_calls.length > 0) {
+        const ids = new Set(removed.tool_calls.map((tc) => tc.id));
+        while (messages[systemIdx]?.role === "tool" && ids.has(messages[systemIdx].tool_call_id)) {
+          const toolMsg = messages.splice(systemIdx, 1)[0];
+          droppedCount++;
+          droppedTokens += estimateTokens(JSON.stringify(toolMsg));
+        }
+        totalTokens = estimateMessagesTokens(messages);
+      }
+    }
+
+    if (droppedCount > 0) {
+      this.eventLog.append("context_truncated", {
+        droppedCount,
+        droppedTokens,
+        finalTokens: totalTokens,
+        budget,
+      });
+    }
+    return messages;
+  }
+
+  /**
    * Compact conversation history by summarizing older messages via LLM.
-   * Keeps the most recent messages intact.
+   * Keeps the most recent messages intact. (Bug 1: now chunked — never sends
+   * a single oversized prompt to the summarizer LLM.)
    * @param {object} [opts]
    * @param {number} [opts.recentCount=20] - Number of recent messages to keep
    * @returns {Promise<{removedCount: number, retainedCount: number, summaryTokens: number}|null>}
@@ -264,45 +365,19 @@ export class AgentEngine {
     const olderMessages = this.history.messages.slice(0, -recentCount);
     const recentMessages = this.history.messages.slice(-recentCount);
 
-    let summary;
-    try {
-      const summaryResp = await this.client.chat({
-        model: this.config.kcModel,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a conversation summarizer. Produce a concise summary of the following conversation. " +
-              "Focus on: decisions made, files created or modified, current state of work, key findings, " +
-              "unresolved questions. Be specific about file paths, rule IDs, and results. Keep under 2000 tokens.",
-          },
-          {
-            role: "user",
-            content: `Summarize this conversation:\n\n${JSON.stringify(olderMessages)}`,
-          },
-        ],
-        maxTokens: 2048,
-      });
-      summary = summaryResp.choices?.[0]?.message?.content || null;
-    } catch {
-      // LLM summary failed — do mechanical fallback
-      summary = null;
+    const CHUNK_BUDGET = 30000; // tokens per summarization request
+    const chunks = this._chunkMessages(olderMessages, CHUNK_BUDGET);
+
+    const partials = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const partial = await this._summarizeChunk(chunk, i, chunks.length);
+      partials.push(partial);
     }
 
-    if (!summary) {
-      // Mechanical fallback: extract tool names and outcomes
-      const lines = ["Previous conversation summary (mechanical):"];
-      for (const msg of olderMessages) {
-        if (msg.role === "user") {
-          lines.push(`- User: ${(msg.content || "").slice(0, 100)}`);
-        } else if (msg.role === "assistant" && msg.tool_calls) {
-          for (const tc of msg.tool_calls) {
-            lines.push(`- Tool call: ${tc.function?.name}`);
-          }
-        }
-      }
-      summary = lines.join("\n");
-    }
+    const summary = partials.length === 1
+      ? partials[0]
+      : "## Compacted history (multi-part)\n\n" + partials.map((p, i) => `### Part ${i + 1}\n${p}`).join("\n\n");
 
     // Replace history
     this.history._messages = [
@@ -316,6 +391,7 @@ export class AgentEngine {
     this.eventLog.append("compact", {
       removedCount: olderMessages.length,
       retainedCount: recentMessages.length,
+      chunkCount: chunks.length,
       summary,
     });
 
@@ -324,6 +400,81 @@ export class AgentEngine {
       retainedCount: recentMessages.length,
       summaryTokens: estimateTokens(summary),
     };
+  }
+
+  /**
+   * Split a flat message list into chunks where each chunk's serialized JSON
+   * fits within tokenBudget. Chunks are turn-aligned where possible (a single
+   * user→assistant→tool sequence won't be split mid-turn unless that single
+   * turn alone exceeds the budget; in that case it gets its own oversized
+   * chunk and the LLM call may fail → mechanical fallback fires).
+   */
+  _chunkMessages(messages, tokenBudget) {
+    const chunks = [];
+    let current = [];
+    let currentTokens = 0;
+    for (const msg of messages) {
+      const mTokens = estimateTokens(JSON.stringify(msg));
+      if (current.length > 0 && currentTokens + mTokens > tokenBudget) {
+        chunks.push(current);
+        current = [];
+        currentTokens = 0;
+      }
+      current.push(msg);
+      currentTokens += mTokens;
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+  }
+
+  /**
+   * Summarize one chunk via the conductor LLM. On failure (incl. context-length
+   * errors that the chunked split should usually prevent), fall back to a
+   * mechanical summary so we always produce *something*.
+   */
+  async _summarizeChunk(chunk, idx, total) {
+    const partLabel = total > 1 ? ` (part ${idx + 1}/${total})` : "";
+    try {
+      const resp = await this.client.chat({
+        model: this.config.kcModel,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a conversation summarizer. Produce a concise summary of the following conversation excerpt. " +
+              "Focus on: decisions made, files created or modified, current state of work, key findings, " +
+              "unresolved questions. Be specific about file paths, rule IDs, and results. Keep under 1500 tokens.",
+          },
+          {
+            role: "user",
+            content: `Summarize this conversation excerpt${partLabel}:\n\n${JSON.stringify(chunk)}`,
+          },
+        ],
+        maxTokens: 1800,
+      });
+      const text = resp.choices?.[0]?.message?.content;
+      if (text) return text;
+    } catch {
+      // fall through to mechanical
+    }
+    return this._mechanicalSummary(chunk, partLabel);
+  }
+
+  _mechanicalSummary(chunk, partLabel) {
+    const lines = [`Mechanical summary${partLabel}:`];
+    for (const msg of chunk) {
+      if (msg.role === "user" && typeof msg.content === "string") {
+        lines.push(`- User: ${msg.content.slice(0, 120).replace(/\s+/g, " ")}`);
+      } else if (msg.role === "assistant") {
+        if (typeof msg.content === "string" && msg.content) {
+          lines.push(`- Assistant: ${msg.content.slice(0, 120).replace(/\s+/g, " ")}`);
+        }
+        for (const tc of msg.tool_calls || []) {
+          lines.push(`- Tool call: ${tc.function?.name || "?"}`);
+        }
+      }
+    }
+    return lines.join("\n");
   }
 
   /**
@@ -378,6 +529,55 @@ export class AgentEngine {
   }
 
   /**
+   * Rename the workspace folder and cascade the new path to every persistence
+   * subsystem that captured `workspace.cwd` at construction time (Bug 3).
+   * Without this cascade, subsystems keep writing to the OLD path even
+   * though the directory has moved on disk — the user sees the renamed dir
+   * "die" while the old dir keeps growing.
+   *
+   * Also regenerates Block 9 cron wrapper scripts which bake in absolute
+   * paths to the workspace. Returns information for the TUI to surface
+   * (incl. whether the user needs to re-install crontab lines).
+   *
+   * @param {string} newName
+   * @returns {{ sessionId: string, oldCwd: string, newCwd: string,
+   *             scheduleWrappersRegenerated: string[],
+   *             scheduleWrappersSkipped: string[] }}
+   */
+  renameSession(newName) {
+    const r = this.workspace.rename(newName);
+    if (r.changed) {
+      // Cascade to every subsystem that captured workspace.cwd
+      this.history._setWorkspacePath?.(r.newCwd);
+      this.eventLog._setWorkspacePath?.(r.newCwd);
+      this.sessionState._setWorkspacePath?.(r.newCwd);
+      this.taskManager?._setWorkspacePath?.(r.newCwd);
+      this.confidence._setWorkspacePath?.(r.newCwd);
+      this.cornerCases._setWorkspacePath?.(r.newCwd);
+    }
+
+    // Regenerate cron wrapper scripts — they bake absolute paths to WORKSPACE,
+    // INPUT_DIR, LOG_FILE, so rename invalidates them. The Scheduler is
+    // workspace-bound (created on demand inside the schedule_fetch tool), so
+    // construct a fresh one against the renamed workspace.
+    let scheduleResult = { regenerated: [], skipped: [] };
+    try {
+      const sched = new Scheduler(this.workspace);
+      scheduleResult = sched.regenerateAllWrappers();
+    } catch {
+      // Best effort — never let scheduler issues block the rename
+    }
+
+    return {
+      sessionId: r.sessionId,
+      oldCwd: r.oldCwd,
+      newCwd: r.newCwd,
+      scheduleWrappersRegenerated: scheduleResult.regenerated,
+      scheduleWrappersSkipped: scheduleResult.skipped,
+    };
+  }
+
+  /**
    * Run one conversation turn. Yields AgentEvent objects.
    * Loops: LLM call -> tool execution -> LLM call ... until no tool calls.
    * @param {string} userMessage
@@ -402,7 +602,7 @@ export class AgentEngine {
     while (true) {
       // Apply context windowing before sending to LLM
       const windowed = this.contextWindow.window(this.history.messages, this._phaseSummaries);
-      const messages = [{ role: "system", content: systemPrompt }, ...windowed.messages];
+      let messages = [{ role: "system", content: systemPrompt }, ...windowed.messages];
 
       if (windowed.wasWindowed) {
         this.eventLog.append("context_windowed", {
@@ -410,6 +610,12 @@ export class AgentEngine {
           totalBefore: this.history.messages.length,
         });
       }
+
+      // Pre-flight hard ceiling (Bug 1 P0). Even after windowing, if the
+      // request still exceeds the model's input budget (e.g., recent messages
+      // alone are too big), drop the oldest non-system messages until under
+      // budget. Better to lose some history than crash with HTTP 400.
+      messages = this._enforceTokenBudget(messages);
 
       this.eventLog.append("llm_start", {
         model: this.config.kcModel,
@@ -467,6 +673,12 @@ export class AgentEngine {
         });
 
         if (toolCallsAcc.size === 0) {
+          // Bug 4 trigger (1): re-check phase criteria at end of every turn —
+          // KC may have advanced state via conversation alone, without any
+          // tool that the pipeline narrowly watches.
+          const advancedEv = this._maybeAutoAdvance();
+          if (advancedEv) yield advancedEv;
+
           this.eventLog.append("turn_complete", {});
           this.saveState();
           yield new AgentEvent({ type: "turn_complete" });
@@ -515,29 +727,19 @@ export class AgentEngine {
             const pEvent = pipeline.onToolResult(tc.name, inputData, result);
             if (pEvent) {
               if (pEvent.type === "phase_ready" && pEvent.nextPhase) {
-                const phaseSummary = `[${this.currentPhase.toUpperCase()} completed]: ${pEvent.message || ""}`;
-                this._phaseSummaries.push(phaseSummary);
-                this.eventLog.append("phase_transition", {
-                  from: this.currentPhase,
-                  to: pEvent.nextPhase,
-                  summary: phaseSummary,
-                });
-                this.currentPhase = pEvent.nextPhase;
-                this._registerToolsForPhase(this.currentPhase);
-                this.workspace.setPhase(this.currentPhase);
-
-                // Ralph-loop: create per-rule tasks for the new phase
-                this._createTasksForPhase(this.currentPhase);
-
-                this.saveState();
+                this._advancePhase(pEvent.nextPhase, pEvent.message || "exit criteria met");
               }
-              yield new AgentEvent({
-                type: "pipeline_event",
-                data: pEvent,
-              });
+              yield new AgentEvent({ type: "pipeline_event", data: pEvent });
             }
           }
         }
+
+        // Bug 4 fix: re-check exit criteria after every tool-result loop, not
+        // just from pipeline.onToolResult. The pipeline's describeState() (called
+        // on every turn) already re-scans, so exitCriteriaMet() is accurate; we
+        // just need to act on it eagerly.
+        const ev = this._maybeAutoAdvance();
+        if (ev) yield ev;
 
       } catch (err) {
         this.eventLog.append("error", { message: err.message });
@@ -545,6 +747,50 @@ export class AgentEngine {
         return;
       }
     }
+  }
+
+  /**
+   * Centralized phase transition (Bug 4). All three triggers route through here:
+   * (1) pipeline.onToolResult returning phase_ready
+   * (2) post-turn auto-check via _maybeAutoAdvance
+   * (3) explicit user request via the phase_advance tool
+   *
+   * Idempotent — calling with the current phase is a no-op.
+   */
+  _advancePhase(nextPhase, reason = "") {
+    if (!nextPhase || nextPhase === this.currentPhase) return false;
+
+    const phaseSummary = `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${reason}`;
+    this._phaseSummaries.push(phaseSummary);
+    this.eventLog.append("phase_transition", {
+      from: this.currentPhase,
+      to: nextPhase,
+      reason,
+    });
+    this.currentPhase = nextPhase;
+    this._registerToolsForPhase(this.currentPhase);
+    this.workspace.setPhase(this.currentPhase);
+    this._createTasksForPhase(this.currentPhase);
+    this.saveState();
+    return true;
+  }
+
+  /**
+   * Bug 4 trigger (1) auto-detect: re-check exit criteria of the current phase
+   * and transition if met. Returns a pipeline_event AgentEvent if a transition
+   * fired, otherwise null.
+   */
+  _maybeAutoAdvance() {
+    const pipeline = this.pipelines[this.currentPhase];
+    if (!pipeline?.exitCriteriaMet?.()) return null;
+    const next = NEXT_PHASE[this.currentPhase];
+    if (!next) return null;
+    const advanced = this._advancePhase(next, "exit criteria auto-detected");
+    if (!advanced) return null;
+    return new AgentEvent({
+      type: "pipeline_event",
+      data: { type: "phase_ready", nextPhase: next, message: "exit criteria auto-detected" },
+    });
   }
 
   /**
@@ -586,6 +832,7 @@ export class AgentEngine {
    * Reads the rule catalog and creates one task per rule for the given phase.
    */
   _createTasksForPhase(phase) {
+    if (!this.taskManager) return; // Sub-agents don't manage tasks
     const catalogPath = path.join(this.workspace.cwd, "rules", "catalog.json");
     if (!fs.existsSync(catalogPath)) return;
 
@@ -607,6 +854,12 @@ export class AgentEngine {
    * @yields {AgentEvent}
    */
   async *runTaskLoop(userMessage) {
+    // Sub-agents don't run task loops — they execute one task and exit
+    if (!this.taskManager) {
+      yield* this.runTurn(userMessage);
+      return;
+    }
+
     // Run the initial turn (user's request)
     yield* this.runTurn(userMessage);
 
@@ -654,6 +907,36 @@ export class AgentEngine {
           progress: this.taskManager.progress,
         },
       });
+
+      // Bug 4 trigger (2): if all tasks for the current phase are now done,
+      // auto-advance to the next phase before grabbing more pending tasks
+      // (the next-pending check above will then find tasks for the new phase
+      // if _createTasksForPhase added any).
+      if (this._allCurrentPhaseTasksComplete()) {
+        const next = NEXT_PHASE[this.currentPhase];
+        if (next) {
+          const advanced = this._advancePhase(next, "all current-phase tasks completed");
+          if (advanced) {
+            yield new AgentEvent({
+              type: "pipeline_event",
+              data: { type: "phase_ready", nextPhase: next, message: "all current-phase tasks completed" },
+            });
+          }
+        }
+      }
     }
+  }
+
+  /**
+   * True when every task tagged with the current phase is in a terminal state
+   * (completed | failed | skipped) and at least one such task exists. Used by
+   * runTaskLoop's auto-advance trigger.
+   */
+  _allCurrentPhaseTasksComplete() {
+    if (!this.taskManager) return false;
+    const phase = this.currentPhase;
+    const phaseTasks = this.taskManager.getAllTasks().filter((t) => t.phase === phase);
+    if (phaseTasks.length === 0) return false;
+    return phaseTasks.every((t) => t.status === "completed" || t.status === "failed" || t.status === "skipped");
   }
 }

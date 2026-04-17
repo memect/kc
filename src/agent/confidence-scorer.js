@@ -30,6 +30,14 @@ export class ConfidenceScorer {
     this._loadCalibration();
   }
 
+  /** Re-point at a new workspace. Used by `engine.renameSession()` (Bug 3). */
+  _setWorkspacePath(newWorkspacePath) {
+    this._workspace = newWorkspacePath;
+    this._calibrationPath = path.join(newWorkspacePath, "confidence_calibration.json");
+    // Re-load priors from the new workspace's .env (in case it was edited externally)
+    this._loadConfig();
+  }
+
   _loadConfig() {
     const envPath = path.join(this._workspace, ".env");
     if (!fs.existsSync(envPath)) return;

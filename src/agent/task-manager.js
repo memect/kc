@@ -16,6 +16,11 @@ export class TaskManager {
     this._load();
   }
 
+  /** Re-point at a new tasks.json. Used by `engine.renameSession()` (Bug 3). */
+  _setWorkspacePath(newWorkspacePath) {
+    this._path = path.join(newWorkspacePath, "tasks.json");
+  }
+
   // --- Task CRUD ---
 
   /**

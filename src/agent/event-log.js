@@ -12,13 +12,26 @@ import { estimateTokens } from "./token-counter.js";
 export class EventLog {
   /**
    * @param {string} workspacePath - Session workspace directory
+   * @param {object} [opts]
+   * @param {string} [opts.logDir] - Override absolute path for the events directory
+   *   (used for sub-agent isolation, Bug 2)
    */
-  constructor(workspacePath) {
-    this._dir = path.join(workspacePath, "logs");
+  constructor(workspacePath, opts = {}) {
+    this._dir = opts.logDir || path.join(workspacePath, "logs");
     this._logPath = path.join(this._dir, "events.jsonl");
     this._seq = 0;
     this._estimatedTokens = 0;
     this._initFromExisting();
+  }
+
+  /**
+   * Re-point this event log at a new directory. Used by
+   * `engine.renameSession()` (Bug 3).
+   */
+  _setWorkspacePath(newWorkspacePath, opts = {}) {
+    this._dir = opts.logDir || path.join(newWorkspacePath, "logs");
+    this._logPath = path.join(this._dir, "events.jsonl");
+    // Sequence counter stays — we keep counting from where we left off.
   }
 
   /** Current sequence number */

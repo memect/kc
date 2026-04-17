@@ -96,6 +96,19 @@ Tags enable three capabilities that you cannot afford to lose:
 
 Tag format: a simple string field on every intermediate output. Example values: `regex`, `python_calc`, `llm_tier2`, `manual_review`. Be consistent within a project. Define the tag vocabulary once at project setup and enforce it across all skills and workflows.
 
+## Multi-agent coordination — keep it lock-free
+
+When a task is large enough that you reach for `agent_tool` to spawn parallel sub-agents, partition by an independent unit (one rule per sub-agent, one document per sub-agent, etc.) so the sub-agents never need to coordinate through a shared mutable file.
+
+Lesson from a peer-team failure: they tried equal-status agents claiming work via a shared coordination file with locks. Two predictable failures emerged. (1) Agents held locks too long or forgot to release them; even with locks working, twenty agents' throughput dropped to that of two or three because most time went to waiting. (2) Fragility — agents could fail while holding a lock, try to acquire a lock they already held, or update the coordination file without acquiring a lock at all.
+
+KC's preferred patterns:
+
+- **Single-dispatcher** — `TaskManager` hands tasks out one at a time to the conductor. No locks, no peer coordination. This is the default ralph-loop architecture.
+- **Partition-by-unit** — when spawning sub-agents via `agent_tool`, give each one a non-overlapping slice (per-rule, per-document). Sub-agents write to their own `sub_agents/<taskId>/` for state, and to per-rule paths in `rule_skills/<id>/` or `workflows/<id>/` for shared artifacts. Block 11's git auto-commit serializes the shared writes; partition-by-rule keeps last-writer-wins from being a problem.
+
+If two would-be sub-agents need to talk to each other to make progress, they should probably be one task (run sequentially) or a sequence (parent dispatches second after first finishes), not concurrent peers.
+
 ## Anti-Patterns
 
 Five failure modes recur across projects. Learn to recognize them early.

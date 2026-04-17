@@ -253,9 +253,16 @@ function App({ engine, config }) {
           addMessage({ role: "system", content: "Usage: /rename <new_name>" });
         } else {
           try {
-            const newId = engineRef.current.workspace.rename(arg);
-            setSessionId(newId);
-            addMessage({ role: "system", content: `Session renamed to: ${newId}` });
+            const r = engineRef.current.renameSession(arg);
+            setSessionId(r.sessionId);
+            const lines = [`Session renamed to: ${r.sessionId}`];
+            if (r.scheduleWrappersRegenerated.length > 0) {
+              lines.push(
+                `${r.scheduleWrappersRegenerated.length} cron wrapper script(s) regenerated.`,
+                `If you'd installed crontab lines for the OLD path, re-install via 'schedule_fetch print_crontab'.`,
+              );
+            }
+            addMessage({ role: "system", content: lines.join("\n") });
           } catch (err) {
             addMessage({ role: "system", content: `Rename failed: ${err.message}` });
           }
