@@ -168,6 +168,15 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] Context safety — 70% safeguard, compact to summary between tasks
   - [x] TUI TaskDashboard component with progress bar
   - [x] /tasks slash command
+- [x] Block 8: Built workflows release as an app (v0.5.1)
+  - [x] `release` tool — bundles `output/releases/<slug>/` with manifest, README, runner, dashboard, helpers, frozen artifacts
+  - [x] Standalone `run.py` driver — accepts input doc, runs all rules, aggregates JSON
+  - [x] Python `kc_runtime.confidence` — exact parity with JS `ConfidenceScorer` (half-up rounding fix)
+  - [x] Python `kc_runtime.dashboard` — pure-Python HTML emitter, dark theme, two tabs
+  - [x] `serve.sh` — `python -m http.server` helper for local browsing
+  - [x] Snapshots integration — every release tags via `SnapshotTool` (Block 11) for reproducibility
+  - [x] Skill updates — `skill-to-workflow` "Releasing Workflows", `quality-control` "Two Dashboard Surfaces" (en + zh)
+  - Bundle is regenerable from snapshot tag; `output/releases/` correctly gitignored
 - [x] Block 9: Allow automatic method of production input (v0.5.0)
   - [x] `Scheduler` — per-session schedule registry + wrapper-script generator
   - [x] `schedule_fetch` tool (add/list/remove/enable/disable/print_crontab)

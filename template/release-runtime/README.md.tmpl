@@ -1,0 +1,84 @@
+# {LABEL} — KC Verification Release
+
+Generated: {CREATED_AT}
+Snapshot tag: `{SNAPSHOT_TAG}`
+Commit: `{SNAPSHOT_COMMIT}`
+Built by: kc-beta {KC_VERSION}
+
+{NOTES_BLOCK}
+
+This bundle is self-contained. It runs without `kc-beta` installed — only Python 3 and a worker LLM API key are required.
+
+## What's in here
+
+```
+manifest.json              — release metadata (rules, models, snapshot tag)
+README.md                  — this file
+run.py                     — standalone driver, runs all rules
+render_dashboard.py        — re-render an HTML dashboard from a result JSON
+serve.sh                   — optional helper, serves this dir over local HTTP
+kc_runtime/                — bundled Python helpers (confidence scoring, dashboard)
+workflows/                 — pinned per-rule Python workflows + prompts
+fixtures/                  — sample inputs (if KC selected any)
+glossary.json              — project entity vocabulary at release time
+catalog.json               — rule catalog at release time
+corner_cases.json          — known corner cases (used by confidence scoring)
+confidence_calibration.json — per-rule historical accuracy
+models.json                — worker LLM tier→model assignments
+```
+
+## Run a verification
+
+```sh
+export LLM_API_KEY="sk-..."
+export LLM_BASE_URL="https://api.siliconflow.cn/v1"   # or your provider
+export TIER1="..."                                     # comma-separated model list
+export TIER2="..."
+
+python run.py /path/to/document.pdf > result.json
+```
+
+Each rule's workflow runs against the document; results are aggregated into a single JSON.
+
+### Useful flags
+
+```sh
+python run.py doc.pdf --rule R001              # run only one rule
+python run.py doc.pdf --output result.json     # write to a file
+python run.py doc.pdf --dashboard              # also emit an HTML dashboard
+```
+
+### Re-render a dashboard
+
+```sh
+python render_dashboard.py result.json
+# → result.html alongside the JSON
+```
+
+### Browse dashboards in a browser
+
+```sh
+./serve.sh
+# → http://localhost:8080/result.html
+```
+
+## Rules in this release
+
+{RULES_LIST}
+
+## Reproducibility
+
+The release bundle is regenerable from the snapshot tag:
+
+```sh
+git checkout {SNAPSHOT_TAG}
+# then run kc-beta and ask it to release({label: "{LABEL}"}) again
+```
+
+The `manifest.json` records the exact commit (`{SNAPSHOT_COMMIT}`) so you can verify what's running.
+
+## Caveats
+
+- Workflows call worker LLMs. Costs depend on your provider; the bundle does not enforce a budget.
+- Workflow output for each rule is preserved in `result.raw[*]` for audit. If you need full audit history with KC's event log + corner-case registry, work from the source workspace, not this bundle.
+- Bundle does not sandbox `python`. Treat it like any executable you trust.

@@ -111,6 +111,15 @@ For production Input/ documents:
 
 Production input often arrives on a schedule (see `bootstrap-workspace` → "Scheduled Ingestion"). Files in `input/` are auto-prefixed with `<job-id>_<UTC-timestamp>_` by the ingestion wrapper, so each batch carries provenance in its filenames. When a batch fails QC, the prefixes let you trace which scheduled run produced the bad data.
 
+## Two Dashboard Surfaces
+
+There are two distinct dashboards in this system:
+
+- **Developer dashboard** — `dashboard_render` tool, generated inside the workspace from `output/results/`, `logs/evolution/`, and `output/qc/`. For your audit and the developer user's day-to-day monitoring during BUILD and DISTILL.
+- **End-user dashboard** — the `render_dashboard.py` script bundled inside a release (built via the `release` tool). For non-developer recipients of a packaged release. It renders results from a single `run.py` invocation; no workspace dependency.
+
+When a release is built, point end users at the bundled dashboard, not the workspace one. Workspace dashboard stays your developer surface.
+
 ## Developer User Involvement
 
 The developer user should see QC results through the dashboard (see `dashboard-reporting`). Key metrics to surface:

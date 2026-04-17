@@ -1,5 +1,120 @@
 # KC Agent CLI — Development Log
 
+## v0.5.1 (2026-04-17)
+
+Block 8 — release built workflows as a portable app. Adds the third phase
+(**RUN**) beyond BUILD and DISTILL. The `release` tool bundles the current
+workspace into a self-contained directory under `output/releases/<slug>/`
+that anyone with Python 3 + a worker LLM API key can run via
+`python run.py <doc>`. **No `kc-beta` runtime dependency** — same parallel
+pattern as Block 9 (cron) and Block 11 (git): the artifact stands on its own.
+
+### What's new
+
+**`release` tool** (`src/agent/tools/release.js`). Inputs: `label`,
+optional `notes`, `include` rule allowlist, `fixtures` sample list. Behavior:
+
+1. Snapshots the workspace via `SnapshotTool` (git tag `snap/release-<slug>`,
+   tracked manifest at `snapshots/<slug>/snapshot.json`).
+2. Reads `rules/catalog.json`, filters by `include` if given.
+3. Locates the latest workflow per rule via the same `_findWorkflow` logic
+   `workflow-run.js` uses.
+4. Builds `output/releases/<slug>/`:
+
+```
+manifest.json              ← release metadata (rules, models, snapshot tag)
+README.md                  ← auto-generated from template
+run.py                     ← standalone Python driver (~210 LOC)
+render_dashboard.py        ← re-render HTML from existing result JSON
+serve.sh                   ← one-line python -m http.server helper
+kc_runtime/
+  __init__.py
+  confidence.py            ← Python port of ConfidenceScorer.score() — exact parity
+  dashboard.py             ← pure-Python HTML emitter (~150 LOC), dark theme
+workflows/
+  R001/
+    workflow_v3.py         ← pinned copy + chmod +x
+    prompts/
+fixtures/                  ← KC-selected representative samples (optional)
+glossary.json              ← frozen
+catalog.json               ← frozen
+corner_cases.json          ← frozen (used by confidence scoring)
+confidence_calibration.json ← frozen historical accuracies
+models.json                ← worker LLM tier→model map at release time
+```
+
+**Standalone `run.py`** — accepts `<input-doc>`, optional `--rule R001`,
+`--output result.json`, `--dashboard`. For each rule: spawns
+`python <workflow_path> <doc>`, captures the last-line JSON, scores
+confidence via `kc_runtime.confidence.score()`, aggregates. Writes JSON
+to stdout or `--output`. Optionally also renders an HTML dashboard.
+Reads `LLM_API_KEY` / `LLM_BASE_URL` / `TIER1`–`TIER4` env vars (same
+conventions as KC's `.env`). Exits non-zero if any workflow fails (so
+cron emails fire).
+
+**Confidence parity.** The Python port matches the JS scorer **exactly**,
+including JS `Math.round` half-up rounding (Python `round()` uses
+banker's rounding by default — fixed via a `math.floor(x*1000+0.5)/1000`
+helper). Verified end-to-end: KC's in-workspace scorer and the bundled
+`run.py` produce identical confidence values for the same input.
+
+**End-user dashboard** (`kc_runtime/dashboard.py`). Pure Python, no
+Jinja or framework deps — string templates only. Dark-theme port of
+`dashboard-render.js` styling. Two tabs (Summary + Per-Rule), inline
+JavaScript for tab switching. ~150 LOC.
+
+**`serve.sh`** — wraps `python -m http.server` so users can browse
+generated dashboards locally. Not a real serve framework; the mechanic
+is one line. KC decides per project whether to mention it (skill text
+guides usage; tool doesn't force the flow).
+
+**Skill updates:**
+- `skill-to-workflow/SKILL.md` (en + zh) — new "Releasing Workflows"
+  section. Describes the capability, when typical triggers apply, and
+  notes that what to include is KC's call (full catalog vs `include`
+  subset, fixtures or not). Freedom-respecting framing per the
+  prescription-vs-freedom feedback.
+- `quality-control/SKILL.md` (en + zh) — new "Two Dashboard Surfaces"
+  section distinguishing the in-workspace developer dashboard (for
+  audit during BUILD/DISTILL) from the bundled end-user dashboard
+  (for release recipients).
+
+### What changed under the hood
+
+- `src/agent/tools/release.js` (NEW) — the `release` tool (~250 LOC).
+- `src/agent/engine.js` — registers `ReleaseTool` (13 → 14 core tools).
+- `template/release-runtime/` (NEW) — Python templates copied verbatim
+  into each bundle.
+
+### What's deferred (to v0.5.2+)
+
+- **Self-test mode** (`run.py --selftest` against bundled fixtures).
+- **`kc-beta run` subcommand**. Release runs without KC by design.
+- **Real HTTP serve framework** (Flask/FastAPI). `serve.sh` covers
+  local browsing.
+- **Batch processing**. `run.py` takes one doc; users shell a loop.
+- **Sandboxing**. `run.py` is plain Python; user trusts their bundle.
+
+### Verification
+
+Smoke tests (all passing):
+
+- 14 tools registered (was 13).
+- Bundle directory contains all expected files in correct layout.
+- `run.py` executes a fake workflow, parses JSON, scores confidence.
+- **Confidence parity exact**: 0.874 from both KC's `ConfidenceScorer`
+  and the bundle's `kc_runtime.confidence.score()` for the same input.
+- `--rule R001` filter works (returns one result, not all).
+- Missing `LLM_API_KEY` / TIER vars exits with code 2 and clean stderr.
+- **Portability**: bundle moved to `/tmp/`, runs from there with
+  `--dashboard`, emits both JSON and HTML; HTML contains the rule data.
+- Snapshot tag `snap/release-v1` created in workspace git.
+- `snapshots/release-v1/snapshot.json` tracked in git (metadata
+  preserved even if bundle dir is cleaned).
+- `output/releases/` correctly gitignored (bundle contents NOT in git).
+
+---
+
 ## v0.5.0 (2026-04-17)
 
 Block 9 — cron / heartbeat document fetching. Adds scheduled ingestion to

@@ -14,6 +14,7 @@ import { CopyToWorkspaceTool } from "./tools/copy-to-workspace.js";
 import { SnapshotTool } from "./tools/snapshot.js";
 import { ArchiveFileTool } from "./tools/archive-file.js";
 import { ScheduleFetchTool } from "./tools/schedule-fetch.js";
+import { ReleaseTool } from "./tools/release.js";
 import { DocumentParseTool } from "./tools/document-parse.js";
 import { DocumentSearchTool } from "./tools/document-search.js";
 import { WorkerLLMCallTool } from "./tools/worker-llm-call.js";
@@ -143,6 +144,7 @@ export class AgentEngine {
         new SnapshotTool(this.workspace),
         new ArchiveFileTool(this.workspace),
         new ScheduleFetchTool(this.workspace),
+        new ReleaseTool(this.workspace, { kcVersion: "0.5.1" }),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
           mineruApiKey: this.config.mineruApiKey,

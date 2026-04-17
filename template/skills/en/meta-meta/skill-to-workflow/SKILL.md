@@ -135,6 +135,14 @@ The coding agent's skill-based results are the ground truth. For each document i
 
 Each iteration of a workflow is a new version file: `workflow_v1.py`, `workflow_v2.py`, etc. Track which version is active in `config.json`. See `version-control` skill for the full methodology.
 
+## Releasing Workflows
+
+Once workflows hit accuracy threshold, they can be packaged for end users via the `release` tool. Each release is a self-contained directory under `output/releases/<slug>/` with the pinned workflows, a Python runner, a confidence scorer, an HTML dashboard generator, and a `serve.sh` helper. The bundle has no kc-beta dependency — anyone with Python and a worker LLM API key can run `python run.py <doc>` and produce verification results.
+
+What to include is your call: all rules in catalog, or a curated subset via the `include` parameter; bundling 1-3 representative samples as `fixtures/` if you want the recipient to be able to dry-run without their own data.
+
+The `release` tool snapshots the workspace first (git tag `snap/release-<slug>`), so the bundle is regenerable from git even if `output/releases/` is later cleaned. Decide when to release — there's no automation, no forced cadence. Typical triggers: workflows reach SKILL/WORKFLOW_ACCURACY thresholds, a stakeholder needs a hand-off, a production cron should run pinned versions instead of latest. Discuss with the developer user.
+
 ## Cost Tracking
 
 Track the cost of each workflow run:
