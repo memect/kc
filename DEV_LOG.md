@@ -1,5 +1,123 @@
 # KC Agent CLI — Development Log
 
+## v0.4.0 (2026-04-17)
+
+Block 11 — file system refactor. Adopts git as the per-session versioning
+backbone, adds tool-call offloading, and ships three new workspace tools
+(`copy_to_workspace`, `snapshot`, `archive_file`). Preceded by a design doc
+(`docs/file_system_design.md`) reviewed and approved before implementation.
+
+### What's new
+
+**Git-backed per-session workspace.** Each session's workspace directory is
+now a git repository. Every write to a tracked path (skills, workflows,
+rules, glossary, AGENT.md, tasks.json) is auto-committed by
+`Workspace.autoCommit()` with a trace ID in the commit message. KC uses git
+directly via `sandbox_exec` for diff, rollback, and branching:
+
+```
+sandbox_exec({command: "git log --oneline -10", cwd: "workspace"})
+sandbox_exec({command: "git diff HEAD~3 -- rule_skills/R001/SKILL.md", cwd: "workspace"})
+sandbox_exec({command: "git checkout HEAD~5 -- rule_skills/R001/", cwd: "workspace"})
+```
+
+`.gitignore` ships from `template/workspace.gitignore` and excludes runtime
+noise (`logs/`, `sub_agents/`, `input/`, `output/`, `samples/`,
+`session-state.json`, `.env`). `git status` shows only meaningful changes.
+
+If git isn't installed, KC prints a one-line warning and continues with
+auto-commit disabled — workspace still works, version history is just off.
+
+**Tool-call offloading** (LangChain *Anatomy of an Agent Harness* pattern).
+Tool outputs above ~2000 tokens (configurable) are written to
+`logs/tool_results/<traceId>.txt`. Conversation history holds a head + tail
+digest (~1.6KB) with a pointer; the agent reads the full file with
+`workspace_file` only if it needs detail. Errors offload at a smaller
+threshold (~500 tokens). The event log keeps the full content regardless,
+so audits never lose data.
+
+**Three new workspace tools:**
+
+- `copy_to_workspace` — pull a specific file from the project directory
+  into `refs/` with provenance recorded in `refs/manifest.json`. Files
+  larger than `largeRefThresholdMB` (default 10 MB) are written but added
+  to `.gitignore` so they don't bloat git history. Default behavior remains
+  reading project files in place via `scope: "project"`.
+- `snapshot` — freeze the current workspace state. Auto-commits any
+  pending changes, creates git tag `snap/<slug>`, writes
+  `snapshots/<slug>/snapshot.json`. Used for release bundles (Block 8) and
+  before risky operations.
+- `archive_file` — move a file to an `archived/` subdirectory next to it
+  (e.g. `input/doc.pdf` → `input/archived/doc.pdf`). Uses `git mv` for
+  tracked files so history is preserved. Reverse moves intentionally use
+  plain `sandbox_exec mv` — no separate `unarchive` tool.
+
+### What changed under the hood
+
+- `src/agent/workspace.js` — added `_initGitRepo`, `autoCommit`, `setPhase`,
+  `gitAvailable`, static `isGitInstalled`. Constructor now takes
+  `{gitAutoCommit}` option.
+- `src/agent/version-manager.js` — stripped to just `generateTraceId`
+  (now exported as a top-level function and as a class method for back-compat).
+  No more `versions.json` writes.
+- `src/agent/tools/workspace-file.js` — `_write` now calls
+  `workspace.autoCommit()` instead of `versionManager.onWrite()`.
+- `src/agent/tools/copy-to-workspace.js`, `snapshot.js`, `archive-file.js` —
+  three new tools.
+- `src/agent/engine.js` — added `_maybeOffload` for tool-call offloading,
+  registered the three new tools, propagates phase to `workspace.setPhase()`
+  on transition and resume.
+- `src/agent/pipelines/initializer.js` — no longer creates `versions.json`;
+  auto-commits AGENT.md after seeding.
+- `src/agent/context.js` — AGENT_IDENTITY gains a "File System" section
+  describing git, offloading, and the three new tools.
+- `src/config.js` — new keys: `gitAutoCommit`, `toolOutputOffloadTokens`,
+  `toolOutputOffloadErrorTokens`, `largeRefThresholdMB`.
+- `src/cli/index.js` — startup banner if git is missing.
+- `template/workspace.gitignore` — new file shipped to every session.
+- `template/skills/{en,zh}/meta-meta/version-control/SKILL.md` — new
+  "Git Is the Source of Truth" section.
+
+### Verification
+
+Phase-by-phase smoke tests run during implementation:
+
+- Phase 1a: fresh session → `.git/` + initial commit exist; `rules/` write
+  triggers auto-commit; `logs/` write does not.
+- Phase 1b: 50KB content → 1.7KB digest with pointer; offload file written;
+  small content → no offload.
+- Phase 1c: small file copied + git-tracked; 12MB file copied but added to
+  `.gitignore`; manifest with provenance written; traversal blocked.
+- Phase 1d: snapshot creates tag + commit + manifest; archive uses
+  `git mv` for tracked files (history preserved) and `fs.rename` fallback
+  for ignored files; conflict detection works.
+- Phase 2: full engine constructs with 12 tools; system prompt mentions
+  every new piece; all 22 en + 22 zh skills still index.
+
+### Migration (additive)
+
+Existing pre-v0.4.0 workspaces auto-init on next launch — initial commit
+captures whatever's there as `"Migrated session <id> to git-tracked workspace"`.
+Old `versions.json` is left untouched. No data loss; pre-migration history
+just isn't reconstructable (old manifest was metadata-only). Going forward,
+full git history accumulates.
+
+### Defaults
+
+| Key | Default | Override |
+|-----|---------|----------|
+| `gitAutoCommit` | `true` | env `GIT_AUTO_COMMIT`, global config `git_auto_commit` |
+| `toolOutputOffloadTokens` | `2000` | env `TOOL_OUTPUT_OFFLOAD_TOKENS` |
+| `toolOutputOffloadErrorTokens` | `500` | env `TOOL_OUTPUT_OFFLOAD_ERROR_TOKENS` |
+| `largeRefThresholdMB` | `10` | env `LARGE_REF_THRESHOLD_MB` |
+
+### Documentation
+
+- New: `docs/file_system_design.md` — design doc (architectural decisions, layout, tool contracts, phased plan).
+- New: `docs/file_system.md` — user-facing reference.
+
+---
+
 ## v0.3.2 (2026-04-17)
 
 Block 10 partial — project glossary supplement to rule-extraction, rule-graph,

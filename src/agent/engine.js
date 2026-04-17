@@ -10,6 +10,9 @@ import { ConfidenceScorer } from "./confidence-scorer.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { SandboxExecTool } from "./tools/sandbox-exec.js";
 import { WorkspaceFileTool } from "./tools/workspace-file.js";
+import { CopyToWorkspaceTool } from "./tools/copy-to-workspace.js";
+import { SnapshotTool } from "./tools/snapshot.js";
+import { ArchiveFileTool } from "./tools/archive-file.js";
 import { DocumentParseTool } from "./tools/document-parse.js";
 import { DocumentSearchTool } from "./tools/document-search.js";
 import { WorkerLLMCallTool } from "./tools/worker-llm-call.js";
@@ -59,7 +62,13 @@ export class AgentEngine {
     this.context = new ContextAssembler();
 
     // Workspace + structural components
-    this.workspace = new Workspace(config.kcWorkspaceRoot, sessionId, config.projectDir);
+    this.workspace = new Workspace(
+      config.kcWorkspaceRoot,
+      sessionId,
+      config.projectDir,
+      { gitAutoCommit: config.gitAutoCommit !== false },
+    );
+    this.workspace.setPhase(Phase.BOOTSTRAP);
     this.history = new ConversationHistory(this.workspace.cwd);
     this.versionManager = new VersionManager(this.workspace.cwd);
     this.cornerCases = new CornerCaseRegistry(this.workspace.cwd);
@@ -127,6 +136,11 @@ export class AgentEngine {
       core: [
         new SandboxExecTool(this.workspace, this.config.kcExecTimeout),
         new WorkspaceFileTool(this.workspace, this.versionManager),
+        new CopyToWorkspaceTool(this.workspace, {
+          largeRefThresholdMB: this.config.largeRefThresholdMB ?? 10,
+        }),
+        new SnapshotTool(this.workspace),
+        new ArchiveFileTool(this.workspace),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
           mineruApiKey: this.config.mineruApiKey,
@@ -325,6 +339,7 @@ export class AgentEngine {
       engine.currentPhase = data.currentPhase || Phase.BOOTSTRAP;
       engine._phaseSummaries = data.phaseSummaries || [];
       engine._registerToolsForPhase(engine.currentPhase);
+      engine.workspace.setPhase(engine.currentPhase);
 
       // Restore project directory from saved state
       if (data.projectDir) {
@@ -466,22 +481,29 @@ export class AgentEngine {
 
           const result = await this.toolRegistry.execute(tc.name, inputData);
 
+          // Tool-call offloading: large outputs go to logs/tool_results/<traceId>.txt;
+          // history holds head + tail with a pointer. Event log keeps the full output
+          // (it's append-only and the source of truth).
+          const offload = this._maybeOffload(tc.name, result);
+          const historyContent = offload ? offload.digest : (result.content || "");
+
           this.eventLog.append("tool_result", {
             name: tc.name,
-            output: result.content?.slice(0, 5000) || "",
+            output: result.content || "",
             isError: result.isError,
+            traceId: offload?.traceId || null,
           });
           yield new AgentEvent({
             type: "tool_result",
             name: tc.name,
-            output: result.content,
+            output: historyContent,
             isError: result.isError,
           });
 
           this.history.addRaw({
             role: "tool",
             tool_call_id: tc.id,
-            content: result.content,
+            content: historyContent,
           });
 
           // Pipeline controller: update state and re-register tools on phase change
@@ -498,6 +520,7 @@ export class AgentEngine {
                 });
                 this.currentPhase = pEvent.nextPhase;
                 this._registerToolsForPhase(this.currentPhase);
+                this.workspace.setPhase(this.currentPhase);
 
                 // Ralph-loop: create per-rule tasks for the new phase
                 this._createTasksForPhase(this.currentPhase);
@@ -518,6 +541,40 @@ export class AgentEngine {
         return;
       }
     }
+  }
+
+  /**
+   * Tool-call offloading. If the tool's content exceeds the threshold,
+   * write the full content to logs/tool_results/<traceId>.txt and return a
+   * digest (head + tail) with a pointer. Otherwise return null (caller uses
+   * full content).
+   */
+  _maybeOffload(toolName, result) {
+    const content = result.content || "";
+    if (!content) return null;
+    const threshold = result.isError
+      ? (this.config.toolOutputOffloadErrorTokens ?? 500)
+      : (this.config.toolOutputOffloadTokens ?? 2000);
+    const tokens = estimateTokens(content);
+    if (tokens <= threshold) return null;
+
+    const safeToolName = String(toolName || "tool").replace(/[^A-Za-z0-9_-]/g, "_");
+    const traceId = this.versionManager.generateTraceId(safeToolName, "result");
+    const offloadDir = path.join(this.workspace.cwd, "logs", "tool_results");
+    try {
+      fs.mkdirSync(offloadDir, { recursive: true });
+      fs.writeFileSync(path.join(offloadDir, `${traceId}.txt`), content, "utf-8");
+    } catch {
+      // If we can't write the offload file, fall back to keeping full content in context.
+      return null;
+    }
+
+    const HEAD = 800, TAIL = 800;
+    const truncatedNote = `\n\n[…truncated, ${tokens} tokens; full at logs/tool_results/${traceId}.txt — read with workspace_file if needed…]\n\n`;
+    const digest = content.length > HEAD + TAIL
+      ? content.slice(0, HEAD) + truncatedNote + content.slice(-TAIL)
+      : content + truncatedNote;
+    return { traceId, digest };
   }
 
   /**

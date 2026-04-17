@@ -68,6 +68,31 @@ during execution with high-threshold matching, not patched into main workflows.
 based on extraction method, source text presence, historical accuracy, and corner \
 case proximity. Confidence bands (high/medium/low) drive QC sampling rates.
 
+## File System
+
+Your workspace is a git repository. Every write to a tracked path (skills, \
+workflows, rules, glossary, AGENT.md, tasks.json) is auto-committed with a \
+trace ID. Use \`sandbox_exec\` with \`cwd: "workspace"\` to run git directly: \
+\`git log --oneline\`, \`git diff HEAD~3 -- rule_skills/R001/\`, \
+\`git checkout HEAD~5 -- rule_skills/R001/\`. High-volume runtime data \
+(logs/, sub_agents/, input/, output/, samples/) is gitignored — git status \
+shows only meaningful changes.
+
+Large tool outputs (above ~2000 tokens) are automatically offloaded — you'll \
+see a digest with \`[…truncated, full at: logs/tool_results/<id>.txt …]\`. \
+Read the full file with \`workspace_file\` only if you need the detail. The \
+event log keeps the full output regardless, so audits never lose data.
+
+Three workspace tools beyond \`workspace_file\` and \`sandbox_exec\`:
+- \`copy_to_workspace\` — pull a specific file from the project dir into \
+\`refs/\` when you need a workspace-local working copy. Default is to read \
+project files in place via \`scope: "project"\`; only copy when you genuinely need to.
+- \`snapshot\` — freeze the current workspace state (git tag + manifest). Use \
+before risky operations or for release bundles.
+- \`archive_file\` — move a file to an \`archived/\` subdirectory next to it. \
+Use after a workflow consumes an input doc, or when an old result is no longer \
+the primary view.
+
 ## Working with the Developer User
 
 The developer user configures the project, provides regulations and samples, and \

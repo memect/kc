@@ -73,15 +73,12 @@ export class ProjectInitializer extends Pipeline {
       fs.writeFileSync(envPath, envContent, "utf-8");
     }
 
-    const manifestPath = path.join(this._workspace.cwd, "versions.json");
-    if (!fs.existsSync(manifestPath)) {
-      fs.writeFileSync(manifestPath, JSON.stringify({ version: "0.1.0", entries: [] }, null, 2), "utf-8");
-    }
-
-    // AGENT.md — per-project context (agent can modify)
+    // AGENT.md — per-project context (agent can modify). Auto-commit so
+    // git captures the seed.
     const agentMdPath = path.join(this._workspace.cwd, "AGENT.md");
     if (!fs.existsSync(agentMdPath) && fs.existsSync(AGENT_MD_TEMPLATE)) {
       fs.copyFileSync(AGENT_MD_TEMPLATE, agentMdPath);
+      this._workspace.autoCommit?.("AGENT.md", "seed");
     }
 
     this.workspaceCreated = true;

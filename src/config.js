@@ -111,6 +111,14 @@ export function loadSettings(workspacePath) {
 
     // Context management
     kcContextLimit: parseInt(env.KC_CONTEXT_LIMIT || "200000", 10),
+    toolOutputOffloadTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_TOKENS || gc.tool_output_offload_tokens?.toString() || "2000", 10),
+    toolOutputOffloadErrorTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_ERROR_TOKENS || gc.tool_output_offload_error_tokens?.toString() || "500", 10),
+
+    // File system (Block 11)
+    gitAutoCommit: (env.GIT_AUTO_COMMIT ?? gc.git_auto_commit ?? true) !== false &&
+                   (env.GIT_AUTO_COMMIT !== "false") &&
+                   (gc.git_auto_commit !== false),
+    largeRefThresholdMB: parseInt(env.LARGE_REF_THRESHOLD_MB || gc.large_ref_threshold_mb?.toString() || "10", 10),
 
     // Language
     language: env.LANGUAGE || gc.language || "en",

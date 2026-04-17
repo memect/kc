@@ -5,6 +5,19 @@ description: Manage versioning of skills, workflows, prompts, and system configu
 
 # 版本控制与制品溯源
 
+## Git 即唯一真相源
+
+工作区是一个 git 仓库。每次对受跟踪路径（skills、workflows、rules、glossary、AGENT.md、tasks.json）的写入，都由 KC 自动提交，提交信息中带有 trace ID。这意味着：
+
+- `git log --oneline` 就是本次 session 中所有有意义变更的时间线。
+- `git diff HEAD~3 -- rule_skills/R001/` 显示某个技能在最近三次有意义写入间的变化。
+- `git checkout HEAD~5 -- workflows/R001/` 回滚一个工作流，不影响其他任何东西。
+- `snapshot` 工具用来标记值得记住的时刻（发版、"高风险操作前"），用 `git checkout snap/<label>` 恢复。
+
+通过 `sandbox_exec` 加 `cwd: "workspace"` 直接跑 git 命令。不要绕开 git —— 它就是审计链路本身。
+
+下文中按版本号复制文件名（`workflow_v1.py`、`workflow_v3.py`）和 CHANGELOG.md 的约定依然有用，但作用是 *在单个技能文件夹内提升人类可读性* —— 让智能体直接对比，不必每次都去翻 git 历史。系统的真相记录在 git，不在已废弃的 `versions.json` manifest（新工作区不再写入这个文件）。
+
 ## 设计目标
 
 这套版本控制机制不是为了多人协作——在这个系统中，编程智能体是唯一的执行者。版本控制的目的是：

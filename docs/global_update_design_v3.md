@@ -168,6 +168,16 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] Context safety — 70% safeguard, compact to summary between tasks
   - [x] TUI TaskDashboard component with progress bar
   - [x] /tasks slash command
+- [x] Block 11: Better File System (v0.4.0)
+  - [x] Phase 0 — design doc (`docs/file_system_design.md`) reviewed and approved
+  - [x] Phase 1a — git foundation: per-session repo, `.gitignore` template, auto-commit on every workspace write to a tracked path
+  - [x] Phase 1b — tool-call offloading: large outputs go to `logs/tool_results/<id>.txt`, history holds head + tail digest with pointer
+  - [x] Phase 1c — `copy_to_workspace` tool with `refs/manifest.json` provenance and large-file gitignore (>10MB)
+  - [x] Phase 1d — `snapshot` (git tag + manifest) and `archive_file` (uses `git mv` to preserve history)
+  - [x] Phase 2 — `AGENT_IDENTITY` "File System" paragraph + `version-control` skill update (en + zh)
+  - [x] Phase 3 — user-facing `docs/file_system.md`, DEV_LOG entry, v0.4.0 bump
+  - Soft-fallback if git is missing (startup banner, auto-commit disabled, everything else still works)
+  - Resolves Block 1 TODO (selective project→workspace copy) and Block 11 LangChain blog action item
 - [~] Block 10: Better rule extraction skills from pdf2skills/A2O — partial (v0.3.2)
   - [x] Project glossary supplement — living, project-scoped vocabulary built during EXTRACTION, enriched throughout BUILD/DISTILL. Sections added to rule-extraction (build site), rule-graph (analysis site, glossary backs `shares_entity` edges), entity-extraction (light cross-reference, no prescriptive regex pattern).
   - [ ] **TODO:** Semantic density preprocessing for long regulations (pdf2skills NLP-then-LLM scoring of substantive vs boilerplate paragraphs).

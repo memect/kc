@@ -7,17 +7,20 @@ const MAX_READ = 50_000;
 /**
  * Read, write, or list files in the workspace or project directory.
  * All paths are resolved relative to the chosen scope with
- * traversal protection. VersionManager hooks into workspace writes for automatic versioning.
+ * traversal protection. Workspace writes are auto-committed by Workspace.autoCommit
+ * (skips gitignored paths and silently no-ops if git is unavailable).
+ *
+ * The second `versionManager` arg is retained for back-compat with the engine
+ * constructor but is no longer required for any logic.
  */
 export class WorkspaceFileTool extends BaseTool {
   /**
    * @param {import('../workspace.js').Workspace} workspace
-   * @param {import('../version-manager.js').VersionManager} [versionManager]
+   * @param {import('../version-manager.js').VersionManager} [_versionManager] - unused, kept for back-compat
    */
-  constructor(workspace, versionManager) {
+  constructor(workspace, _versionManager) {
     super();
     this._workspace = workspace;
-    this._versionManager = versionManager || null;
   }
 
   get name() { return "workspace_file"; }
@@ -112,10 +115,10 @@ export class WorkspaceFileTool extends BaseTool {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
     fs.writeFileSync(resolved, content, "utf-8");
 
-    // Version tracking only for workspace writes
+    // Auto-commit to git for workspace writes (silently no-ops if gitignored or git unavailable)
     let traceId = null;
-    if (scope === "workspace" && this._versionManager) {
-      traceId = this._versionManager.onWrite(filePath, content);
+    if (scope === "workspace") {
+      traceId = this._workspace.autoCommit(filePath, "update");
     }
 
     const label = scope === "project" ? `[project] ${filePath}` : filePath;

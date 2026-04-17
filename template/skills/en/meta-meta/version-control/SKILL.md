@@ -7,6 +7,19 @@ description: Manage versioning of skills, workflows, prompts, and system configu
 
 Version control here is about auditability and rollback, not collaboration. You need to know what changed, when, why, and be able to undo it if the change made things worse.
 
+## Git Is the Source of Truth
+
+The workspace is a git repository. Every workspace write to a tracked path (skills, workflows, rules, glossary, AGENT.md, tasks.json) is auto-committed by KC with a trace ID in the commit message. This means:
+
+- `git log --oneline` is the timeline of every meaningful change in this session.
+- `git diff HEAD~3 -- rule_skills/R001/` shows what changed in a skill across the last three meaningful writes.
+- `git checkout HEAD~5 -- workflows/R001/` rolls back a workflow without touching anything else.
+- The `snapshot` tool tags moments worth remembering (releases, "before risky operation"); restore with `git checkout snap/<label>`.
+
+Use `sandbox_exec` with `cwd: "workspace"` to run git commands directly. Don't fight git — it's the audit trail.
+
+The conventions below (per-version filename copies, `CHANGELOG.md`) are still useful for *human readability inside a single skill folder* — having `workflow_v1.py` and `workflow_v3.py` side-by-side lets the agent compare them without reading git history. But the system of record is git, not the deprecated `versions.json` manifest (which is no longer written for new workspaces).
+
 ## What to Version
 
 Everything that affects verification results:

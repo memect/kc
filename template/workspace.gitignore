@@ -1,0 +1,22 @@
+# Auto-installed by KC at session start. Do not commit secrets, runtime
+# noise, or user source documents — git tracks KC's outputs only.
+
+# Secrets
+.env
+
+# Runtime / session noise
+logs/
+sub_agents/
+session-state.json
+.DS_Store
+*.log
+
+# User-provided source documents (read in place, not tracked)
+samples/
+
+# High-volume IO
+input/
+output/
+
+# Deprecated metadata manifest (old workspaces only — replaced by git)
+versions.json

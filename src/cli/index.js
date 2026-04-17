@@ -436,6 +436,14 @@ export async function main({ languageOverride } = {}) {
     console.log(`\x1b[33m${msg}\x1b[0m\n`);
   }
 
+  // Warn if git is missing — Block 11 file system relies on git for version history.
+  if (config.gitAutoCommit !== false && !Workspace.isGitInstalled()) {
+    const msg = config.language === "zh"
+      ? "  ⚠ 未检测到 git。本会话将不记录版本历史。安装 git 以启用自动提交。"
+      : "  ⚠ git not found — version history disabled this session. Install git to enable auto-commit.";
+    console.log(`\x1b[33m${msg}\x1b[0m\n`);
+  }
+
   const client = new LLMClient({
     apiKey: config.llmApiKey,
     baseUrl: config.llmBaseUrl,
