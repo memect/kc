@@ -168,6 +168,12 @@ From here below are more of ideas than actual implementation plans. In each part
   - [x] Context safety — 70% safeguard, compact to summary between tasks
   - [x] TUI TaskDashboard component with progress bar
   - [x] /tasks slash command
+- [~] Block 10: Better rule extraction skills from pdf2skills/A2O — partial (v0.3.2)
+  - [x] Project glossary supplement — living, project-scoped vocabulary built during EXTRACTION, enriched throughout BUILD/DISTILL. Sections added to rule-extraction (build site), rule-graph (analysis site, glossary backs `shares_entity` edges), entity-extraction (light cross-reference, no prescriptive regex pattern).
+  - [ ] **TODO:** Semantic density preprocessing for long regulations (pdf2skills NLP-then-LLM scoring of substantive vs boilerplate paragraphs).
+  - [ ] **TODO:** Cross-document rule deduplication (SKU-fusion-style merging when extracting from multiple regulations or revisions).
+  - [ ] **TODO:** Sharpen completeness checking with label hierarchies (A2O-style coverage validation as graph operation).
+  - Note: much of the original Block 10 description was already covered by Blocks 4-5 (Location→Extraction→Judgment, onion-peeler chunking with Levenshtein fallback, independence-first rule graph with all four A2O edge types).
 
 ### v0.3.1 audit pass (2026-04-17)
 

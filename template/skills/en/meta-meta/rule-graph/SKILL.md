@@ -43,6 +43,22 @@ Two rules that can produce contradictory guidance. Regulation A requires disclos
 
 Edge cases that affect multiple rules. A document with an unusual structure (merged cells in a table, non-standard date format) may cause extraction failures across several rules. The graph links these rules to the shared corner case so a fix in one propagates awareness to others.
 
+## Project Glossary
+
+The glossary (built and owned by `rule-extraction`, stored at `rules/glossary.json`) is the canonical-label registry that makes `shares_entity` edges meaningful. Without it, two rules can target the same entity under different names and the edge between them never gets drawn.
+
+Edges that reference entities should use the glossary's canonical labels, not free-text strings copied from rule descriptions:
+
+```json
+{"from": "R001", "to": "R004", "type": "shares_entity", "entity": "registered_capital"}
+```
+
+Where `registered_capital` is the canonical name in `glossary.json`, with aliases like `注册资本` and `paid-in capital` recorded under it.
+
+When the glossary is updated — new aliases discovered in samples, two entries merged, a definition refined — revisit affected `shares_entity` edges. New aliases may surface previously hidden cross-rule connections; merged entries collapse parallel edges into one.
+
+The glossary is built and owned by rule-extraction; rule-graph just consumes it.
+
 ## Three Uses
 
 ### 1. Impact Analysis

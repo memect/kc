@@ -1,5 +1,70 @@
 # KC Agent CLI — Development Log
 
+## v0.3.2 (2026-04-17)
+
+Block 10 partial — project glossary supplement to rule-extraction, rule-graph,
+and entity-extraction skills. Pure methodology text changes (same pattern as
+Blocks 4 and 5). No code, no scripts, no behavior changes.
+
+### What's added
+
+**Project glossary as a living artifact.** A project-scoped vocabulary of
+entities, terms, and patterns the verification system encounters. Built
+during EXTRACTION alongside the rule catalog, enriched throughout
+BUILD and DISTILL phases as KC sees more samples and refines its own
+ground-truth extractions.
+
+- **`rule-extraction/SKILL.md` (en + zh)** — new "Project Glossary"
+  section after "Rule Catalog". Covers what the glossary is (canonical
+  names + aliases keep entity references consistent across rules), when
+  to seed it (during initial extraction), storage shape
+  (`rules/glossary.json` next to `catalog.json`, JIT schema), and that
+  it is a living document — not frozen at end of extraction.
+- **`rule-graph/SKILL.md` (en + zh)** — new "Project Glossary" section
+  before "Three Uses". The glossary is the canonical-label registry
+  that makes `shares_entity` edges meaningful; without it, rules
+  targeting the same entity under different names produce broken
+  matches. Edges should reference glossary canonical labels.
+- **`entity-extraction/SKILL.md` (en + zh)** — light cross-reference
+  near "Schema Design". The glossary is a useful resource for keeping
+  entity names schema-aligned. Whether it ever drives pattern-based
+  matching is a per-project judgment, not a prescribed pattern.
+
+### Deferred Block 10 supplements (TODO for v0.3.3+)
+
+Three candidates considered during planning but deferred — original Block 10
+description was largely covered by Blocks 4-5 already, leaving these as
+narrower opportunities:
+
+- **Semantic density preprocessing.** For long regulations, score
+  paragraphs cheaply (regulatory phrase markers, threshold density)
+  with worker LLM calibration on borderline cases, to focus extraction
+  on rule-bearing sections first. From pdf2skills.
+- **Cross-document rule deduplication.** When extracting from multiple
+  regulations or revisions, similarity-match new rules against the
+  existing catalog (merge / link / add). From pdf2skills' SKU-fusion.
+- **Sharpen completeness checking.** Label-hierarchy approach for
+  coverage validation. From A2O.
+
+### Translation note
+
+`rule-extraction` and `entity-extraction` zh files were already English
+placeholders prior to this release; new sections were added in English
+to preserve each file's existing language consistency. `rule-graph` zh
+is fully translated, so the new section was written in Chinese to match.
+A full zh translation pass for the placeholder skills is out of scope for
+this release.
+
+### Verification
+
+- All 22 en + 22 zh skills still load via SkillLoader.
+- Description frontmatter unchanged on all six modified files (no risk
+  of skill-index breakage).
+- Cross-references read coherently: rule-extraction → rule-graph →
+  entity-extraction → rule-extraction (no orphaned links).
+
+---
+
 ## v0.3.1 (2026-04-17)
 
 Audit-and-fix release for the v3 production-readiness work (Blocks 0-7).

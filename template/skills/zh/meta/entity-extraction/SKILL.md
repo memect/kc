@@ -49,6 +49,12 @@ Many real verification tasks require semantic understanding — "is this descrip
 
 If a method's results fall below the accuracy threshold, try a different method or a more capable model. If regex works and meets accuracy — keep it, it's free. If regex produces results below threshold, escalate to worker LLM. If a cheap worker LLM isn't accurate enough, try a more capable tier. Record what works for each extraction type in AGENT.md for future reference.
 
+## Project Glossary
+
+The project glossary (built and maintained by `rule-extraction`, stored at `rules/glossary.json`) is a useful resource when designing extraction. It records canonical names and known aliases for entities that appear across rules. Reading it before extracting helps keep entity names schema-aligned and avoids parallel labels for the same thing.
+
+Whether the glossary becomes more than a naming convention — for instance, driving cheap pattern matching for entities with stable surface forms — is a per-project judgment. Apply the same cost-accuracy logic as elsewhere: whatever method meets the accuracy threshold for the task at hand.
+
 ## Schema Design
 
 Define the expected output for each extraction. Keep it simple and JIT:

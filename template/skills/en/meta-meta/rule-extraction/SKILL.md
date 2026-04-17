@@ -104,6 +104,41 @@ Maintain a lightweight catalog of all extracted rules. This is your index, not t
 
 Format: a simple markdown table or JSON file. Do not over-engineer this. The catalog exists to give you and the developer user an overview of progress.
 
+## Project Glossary
+
+Alongside the rule catalog, build a project glossary — a living vocabulary of the entities, terms, and patterns the verification system encounters. The glossary is what keeps entity names consistent across rules: without it, the same balance-sheet item might be named "注册资本", "registered capital", and "paid-in capital" by three different rule skills, breaking shared-entity matching and producing inconsistent extraction outputs.
+
+The glossary is not frozen at the end of extraction. It is a living document. Update it when you discover new aliases in samples, when a worker LLM extraction reveals a variant phrasing, when corner cases surface unfamiliar terminology. Both the coding agent and any operator can edit it.
+
+### When to seed it
+
+During rule extraction. As you decompose each rule, note the entities the rule references — capital ratios, signature pages, related-party transactions, dates, parties, monetary values. Seed the glossary with the canonical name and any aliases already visible in the source documents.
+
+### Storage and shape
+
+Save as `rules/glossary.json` next to `catalog.json`. Each entry is small:
+
+```json
+{
+  "canonical": "registered_capital",
+  "aliases": ["注册资本", "registered capital", "实收资本"],
+  "definition": "The capital amount registered with regulators",
+  "entity_type": "monetary_value",
+  "seen_in": ["rules/regulation_A.pdf:p12", "samples/annual_report_2024.pdf:p3"],
+  "status": "extracted"
+}
+```
+
+Status field tracks maturity: `extracted` (from rules), `validated` (confirmed in samples), `production` (used by deployed workflows). Add or drop fields as the project demands — same JIT philosophy as the rule schema.
+
+### How it integrates
+
+- `rule-graph` consumes the glossary so `shares_entity` edges reference canonical labels rather than free-text strings.
+- `entity-extraction` references the glossary for canonical names and known aliases when designing extraction logic.
+- Skills authored under `skill-authoring` should use canonical names in their schemas.
+
+How the glossary is used downstream is a per-project judgment. A mature glossary may enable cheap pattern-based matching for some entities; for others it just keeps naming consistent. Let the cost-accuracy logic in `entity-extraction` decide per case.
+
 ## Handling Ambiguity
 
 Regulations are often ambiguous. When you encounter ambiguity:

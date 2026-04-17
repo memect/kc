@@ -87,6 +87,22 @@ description: Build and maintain a graph of relationships between verification ru
 
 图谱关联这些规则到共享的角落案例，一处修复、多处感知。
 
+## 项目术语表（Glossary）
+
+术语表由 `rule-extraction` 构建并维护，存放于 `rules/glossary.json`。它是规范化标签的注册中心——`shares_entity`（共享实体）边能否成立，全靠它。没有术语表，两条规则可能针对同一个实体却用不同名字，它们之间的边就永远画不出来。
+
+涉及实体的边应该引用术语表中的规范化标签，而不是从规则描述中复制粘贴的自由文本：
+
+```json
+{"from": "R001", "to": "R004", "type": "shares_entity", "entity": "registered_capital"}
+```
+
+其中 `registered_capital` 是 `glossary.json` 里的规范化名称，`注册资本`、`paid-in capital`、`实收资本` 作为别名记录在该条目下。
+
+术语表更新时——发现新别名、合并两条目、修订定义——回过头检查受影响的 `shares_entity` 边。新别名可能让原本隐藏的跨规则关联浮现；合并的条目会把平行的边收敛为一条。
+
+术语表由 rule-extraction 构建和持有，rule-graph 只是消费方。
+
 ## 四个用途
 
 ### 1. 影响分析（Impact Analysis）
