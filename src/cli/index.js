@@ -262,6 +262,12 @@ function App({ engine, config }) {
                 `If you'd installed crontab lines for the OLD path, re-install via 'schedule_fetch print_crontab'.`,
               );
             }
+            if (r.scheduleWrappersFailed && r.scheduleWrappersFailed.length > 0) {
+              const ids = r.scheduleWrappersFailed.map((f) => f.id).join(", ");
+              lines.push(
+                `⚠ ${r.scheduleWrappersFailed.length} wrapper script(s) failed to regenerate (${ids}). Check workspace/scripts/ingest/ and disk space.`,
+              );
+            }
             addMessage({ role: "system", content: lines.join("\n") });
           } catch (err) {
             addMessage({ role: "system", content: `Rename failed: ${err.message}` });

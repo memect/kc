@@ -9,8 +9,9 @@ const VALID_PHASES = new Set(Object.values(Phase));
  * doesn't see them. Most transitions happen automatically (exit criteria,
  * task completion); this tool is the explicit-user-request path.
  *
- * Description kept very short to minimize system-prompt budget cost — KC
- * already knows the phase model from `bootstrap-workspace` and other skills.
+ * Linear order is enforced by default — only forward-by-one is allowed.
+ * Pass force=true to skip phases or regress (e.g., when the user explicitly
+ * asks). Description kept short to minimize system-prompt budget cost.
  */
 export class PhaseAdvanceTool extends BaseTool {
   constructor(advanceFn) {
@@ -21,7 +22,7 @@ export class PhaseAdvanceTool extends BaseTool {
   get name() { return "phase_advance"; }
 
   get description() {
-    return "Advance to a different pipeline phase. Use only when user requests it or auto-detect misses.";
+    return "Advance phase. Forward-by-one only unless force=true (use sparingly, e.g. when user asks to skip).";
   }
 
   get inputSchema() {
@@ -34,6 +35,10 @@ export class PhaseAdvanceTool extends BaseTool {
           description: "Target phase",
         },
         reason: { type: "string", description: "Why" },
+        force: {
+          type: "boolean",
+          description: "Allow non-adjacent or backward transitions. Default false.",
+        },
       },
       required: ["to"],
     };
@@ -42,8 +47,14 @@ export class PhaseAdvanceTool extends BaseTool {
   async execute(input) {
     const to = input.to;
     if (!VALID_PHASES.has(to)) return new ToolResult(`Unknown phase: ${to}`, true);
-    const advanced = this._advance(to, input.reason || "agent request");
-    if (!advanced) return new ToolResult(`Already in ${to}`, false);
-    return new ToolResult(`Advanced to ${to}`);
+    const advanced = this._advance(to, input.reason || "agent request", { force: !!input.force });
+    if (!advanced) {
+      // Either already in target phase, or non-adjacent without force
+      return new ToolResult(
+        `Did not advance to ${to}. Either you're already there, or the transition is non-adjacent (set force:true to override).`,
+        false,
+      );
+    }
+    return new ToolResult(`Advanced to ${to}${input.force ? " (forced)" : ""}`);
   }
 }

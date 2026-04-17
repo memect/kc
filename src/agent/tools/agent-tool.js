@@ -3,6 +3,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { BaseTool, ToolResult } from "./base.js";
 
+// Mirrors VALID_ID in scheduler.js — alphanumeric + _- only, max 64 chars.
+// Sub-agent ids are used as path components under sub_agents/, so anything
+// permitting `..` or `/` is a path-traversal risk.
+const VALID_TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+function _newAutoTaskId() {
+  return `task_${crypto.randomUUID().slice(0, 8)}`;
+}
+
 /**
  * Spawn a sub-agent for parallel work.
  * Creates a child AgentEngine that shares workspace files (rules/, rule_skills/,
@@ -48,7 +56,10 @@ export class AgentTool extends BaseTool {
           type: "string",
           description: "Complete task description for the sub-agent. Be specific — it has no conversation context.",
         },
-        task_id: { type: "string", description: "Optional task identifier (auto-generated if omitted)" },
+        task_id: {
+          type: "string",
+          description: "Optional task identifier — alphanumeric + _- only, max 64 chars. Used as a folder name under sub_agents/. If omitted or invalid, an auto-generated id is used.",
+        },
       },
       required: ["task_description"],
     };
@@ -56,14 +67,24 @@ export class AgentTool extends BaseTool {
 
   async execute(input) {
     const taskDesc = input.task_description || "";
-    const taskId = input.task_id || `task_${crypto.randomUUID().slice(0, 8)}`;
+    const requestedId = (input.task_id || "").trim();
+    // Sanitize: anything not matching VALID_TASK_ID is silently replaced with
+    // an auto-generated id. The label survives in result metadata so KC can
+    // still cross-reference, but the path component is always safe.
+    const taskId = requestedId && VALID_TASK_ID.test(requestedId)
+      ? requestedId
+      : _newAutoTaskId();
+    const labelOverridden = requestedId && taskId !== requestedId;
 
     if (!taskDesc) return new ToolResult("No task_description provided", true);
 
-    // Create sub-agent output directory
+    // Create sub-agent output directory (taskId is now sanitized)
     const taskDir = path.join(this._workspace.cwd, "sub_agents", taskId);
     fs.mkdirSync(taskDir, { recursive: true });
     fs.writeFileSync(path.join(taskDir, "task.md"), taskDesc, "utf-8");
+    if (labelOverridden) {
+      fs.writeFileSync(path.join(taskDir, "requested_id.txt"), requestedId, "utf-8");
+    }
 
     // Create child engine. Critical: pass subagentScope + initialPhase so the
     // child's persistence is isolated to sub_agents/<taskId>/ AND it has the
@@ -111,9 +132,12 @@ export class AgentTool extends BaseTool {
 
     return new ToolResult(JSON.stringify({
       task_id: taskId,
+      requested_id: labelOverridden ? requestedId : undefined,
       status: "started",
       output_dir: `sub_agents/${taskId}/`,
-      message: `Sub-agent started. Check sub_agents/${taskId}/status.txt for completion, output.md for text.`,
+      message: labelOverridden
+        ? `Sub-agent started under sanitized id '${taskId}' (your '${requestedId}' wasn't a valid path component). Check sub_agents/${taskId}/status.txt.`
+        : `Sub-agent started. Check sub_agents/${taskId}/status.txt for completion, output.md for text.`,
     }, null, 2));
   }
 }

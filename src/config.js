@@ -65,7 +65,7 @@ export function loadSettings(workspacePath) {
     llmApiKey: env.LLM_API_KEY || env.SILICONFLOW_API_KEY || gc.api_key || "",
     llmBaseUrl: env.LLM_BASE_URL || env.SILICONFLOW_BASE_URL || gc.base_url || "https://api.siliconflow.cn/v1",
     kcModel: gc.conductor_model || "glm-5",
-    kcMaxTokens: 65536,
+    kcMaxTokens: parseInt(env.KC_MAX_TOKENS || gc.kc_max_tokens?.toString() || "65536", 10),
 
     // Tier models (from .env or global config tiers)
     tier1: env.TIER1 || gc.tiers?.tier1 || "",
@@ -113,7 +113,7 @@ export function loadSettings(workspacePath) {
     kcContextLimit: parseInt(env.KC_CONTEXT_LIMIT || "200000", 10),
     toolOutputOffloadTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_TOKENS || gc.tool_output_offload_tokens?.toString() || "2000", 10),
     toolOutputOffloadErrorTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_ERROR_TOKENS || gc.tool_output_offload_error_tokens?.toString() || "500", 10),
-    maxMessageTokens: parseInt(env.MAX_MESSAGE_TOKENS || gc.max_message_tokens?.toString() || "30000", 10),
+    maxMessageTokens: parseInt(env.MAX_MESSAGE_TOKENS || gc.max_message_tokens?.toString() || "60000", 10),
 
     // File system (Block 11)
     gitAutoCommit: (env.GIT_AUTO_COMMIT ?? gc.git_auto_commit ?? true) !== false &&

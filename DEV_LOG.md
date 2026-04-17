@@ -1,5 +1,145 @@
 # KC Agent CLI — Development Log
 
+## v0.5.3 (2026-04-17)
+
+Fix-the-fixes release per fresh ultra-review of v0.5.2. **One P0 security
+fix** (path traversal via LLM-supplied `task_id`) plus four correctness fixes
+in the context-management and phase-transition paths. SOTA-friendly defaults
+preserved per user direction (200k context, 65k max output).
+
+### P0 — `agent_tool` path traversal
+
+Sub-agent isolation in v0.5.2 made `task_id` an actively-used path component
+in `path.join(workspace.cwd, "sub_agents", taskId)`. An LLM-supplied
+`task_id: "../../../../tmp/pwn"` would write the sub-agent's task.md,
+conversation, events, and session-state outside the workspace. Same class
+as the standard "LLM-controlled path" agentic escape; brand-new attack
+surface because v0.5.1's sub-agent isolation was dead code.
+
+Fix:
+- `agent-tool.js`: validate `task_id` against `VALID_TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/`
+  (matches scheduler's pattern). Invalid inputs auto-replaced with
+  `task_<UUID>`; the requested label is preserved in `requested_id.txt`
+  for audit. Tool's response message tells KC the id was sanitized.
+- `engine.js` constructor: defense-in-depth check that resolved
+  `sub_agents/<scope>/` stays under workspace root. Throws on `../escape`
+  even if a future caller bypasses the tool-layer sanitization.
+- inputSchema description tightened so the LLM produces valid IDs.
+
+### Bug 2 — `_enforceTokenBudget` Anthropic-400 + summary preservation
+
+Two unfixed sub-issues from prior review:
+- Hardcoded `systemIdx = 1` dropped the `[Previous conversation summary]`
+  pair as the first casualty, throwing away LLM-summarized prior work.
+- After dropping a leading user, the assistant became the head →
+  Anthropic Messages API rejects `[system, assistant, …]` with
+  `400 messages: first message must use the user role`.
+
+Rewrite drops in **block units** (user + everything until the next user)
+so the head is always either a user message or empty. Detects both summary
+markers (`[Previous conversation summary]` from `compact()` and
+`[Context Summary` from `ContextWindow.window()`) and treats them as
+sticky. Defensive postcondition cleanup if input was malformed.
+
+### Bug 3 — `_capContent` CJK doubling
+
+Reproduced: 20001 CJK chars → 40003 chars out (2× the input). Root cause:
+`charBudget = maxMessageTokens * 4` assumes Latin chars/token rate; for
+CJK at 1.5 tokens/char the budget was 6× too generous and JS clamped
+out-of-range slices to the full string.
+
+Rewrite uses a sample-based chars-per-token ratio (CJK gives ~0.67, Latin
+~4) to seed the budget, then iteratively tightens until
+`estimateTokens(result) <= maxMessageTokens`. Belt-and-suspenders clamp
+returns the original content if the proposed slices would cover the
+whole input — the cap can never inflate.
+
+Per the SOTA-friendly direction, also bumped `maxMessageTokens` default
+**30000 → 60000** for more headroom on 200k-context conductors.
+
+### Bug 4 — `phase_advance` reachability guard
+
+`phase_advance` accepted any phase and `_advancePhase` only refused
+self-transitions. An LLM could regress `PRODUCTION_QC → BOOTSTRAP`
+(corrupting session state) or skip `BOOTSTRAP → DISTILLATION` (registering
+distill tools without skills, hitting cryptic ENOENT errors).
+
+Fix: `_advancePhase(nextPhase, reason, {force = false})`. Default refuses
+non-adjacent or backward transitions and logs `phase_advance_refused`.
+`phase_advance` tool exposes `force: boolean` for explicit user-driven
+non-linear jumps. Tool description states the constraint so the LLM
+doesn't try to jump and get a confusing refusal.
+
+### Bug 5 — `_maybeAutoAdvance` resume + task-completion edges
+
+Two failure modes:
+- Level-trigger fired on resume — sessions resumed in an
+  already-exit-criteria-met state auto-advanced on the next user turn,
+  pushing the user out of a phase they wanted to keep iterating in.
+- Task-completion bypassed exit criteria — marking all phase tasks
+  `skipped` (or completing them while criteria were not met)
+  auto-advanced anyway.
+
+Fix:
+- Edge-trigger: track `_lastReady` per phase. Auto-advance only fires
+  when `exitCriteriaMet()` flips false→true within this run. Primed at
+  construction AND after `importState` in `resume()` so resume sees no
+  fresh flip.
+- Task-completion path now requires BOTH `_allCurrentPhaseTasksComplete()`
+  AND `pipeline.exitCriteriaMet()`. Tasks alone are a ralph-loop
+  convenience, not authoritative phase signal.
+
+### Bug 6 (nit) — scheduler return shape + `kcMaxTokens` consistency
+
+- `regenerateAllWrappers` now returns `{regenerated, disabled, failed}`
+  instead of conflating disabled and failed in one `skipped` bucket.
+  CLI surfaces failed count after rename.
+- `KC_MAX_TOKENS` env override added (was hardcoded 65536). Default
+  unchanged. Single `DEFAULT_KC_MAX_TOKENS = 65536` constant in
+  `engine.js` used at both call sites that previously disagreed
+  (65536 vs 8192 fallbacks). Now symmetric for `KC_MAX_TOKENS=0`.
+
+### SOTA-friendly defaults — preserved
+
+- `kcContextLimit`: **200000** (unchanged)
+- `kcMaxTokens`: **65536** default (env-overridable now)
+- `maxMessageTokens`: 30000 → **60000** (raised for SOTA headroom)
+
+### Verification
+
+Each fix smoke-tested:
+- P0: malicious `task_id: "../../pwn"` → sanitized to UUID, `/tmp/pwn`
+  never created. Defense-in-depth check rejects `../../escape` and `..`
+  at engine constructor.
+- Bug 2: 5 test cases (summary pair + 3 turns; tool sequences; under
+  budget; no summary; adversarial non-user head). All preserve sticky,
+  end with user head, no orphan tools.
+- Bug 3: 6 test cases — CJK 50k chars within cap, Latin 400k within cap,
+  mixed, small unchanged, exactly-at-cap, the original 20k CJK doubling
+  reproducer (now produces 18k chars, less than input).
+- Bug 4: adjacent forward succeeds; non-adjacent and backward refused
+  without force; both succeed with force; events log `forced: true` flag.
+- Bug 5: pre-met session does NOT auto-advance on first call; real
+  false→true flip DOES advance once; subsequent calls in new phase no-op.
+- Regression: 15 tools, 22 en/zh skills, all v0.5.2 helpers present,
+  offload, autoCommit, renameSession (with new return shape),
+  sub-agent isolation all still work.
+
+### Files changed
+
+| File | Bug | Change |
+|------|-----|--------|
+| `src/agent/tools/agent-tool.js` | P0 | `VALID_TASK_ID` sanitization, auto-UUID on invalid, inputSchema description |
+| `src/agent/engine.js` | P0, 2, 4, 5, kcMaxTokens | scope-escape check in constructor; rewrite `_enforceTokenBudget` (block-unit drops, sticky summary, postcondition cleanup); `_advancePhase({force})`; `_maybeAutoAdvance` edge-trigger w/ `_lastReady` map; task-completion requires `exitCriteriaMet`; `_lastReady` re-prime in `resume()`; `DEFAULT_KC_MAX_TOKENS` const; phase_advance factory forwards `opts`; renameSession returns `{regenerated, disabled, failed}` |
+| `src/agent/tools/phase-advance.js` | 4 | `force: boolean` input; description note about linear ordering |
+| `src/agent/history.js` | 3 | rewrite `_capContent` (CJK-aware iterative truncation); `_charsPerToken` sample-based ratio; `_truncMarker` |
+| `src/agent/scheduler.js` | 6 | `regenerateAllWrappers` returns `{regenerated, disabled, failed}` |
+| `src/cli/index.js` | 6 | surface `scheduleWrappersFailed` count after rename |
+| `src/config.js` | 3, kcMaxTokens | bump `maxMessageTokens` 30000→60000; add `KC_MAX_TOKENS` env override |
+| `package.json` | — | 0.5.2 → 0.5.3 |
+
+---
+
 ## v0.5.2 (2026-04-17)
 
 Bug-fix release from manual testing of v0.5.x on real data. Four bugs fixed,

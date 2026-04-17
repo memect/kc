@@ -240,20 +240,23 @@ export class Scheduler {
    * Regenerate wrapper scripts for all enabled jobs. Used by
    * `engine.renameSession()` (Bug 3) — wrappers bake in absolute paths to
    * the workspace, so a rename needs them re-rendered with the new paths.
-   * @returns {{ regenerated: string[], skipped: string[] }}
+   *
+   * Returns `{ regenerated, disabled, failed }`:
+   *  - `regenerated`: ids of jobs whose wrappers were successfully re-rendered
+   *  - `disabled`: ids of jobs we skipped because they're disabled (no wrapper expected)
+   *  - `failed`: list of `{id, error}` for jobs whose render call threw
+   * Splitting "skipped" into disabled vs failed lets the CLI surface render
+   * failures (e.g. disk full) instead of silently swallowing them.
    */
   regenerateAllWrappers() {
-    const out = { regenerated: [], skipped: [] };
+    const out = { regenerated: [], disabled: [], failed: [] };
     for (const job of this.list()) {
-      if (job.enabled) {
-        try {
-          this.renderWrapper(job);
-          out.regenerated.push(job.id);
-        } catch {
-          out.skipped.push(job.id);
-        }
-      } else {
-        out.skipped.push(job.id);
+      if (!job.enabled) { out.disabled.push(job.id); continue; }
+      try {
+        this.renderWrapper(job);
+        out.regenerated.push(job.id);
+      } catch (e) {
+        out.failed.push({ id: job.id, error: e?.message || String(e) });
       }
     }
     return out;

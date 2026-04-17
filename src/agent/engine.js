@@ -42,6 +42,11 @@ import { ContextWindow } from "./context-window.js";
 import { SessionState } from "./session-state.js";
 import { estimateTokens, estimateMessagesTokens } from "./token-counter.js";
 
+// Default max output tokens for the conductor LLM. SOTA models (GLM-5,
+// Claude Sonnet 4) handle this comfortably. Override via KC_MAX_TOKENS env
+// or kc_max_tokens in the global config.
+const DEFAULT_KC_MAX_TOKENS = 65536;
+
 // Phases where worker LLM tools are available (DISTILL mode)
 const DISTILL_PHASES = new Set([Phase.DISTILLATION, Phase.PRODUCTION_QC]);
 
@@ -96,7 +101,19 @@ export class AgentEngine {
     // (rules/, rule_skills/, workflows/) stay shared.
     let conversationDir, logDir, statePath;
     if (this._isSubagent) {
-      const scopeRoot = path.join(this.workspace.cwd, "sub_agents", subagentScope);
+      // Defense-in-depth: even though agent_tool sanitizes task_id against
+      // VALID_TASK_ID, an attacker reaching engine construction through
+      // another path (e.g. future callers) must not escape the workspace.
+      const scopeRoot = path.resolve(this.workspace.cwd, "sub_agents", subagentScope);
+      const wsRoot = path.resolve(this.workspace.cwd);
+      if (scopeRoot !== wsRoot && !scopeRoot.startsWith(wsRoot + path.sep)) {
+        throw new Error(`sub-agent scope escapes workspace: ${subagentScope}`);
+      }
+      // Also reject the scopeRoot being the workspace root itself, since that
+      // would defeat isolation.
+      if (scopeRoot === wsRoot || scopeRoot === path.resolve(wsRoot, "sub_agents")) {
+        throw new Error(`sub-agent scope must be a unique subfolder, got: ${subagentScope}`);
+      }
       fs.mkdirSync(scopeRoot, { recursive: true });
       conversationDir = path.join(scopeRoot, "conversation");
       logDir = path.join(scopeRoot, "logs");
@@ -119,7 +136,7 @@ export class AgentEngine {
     // Context windowing
     this.contextWindow = new ContextWindow({
       contextLimit: config.kcContextLimit || 200000,
-      reserveForResponse: config.kcMaxTokens || 65536,
+      reserveForResponse: config.kcMaxTokens || DEFAULT_KC_MAX_TOKENS,
     });
 
     // Session state persistence
@@ -150,6 +167,19 @@ export class AgentEngine {
     // Register tools for initial phase
     this.toolRegistry = new ToolRegistry();
     this._registerToolsForPhase(this.currentPhase);
+
+    // Edge-trigger state for _maybeAutoAdvance (Bug 5). Primed at construction
+    // (and at resume) so a session that's already exit-criteria-met when it
+    // boots doesn't auto-advance on the first user turn — only on a fresh
+    // false→true flip.
+    this._lastReady = {};
+    for (const phase of Object.keys(this.pipelines)) {
+      try {
+        this._lastReady[phase] = !!this.pipelines[phase].exitCriteriaMet?.();
+      } catch {
+        this._lastReady[phase] = false;
+      }
+    }
   }
 
   /**
@@ -183,7 +213,7 @@ export class AgentEngine {
         new ArchiveFileTool(this.workspace),
         new ScheduleFetchTool(this.workspace),
         new ReleaseTool(this.workspace, { kcVersion: "0.5.2" }),
-        new PhaseAdvanceTool((to, reason) => this._advancePhase(to, reason)),
+        new PhaseAdvanceTool((to, reason, opts) => this._advancePhase(to, reason, opts)),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
           mineruApiKey: this.config.mineruApiKey,
@@ -300,44 +330,65 @@ export class AgentEngine {
   /**
    * Pre-flight hard ceiling (Bug 1). After windowing, if the message
    * array's total token count still exceeds the model's input budget,
-   * drop oldest non-system messages until under budget. Last-resort
-   * defense against HTTP 400 "context length exceeded".
+   * drop oldest user-bounded blocks until under budget.
    *
-   * Drops complete user→assistant→tool turns to keep message structure
-   * coherent (assistant messages with tool_calls require following tool
-   * messages to be present, per OpenAI/Anthropic contract).
+   * Drops in BLOCK units — a block is `user(N) + everything until the
+   * next user`. This guarantees the head after a drop is always either a
+   * user message or empty, satisfying Anthropic's "first message must use
+   * the user role" requirement and OpenAI's tool-call adjacency rules.
+   *
+   * Treats the compaction summary pair (user with `[Previous conversation
+   * summary]` or `[Context Summary` marker, followed by assistant ack) as
+   * sticky — it represents prior LLM-summarized work and should outlive
+   * any normal turn.
    */
   _enforceTokenBudget(messages) {
     const limit = this.config.kcContextLimit || 200000;
-    const reserve = this.config.kcMaxTokens || 8192;
+    const reserve = this.config.kcMaxTokens || DEFAULT_KC_MAX_TOKENS;
     const budget = limit - reserve;
     let totalTokens = estimateMessagesTokens(messages);
     if (totalTokens <= budget) return messages;
 
-    // Keep the system message (index 0) and any compaction summary pair if
-    // present (those are user+assistant at the start). Drop oldest content
-    // messages first.
-    const systemIdx = messages[0]?.role === "system" ? 1 : 0;
+    // Sticky region: system + (optional summary user + ack assistant)
+    let stickyEnd = messages[0]?.role === "system" ? 1 : 0;
+    const sumMarkers = ["[Previous conversation summary]", "[Context Summary"];
+    const hasSummaryAt = (i) =>
+      messages[i]?.role === "user" &&
+      typeof messages[i].content === "string" &&
+      sumMarkers.some((m) => messages[i].content.startsWith(m));
+    if (hasSummaryAt(stickyEnd)) {
+      stickyEnd++;
+      if (messages[stickyEnd]?.role === "assistant") stickyEnd++;
+    }
+
     let droppedCount = 0;
     let droppedTokens = 0;
 
-    while (totalTokens > budget && messages.length > systemIdx + 1) {
-      const removed = messages.splice(systemIdx, 1)[0];
-      droppedCount++;
-      droppedTokens += estimateTokens(JSON.stringify(removed));
+    // Drop user-bounded blocks. A block starts at messages[stickyEnd]
+    // (expected to be a user message in normal flow) and runs up to (not
+    // including) the next user message — or to the end of array.
+    while (totalTokens > budget && messages.length > stickyEnd) {
+      const blockStart = stickyEnd;
+      let blockEnd = blockStart + 1;
+      while (blockEnd < messages.length && messages[blockEnd].role !== "user") blockEnd++;
+      // If this block goes to end-of-array, there's no following user to anchor
+      // the head — dropping it would leave just [system, (summary)?]. Stop and
+      // let the LLM call attempt; the API will surface a clear error if even
+      // sticky alone is over budget.
+      if (blockEnd === messages.length) break;
+      const removed = messages.splice(blockStart, blockEnd - blockStart);
+      droppedCount += removed.length;
+      droppedTokens += removed.reduce((a, m) => a + estimateTokens(JSON.stringify(m)), 0);
       totalTokens = estimateMessagesTokens(messages);
+    }
 
-      // If we just dropped an assistant message that had tool_calls, also drop
-      // its tool result messages so the structure stays valid.
-      if (removed?.role === "assistant" && Array.isArray(removed.tool_calls) && removed.tool_calls.length > 0) {
-        const ids = new Set(removed.tool_calls.map((tc) => tc.id));
-        while (messages[systemIdx]?.role === "tool" && ids.has(messages[systemIdx].tool_call_id)) {
-          const toolMsg = messages.splice(systemIdx, 1)[0];
-          droppedCount++;
-          droppedTokens += estimateTokens(JSON.stringify(toolMsg));
-        }
-        totalTokens = estimateMessagesTokens(messages);
-      }
+    // Defensive postcondition: head after sticky must be a user message or
+    // the array must end at sticky. Block-drop should make this trivially true,
+    // but if the input was malformed (e.g., already started with a non-user),
+    // clean up here so we never send an Anthropic-invalid sequence.
+    while (messages.length > stickyEnd && messages[stickyEnd].role !== "user") {
+      messages.splice(stickyEnd, 1);
+      droppedCount++;
     }
 
     if (droppedCount > 0) {
@@ -512,6 +563,17 @@ export class AgentEngine {
         }
       }
 
+      // Re-prime _lastReady AFTER importState so it reflects the restored
+      // pipeline milestones, not the empty defaults from constructor.
+      // (Bug 5 fix — without this, resume reignites auto-advance.)
+      for (const phase of Object.keys(engine.pipelines)) {
+        try {
+          engine._lastReady[phase] = !!engine.pipelines[phase].exitCriteriaMet?.();
+        } catch {
+          engine._lastReady[phase] = false;
+        }
+      }
+
       engine.eventLog.append("session_resume", {
         resumedPhase: engine.currentPhase,
         resumedFromSeq: data.lastEventSeq,
@@ -560,7 +622,7 @@ export class AgentEngine {
     // INPUT_DIR, LOG_FILE, so rename invalidates them. The Scheduler is
     // workspace-bound (created on demand inside the schedule_fetch tool), so
     // construct a fresh one against the renamed workspace.
-    let scheduleResult = { regenerated: [], skipped: [] };
+    let scheduleResult = { regenerated: [], disabled: [], failed: [] };
     try {
       const sched = new Scheduler(this.workspace);
       scheduleResult = sched.regenerateAllWrappers();
@@ -573,7 +635,8 @@ export class AgentEngine {
       oldCwd: r.oldCwd,
       newCwd: r.newCwd,
       scheduleWrappersRegenerated: scheduleResult.regenerated,
-      scheduleWrappersSkipped: scheduleResult.skipped,
+      scheduleWrappersDisabled: scheduleResult.disabled,
+      scheduleWrappersFailed: scheduleResult.failed,
     };
   }
 
@@ -755,17 +818,32 @@ export class AgentEngine {
    * (2) post-turn auto-check via _maybeAutoAdvance
    * (3) explicit user request via the phase_advance tool
    *
+   * Reachability: by default only forward-by-one transitions per NEXT_PHASE.
+   * Set `force: true` to allow non-adjacent or backward transitions (e.g. user
+   * explicitly requests a regression for testing). The refusal is logged.
+   *
    * Idempotent — calling with the current phase is a no-op.
    */
-  _advancePhase(nextPhase, reason = "") {
+  _advancePhase(nextPhase, reason = "", { force = false } = {}) {
     if (!nextPhase || nextPhase === this.currentPhase) return false;
 
-    const phaseSummary = `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${reason}`;
+    const expected = NEXT_PHASE[this.currentPhase];
+    if (!force && nextPhase !== expected) {
+      this.eventLog.append("phase_advance_refused", {
+        from: this.currentPhase, to: nextPhase, reason,
+        hint: expected ? `expected next phase is '${expected}' — pass force:true to override`
+                       : `${this.currentPhase} is the terminal phase`,
+      });
+      return false;
+    }
+
+    const phaseSummary = `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${reason}${force && nextPhase !== expected ? " (forced)" : ""}`;
     this._phaseSummaries.push(phaseSummary);
     this.eventLog.append("phase_transition", {
       from: this.currentPhase,
       to: nextPhase,
       reason,
+      forced: force && nextPhase !== expected,
     });
     this.currentPhase = nextPhase;
     this._registerToolsForPhase(this.currentPhase);
@@ -776,20 +854,32 @@ export class AgentEngine {
   }
 
   /**
-   * Bug 4 trigger (1) auto-detect: re-check exit criteria of the current phase
-   * and transition if met. Returns a pipeline_event AgentEvent if a transition
-   * fired, otherwise null.
+   * Bug 4 trigger (1) auto-detect, edge-triggered (Bug 5): only fires on a
+   * fresh false → true flip in `exitCriteriaMet()`. Sessions resumed in an
+   * already-met state do nothing; users iterating in a phase whose criteria
+   * have been met for a while do nothing. Real new evidence is required.
    */
   _maybeAutoAdvance() {
-    const pipeline = this.pipelines[this.currentPhase];
-    if (!pipeline?.exitCriteriaMet?.()) return null;
-    const next = NEXT_PHASE[this.currentPhase];
+    const phase = this.currentPhase;
+    const pipeline = this.pipelines[phase];
+    let nowReady = false;
+    try { nowReady = !!pipeline?.exitCriteriaMet?.(); } catch { nowReady = false; }
+
+    if (!nowReady) {
+      this._lastReady[phase] = false;
+      return null;
+    }
+    // Edge-trigger: nowReady && !wasReady
+    if (this._lastReady[phase]) return null;
+    this._lastReady[phase] = true;
+
+    const next = NEXT_PHASE[phase];
     if (!next) return null;
-    const advanced = this._advancePhase(next, "exit criteria auto-detected");
+    const advanced = this._advancePhase(next, "exit criteria flipped to met");
     if (!advanced) return null;
     return new AgentEvent({
       type: "pipeline_event",
-      data: { type: "phase_ready", nextPhase: next, message: "exit criteria auto-detected" },
+      data: { type: "phase_ready", nextPhase: next, message: "exit criteria flipped to met" },
     });
   }
 
@@ -908,19 +998,24 @@ export class AgentEngine {
         },
       });
 
-      // Bug 4 trigger (2): if all tasks for the current phase are now done,
-      // auto-advance to the next phase before grabbing more pending tasks
-      // (the next-pending check above will then find tasks for the new phase
-      // if _createTasksForPhase added any).
+      // Bug 4 trigger (2): auto-advance when all phase tasks are done AND
+      // the pipeline's exit criteria are also met (Bug 5 fix — task state
+      // alone is a ralph-loop convenience, not authoritative phase signal;
+      // tasks could be marked skipped manually or by an editor).
       if (this._allCurrentPhaseTasksComplete()) {
-        const next = NEXT_PHASE[this.currentPhase];
-        if (next) {
-          const advanced = this._advancePhase(next, "all current-phase tasks completed");
-          if (advanced) {
-            yield new AgentEvent({
-              type: "pipeline_event",
-              data: { type: "phase_ready", nextPhase: next, message: "all current-phase tasks completed" },
-            });
+        const pipeline = this.pipelines[this.currentPhase];
+        let exitMet = false;
+        try { exitMet = !!pipeline?.exitCriteriaMet?.(); } catch { exitMet = false; }
+        if (exitMet) {
+          const next = NEXT_PHASE[this.currentPhase];
+          if (next) {
+            const advanced = this._advancePhase(next, "all current-phase tasks completed + exit criteria met");
+            if (advanced) {
+              yield new AgentEvent({
+                type: "pipeline_event",
+                data: { type: "phase_ready", nextPhase: next, message: "all phase tasks done; exit criteria met" },
+              });
+            }
           }
         }
       }

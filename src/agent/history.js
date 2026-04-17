@@ -82,23 +82,49 @@ export class ConversationHistory {
   }
 
   /**
-   * Cap a single message's content if it exceeds maxMessageTokens. Cuts the middle,
-   * keeps head + tail, leaves a marker pointing at logs/events.jsonl for the full
-   * content (the event log keeps everything via appendFileSync).
+   * Cap a single message's content if it exceeds maxMessageTokens. Cuts the
+   * middle, keeps head + tail, leaves a marker pointing at logs/events.jsonl
+   * for the full content (event log keeps everything via appendFileSync).
+   *
+   * CJK-aware: derives the character budget from a sample-based chars/token
+   * ratio. Latin sample ≈ 4 chars/token, CJK ≈ 0.67 chars/token. Iterative
+   * tightening converges on the cap; clamping prevents accidental doubling
+   * if the heuristic is ever wrong.
    */
   _capContent(content) {
-    if (typeof content !== "string") return content;
-    if (!content) return content;
+    if (typeof content !== "string" || !content) return content;
     const tokens = estimateTokens(content);
     if (tokens <= this._maxMessageTokens) return content;
-    const charBudget = this._maxMessageTokens * 4; // ~4 chars per token (Latin)
-    const head = Math.floor(charBudget * 0.6);
-    const tail = Math.floor(charBudget * 0.3);
-    return (
-      content.slice(0, head) +
-      `\n\n[…truncated, ${tokens} tokens; full content in logs/events.jsonl…]\n\n` +
-      content.slice(-tail)
-    );
+
+    const target = Math.max(100, this._maxMessageTokens - 50); // reserve for marker
+    const ratio = this._charsPerToken(content);
+    let charBudget = Math.max(100, Math.floor(target * ratio));
+
+    for (let i = 0; i < 5; i++) {
+      const head = Math.min(Math.floor(charBudget * 0.6), content.length);
+      const tail = Math.min(Math.floor(charBudget * 0.3), Math.max(0, content.length - head));
+      // If proposed slices would cover the whole input, truncating creates
+      // no savings — return original (the safety-net cap rather doubles than truncates).
+      if (head + tail >= content.length) return content;
+      const result = content.slice(0, head) + this._truncMarker(tokens) + content.slice(-tail);
+      if (estimateTokens(result) <= this._maxMessageTokens) return result;
+      charBudget = Math.floor(charBudget * 0.7);
+    }
+
+    // Last resort after 5 iterations: head only, no tail.
+    const headOnly = Math.min(Math.max(charBudget, 100), content.length);
+    return content.slice(0, headOnly) + this._truncMarker(tokens);
+  }
+
+  /** Sample-based chars-per-token ratio. Inverse of estimateTokens rate. */
+  _charsPerToken(content) {
+    const sample = content.slice(0, 2000);
+    const t = estimateTokens(sample) || 1;
+    return Math.max(0.5, sample.length / t);
+  }
+
+  _truncMarker(originalTokens) {
+    return `\n\n[…truncated, ${originalTokens} tokens; full content in logs/events.jsonl…]\n\n`;
   }
 
   /**
