@@ -42,12 +42,20 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
     ? `${(contextLimit / 1000).toFixed(0)}k`
     : `${contextLimit || 0}`;
 
+  // Soft-threshold hint — shows up before auto-windowing kicks in at ~70%
+  // so users know they can run /compact to reduce context more aggressively
+  // than windowing does. Red hint at 80%+ means it's time to compact NOW.
+  const compactHint = pct >= 80 ? "  · 💾 /compact"
+                     : pct >= 60 ? "  · 💾 建议 /compact"
+                     : "";
+
   return h(Box, { marginTop: 0 },
     h(Text, { dimColor: true }, "  ⏵⏵  KC Agent CLI "),
     h(Text, { dimColor: true }, sessionId ? `[${sessionId}]` : ""),
     phase ? h(Text, { color: "cyan" }, ` ${phase.toUpperCase()}`) : null,
     h(Text, { color: "green" }, "  ●  "),
     h(Text, { color: ctxColor }, `CTX: ${ctxLabel}/${limitLabel} (${pct}%)`),
+    compactHint ? h(Text, { color: ctxColor }, compactHint) : null,
     h(Text, { dimColor: true }, `  · ${LENAT_QUOTE}`),
   );
 }
@@ -112,29 +120,74 @@ export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
 
 // --- Tool block ---
 
-export function ToolBlock({ name, input, output, isError, isRunning }) {
-  const borderColor = isRunning ? "yellow" : isError ? "red" : "green";
+/**
+ * Tool-result block.
+ *
+ * Rendering modes:
+ *   - isRunning       → yellow border, no output (spinner shown elsewhere).
+ *   - isError         → red border, ALWAYS show full output (errors are short + critical).
+ *   - isRecent: true  → green border, show up to ~4 lines + "N lines hidden" footer.
+ *   - isRecent: false → header only (header includes line count + byte count).
+ *
+ * The full output is always on disk in logs/events.jsonl. Keeping the Ink
+ * tree slim is what lets KC handle long sessions without OOM / typing lag.
+ */
+const RECENT_PREVIEW_LINES = 4;
 
+export function ToolBlock({ name, input, output, isError, isRunning, isRecent = true }) {
+  const borderColor = isRunning ? "yellow" : isError ? "red" : "green";
+  const outStr = typeof output === "string" ? output : "";
+  const lines = outStr ? outStr.split("\n") : [];
+  const bytes = outStr.length;
+
+  const header = h(Box, null,
+    h(Text, { color: borderColor }, "┃ "),
+    h(Text, { dimColor: true }, name),
+    input ? h(Text, { dimColor: true }, ` ${JSON.stringify(input).slice(0, 120)}`) : null,
+    outStr && !isRunning
+      ? h(Text, { dimColor: true }, `  (${lines.length} 行 / ${bytes} 字节)`)
+      : null,
+  );
+
+  // Errors: always show in full (short + critical).
+  if (isError && outStr) {
+    return h(Box, { flexDirection: "column", marginLeft: 2 },
+      header,
+      h(Box, { flexDirection: "column" },
+        ...lines.map((line, i) =>
+          h(Box, { key: i },
+            h(Text, { color: "red" }, "┃ "),
+            h(Text, { color: "red" }, line),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Off-screen / not-recent: header only. Full output remains on disk.
+  if (!isRecent || !outStr) {
+    return h(Box, { marginLeft: 2 }, header);
+  }
+
+  // Recent + successful: show preview + truncation footer.
+  const previewLines = lines.slice(0, RECENT_PREVIEW_LINES);
+  const remaining = lines.length - previewLines.length;
   return h(Box, { flexDirection: "column", marginLeft: 2 },
-    h(Box, null,
-      h(Text, { color: borderColor }, "┃ "),
-      h(Text, { dimColor: true }, name),
-      input ? h(Text, { dimColor: true }, ` ${JSON.stringify(input)}`) : null,
-    ),
-    output ? h(Box, { flexDirection: "column" },
-      ...output.split("\n").slice(0, 20).map((line, i) =>
+    header,
+    h(Box, { flexDirection: "column" },
+      ...previewLines.map((line, i) =>
         h(Box, { key: i },
           h(Text, { color: borderColor }, "┃ "),
           h(Text, null, line),
         ),
       ),
-      output.split("\n").length > 20
+      remaining > 0
         ? h(Box, null,
             h(Text, { color: borderColor }, "┃ "),
-            h(Text, { dimColor: true }, `... ${output.split("\n").length - 20} more lines`),
+            h(Text, { dimColor: true }, `… ${remaining} 行已省略（在 logs/events.jsonl 中完整保留）`),
           )
         : null,
-    ) : null,
+    ),
   );
 }
 

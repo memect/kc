@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BaseTool, ToolResult } from "./base.js";
 import { SnapshotTool } from "./snapshot.js";
+import { normalizeRuleCatalog } from "../rule-catalog-normalize.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_DIR = path.resolve(__dirname, "../../../template/release-runtime");
@@ -100,7 +101,7 @@ export class ReleaseTool extends BaseTool {
     let catalog;
     try { catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8")); }
     catch (e) { return new ToolResult(`catalog.json invalid: ${e.message}`, true); }
-    if (!Array.isArray(catalog)) catalog = catalog.rules || [];
+    catalog = normalizeRuleCatalog(catalog);
 
     const includeSet = Array.isArray(input.include) && input.include.length > 0
       ? new Set(input.include) : null;

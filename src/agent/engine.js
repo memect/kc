@@ -4,6 +4,7 @@ import { AgentEvent } from "./events.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { Workspace } from "./workspace.js";
+import { normalizeRuleCatalog } from "./rule-catalog-normalize.js";
 import { VersionManager } from "./version-manager.js";
 import { CornerCaseRegistry } from "./corner-case-registry.js";
 import { ConfidenceScorer } from "./confidence-scorer.js";
@@ -51,7 +52,9 @@ const DEFAULT_KC_MAX_TOKENS = 65536;
 const DISTILL_PHASES = new Set([Phase.DISTILLATION, Phase.PRODUCTION_QC]);
 
 // Linear phase order — used by auto-advance (Bug 4). Last phase has no successor.
-const NEXT_PHASE = {
+// Exported so the TUI's /phase slash command (src/cli/index.js) can call
+// _advancePhase with the right successor without re-declaring the map.
+export const NEXT_PHASE = {
   [Phase.BOOTSTRAP]: Phase.EXTRACTION,
   [Phase.EXTRACTION]: Phase.SKILL_AUTHORING,
   [Phase.SKILL_AUTHORING]: Phase.SKILL_TESTING,
@@ -168,18 +171,16 @@ export class AgentEngine {
     this.toolRegistry = new ToolRegistry();
     this._registerToolsForPhase(this.currentPhase);
 
-    // Edge-trigger state for _maybeAutoAdvance (Bug 5). Primed at construction
-    // (and at resume) so a session that's already exit-criteria-met when it
-    // boots doesn't auto-advance on the first user turn — only on a fresh
-    // false→true flip.
-    this._lastReady = {};
-    for (const phase of Object.keys(this.pipelines)) {
-      try {
-        this._lastReady[phase] = !!this.pipelines[phase].exitCriteriaMet?.();
-      } catch {
-        this._lastReady[phase] = false;
-      }
-    }
+    // Edge-trigger state for _maybeAutoAdvance. Initialize to false for every
+    // phase so the first real false→true flip inside onToolResult triggers an
+    // advance — even when the user launches from a pre-populated workspace
+    // whose exit criteria already happen to be met at boot.
+    // resume() re-primes this from the restored pipeline state (see ~L566),
+    // which is the correct behaviour there: resumed sessions that were already
+    // past this phase shouldn't re-fire.
+    this._lastReady = Object.fromEntries(
+      Object.keys(this.pipelines).map((p) => [p, false]),
+    );
   }
 
   /**
@@ -325,6 +326,47 @@ export class AgentEngine {
       limit,
       percentage: Math.round((totalTokens / limit) * 100),
     };
+  }
+
+  /**
+   * Run the windowing check immediately after a tool result appends to
+   * history. Called from runTurn() so that a large tool result can't sit in
+   * history past the threshold until the next LLM-loop iteration, where a
+   * stream-abort could then trap the context in a bloated state.
+   *
+   * Safe to call frequently — contextWindow.window() fast-paths when under
+   * the trigger fraction.
+   */
+  _maybeWindowAfterToolResult() {
+    if (!this.contextWindow) return;
+    const windowed = this.contextWindow.window(this.history.messages, this._phaseSummaries);
+    if (windowed.wasWindowed) {
+      this.history.messages = windowed.messages;
+      this.eventLog.append("context_windowed", {
+        removed: windowed.removedCount,
+        trigger: "post_tool_result",
+      });
+    }
+
+    // Heap-pressure diagnostic. The TUI has its own virtualization + tool-
+    // output truncation (Bug 3 fixes), so Ink itself should never OOM. If we
+    // still see high heap usage, something else is leaking — log it once per
+    // pressure-crossing so operators can investigate without flooding logs.
+    try {
+      const mem = process.memoryUsage();
+      const frac = mem.heapUsed / (mem.heapTotal || 1);
+      if (frac > 0.80 && !this._memPressureLogged) {
+        this._memPressureLogged = true;
+        this.eventLog.append("memory_pressure", {
+          heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+          heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
+          rssMB: Math.round(mem.rss / 1024 / 1024),
+          historyLength: this.history.messages.length,
+        });
+      } else if (frac < 0.60 && this._memPressureLogged) {
+        this._memPressureLogged = false;  // re-arm for next crossing
+      }
+    } catch { /* process.memoryUsage failures are non-fatal */ }
   }
 
   /**
@@ -785,6 +827,13 @@ export class AgentEngine {
             content: historyContent,
           });
 
+          // Post-tool-result safety net: check for context pressure RIGHT NOW
+          // rather than waiting for the next LLM-loop iteration. A large tool
+          // result that tips history over the threshold used to sit there
+          // until the next turn, and if the stream aborted in between the
+          // user saw "CTX: 210% / stream terminated" with no recovery.
+          this._maybeWindowAfterToolResult();
+
           // Pipeline controller: update state and re-register tools on phase change
           if (pipeline?.onToolResult) {
             const pEvent = pipeline.onToolResult(tc.name, inputData, result);
@@ -928,7 +977,7 @@ export class AgentEngine {
 
     try {
       const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
-      const rules = Array.isArray(catalog) ? catalog : [];
+      const rules = normalizeRuleCatalog(catalog);
       if (rules.length > 0) {
         this.taskManager.createRuleTasks(rules, phase);
       }

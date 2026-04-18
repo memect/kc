@@ -12,10 +12,15 @@ export class ContextWindow {
    * @param {number} [opts.reserveForResponse=8192] - Tokens reserved for model output
    * @param {number} [opts.recentWindowSize=30] - Number of recent messages to always keep
    */
-  constructor({ contextLimit, reserveForResponse = 8192, recentWindowSize = 30 }) {
+  constructor({ contextLimit, reserveForResponse = 8192, recentWindowSize = 30, triggerFraction = 0.70 }) {
     this.contextLimit = contextLimit;
     this.reserveForResponse = reserveForResponse;
     this.recentWindowSize = recentWindowSize;
+    // Fraction of budget that triggers windowing. v0.5.3 used 0.85 which only
+    // fired after runtime was already deep in the danger zone (a subsequent
+    // tool result could tip it over before the next check). 0.70 leaves room
+    // for one more tool result before hitting the hard ceiling.
+    this.triggerFraction = triggerFraction;
   }
 
   /**
@@ -29,7 +34,7 @@ export class ContextWindow {
     const budget = this.contextLimit - this.reserveForResponse;
 
     // If within budget, return as-is
-    if (totalTokens <= budget * 0.85) {
+    if (totalTokens <= budget * this.triggerFraction) {
       return { messages, wasWindowed: false, removedCount: 0 };
     }
 

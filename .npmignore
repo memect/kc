@@ -1,0 +1,31 @@
+# The authoritative allowlist lives in package.json's "files" field
+# (bin/, src/, template/, README.md, QUICKSTART.md). This .npmignore is
+# belt-and-suspenders — even if someone forgets the allowlist, these
+# directories/files must never ship to npm.
+
+archive/
+webfront/
+test_data_1/
+test_data/
+docs/
+.kc_agent/
+.claude/
+.github/
+.git/
+node_modules/
+
+# Dev artifacts
+*.tar.gz
+*.tgz
+*.zip
+*.log
+.DS_Store
+.env
+.env.*
+.vscode/
+.idea/
+
+# Notes & scratch
+DEV_LOG.md
+*.scratch
+TODO*

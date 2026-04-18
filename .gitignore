@@ -3,3 +3,13 @@ node_modules/
 .env
 test_data/review_dashboard.html
 *.log
+
+# Downstream apps, test data, ad-hoc archives — not part of kc core.
+archive/
+
+# Belt-and-suspenders in case someone recreates these at the root.
+webfront/
+test_data_1/
+*.tar.gz
+*.tgz
+*.zip

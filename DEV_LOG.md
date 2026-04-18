@@ -1,5 +1,160 @@
 # KC Agent CLI — Development Log
 
+## v0.5.4 (2026-04-18)
+
+Engine-reliability release driven by a 12-hour rental-contract E2E test of
+v0.5.3 (observations archived under `archive/`). The agent intelligence was
+fine — GLM-5.1 produced 144 real rules, 6 semantic skills, 9 verifier
+iterations — but the **engine around it malfunctioned**: phase stuck on
+`bootstrap` the whole session, ralph-loop never ran a single task, TUI
+OOM-crashed at the 4 GB heap after ~4.5h, and compaction barely fired.
+Five P0 fixes + a user-facing `/phase` slash command.
+
+### Bug 1 — Phase auto-advance stuck on pre-populated workspaces
+
+**Symptom:** launching `kc-beta` from a directory that already had `rules/`
++ `samples/` showed `BOOTSTRAP` in the status bar for the full 12-hour
+session, even as the agent produced substantial extraction / skill /
+workflow artifacts.
+
+**Root cause:** the engine constructor primed `_lastReady[phase]` by calling
+every pipeline's `exitCriteriaMet()`. On pre-populated dirs,
+`ProjectInitializer.exitCriteriaMet()` returned `true` immediately, so
+`_lastReady.bootstrap = true` was stored before any real work. The
+edge-trigger in `_maybeAutoAdvance` then did `if (_lastReady[phase]) return
+null` — never fired for the lifetime of the session.
+
+Fix: initialize `_lastReady[phase] = false` for every phase at construction.
+The edge-trigger now naturally flips on the first real `onToolResult` after
+the user actually does something. `resume()` continues to re-prime from
+restored pipeline state (correct there — don't re-fire on already-met
+phases).
+
+### Bug 2 — `catalog.json` object shape dropped all tasks
+
+**Symptom:** ralph-loop never ran a single task across the 12-hour session;
+TaskManager stayed empty; 0 `task_progress` events.
+
+**Root cause:** `_createTasksForPhase` did `Array.isArray(catalog) ? catalog
+: []`. KC the agent had written `catalog.json` as a meta-index (`{version,
+total_rules, categories, cross_references, files}`) — an object, not an
+array — so `rules` collapsed to `[]` and no tasks were created. Same bug in
+`rule_catalog._load()`. `release.js` alone had the right pattern
+(`catalog.rules || []`) but it was under-applied.
+
+Fix: new `src/agent/rule-catalog-normalize.js` with `normalizeRuleCatalog()`
+that handles four shapes — flat array, `{rules: [...]}`, `{categories: {A:
+[...]}}`, and `{categories: {A: {rules: [...]}}}`. Used at all three
+call-sites. Parallel-ralph-loop (another item from the observations) is
+deferred — tolerance first, architecture second.
+
+### Bug 3 — TUI OOM + typing lag
+
+**Symptom:** Node heap hit 4 GB after ~4.5h and crashed with "Ineffective
+mark-compacts near heap limit." User also reported the terminal became
+progressively laggy long before the crash — typing at the prompt had
+visible delay because Ink was re-rendering a 1000-message tree on every
+keystroke.
+
+Two root causes, one underlying problem: nothing bounded the Ink render
+tree. Every message (up to 20 lines of tool output per block) stayed in
+React state forever.
+
+Fixes modeled on Claude Code's TUI UX:
+- **Virtualize the message list** (`src/cli/index.js`): only render the
+  last 50 messages into the Ink tree. Earlier messages stay in state (for
+  `/compact` to see) but aren't diffed on every render. A single dim hint
+  line — `— 前 N 条消息已折叠，完整记录在 logs/events.jsonl —` — tells
+  the user where the full history lives.
+- **Clear-on-compact**: after a successful `/compact`, reset visible
+  messages to a single summary line rather than keeping the pre-compact
+  scrollback. Matches Claude Code's behavior; immediate freshness + frees
+  Ink tree memory instantly.
+- **Truncate tool output** (`src/cli/components.js` `ToolBlock`): show a
+  one-line header (tool name + line count + byte count) + a 4-line preview
+  with `… N 行已省略` footer. Off-screen tool blocks collapse to header
+  only. Errors always render in full (short and critical). Full output is
+  always on disk in `logs/events.jsonl`.
+- **Heap-pressure diagnostic**: `engine.js` emits a `memory_pressure` event
+  when `heapUsed/heapTotal > 0.80`, so operators see it in the event log
+  if something is still leaking. One event per crossing (re-armed below
+  60%) — no log spam.
+
+### Bug 4 — Compaction fired far too late
+
+**Symptom:** 0 `compact`, 0 `context_windowed` events for the first 12 hours;
+then 944 `context_windowed` after the OOM-driven restart (because the
+loaded history was already at 313k tokens).
+
+Two root causes:
+- `ContextWindow.window()` threshold was `budget * 0.85` — with 200k
+  context / 65k reserve, that's a ~114k-token trigger, already in the
+  danger zone. A single large tool result could tip the context over AND
+  abort the stream before the next iteration's check could window.
+- Windowing only ran at the top of the runTurn LLM-call loop; tool results
+  appended to history mid-turn had no safety net.
+
+Fixes:
+- Lower threshold to `budget * 0.70` (configurable via the new
+  `triggerFraction` option on `ContextWindow`). Trigger now fires at ~94k
+  tokens, leaving 40k of headroom for the next tool result.
+- New `_maybeWindowAfterToolResult()` called immediately after each tool
+  result appends to `history.addRaw(...)`. Emits
+  `context_windowed { trigger: "post_tool_result" }` when it fires.
+- Status bar in `components.js` shows a soft-threshold hint: `💾 建议
+  /compact` at ≥60% budget, color-matching the CTX percentage. Prevents
+  panic at 85% by giving users action 20 points earlier.
+
+### Bug 5 — `rule_catalog` tool rejected the LLM's natural field shape
+
+**Symptom:** 38+ failed `rule_catalog` calls in a single extraction session.
+GLM-5.1 kept sending `{operation: "create", data: {id, source,
+description}}` but the tool required `source_ref`; the error message
+`Missing required fields: id, source_ref, description` didn't tell the
+model which field was actually missing or what was supplied.
+
+Fix:
+- **Field aliases**: `source` / 来源 / `reference` / `ref` → `source_ref`;
+  `desc` / 描述 → `description`; `rule_id` / `ruleId` → `id`. Normalized
+  on ingest in `_create` and `_update`.
+- **Precise errors**: "Missing field 'source_ref' in data. Provided keys:
+  {id, description}. Accepted aliases: source/来源/reference → source_ref,
+  …". Agents self-correct from specific errors.
+- **Helpful "Unknown operation"**: lists valid operations and shows a
+  concrete `{"operation":"create",...}` example. GLM-5.1 had been sending
+  `input: {}` repeatedly without ever learning the right shape.
+
+Deprecating `rule_catalog` in favor of `workspace_file` (another
+observations-doc suggestion) is deferred — the tool has useful CRUD
+semantics and shipping the field-alias fix is enough for v0.5.4.
+
+### Nit 11 — `/phase` slash command
+
+When auto-advance is broken (or for manual debugging), users previously
+had no direct way to move phases — only the LLM could, via the
+`phase_advance` tool. Added `/phase` to the TUI slash handler with three
+subcommands: `/phase` or `/phase status` prints the current phase and its
+auto-next target; `/phase advance` (alias `/phase next`) calls
+`_advancePhase(NEXT_PHASE[current])` forward-by-one; `/phase <name>`
+force-jumps to any phase (for debugging). `NEXT_PHASE` is now exported
+from `engine.js` so the TUI can reach it without redeclaring.
+
+### Model tiers refresh (pre-existing diff picked up with this release)
+
+SiliconFlow tier-1 conductor: `GLM-5` → `GLM-5.1`. VLM tiers migrated
+Qwen2.5-VL → Qwen3-VL (235B / 30B / 8B). Unrelated to the five engine fixes
+but part of the same working tree.
+
+### Out of scope for v0.5.4
+
+Observations Bugs 6 (CTX bar smoothing), 7 (sub-agent isolation evidence),
+8 (stream error events coverage), 9 (sub-agent dedup), 10 (output bloat),
+and Nits 12 (context-limit auto-detect) / 13 (evolution-loop exit
+criteria) are deferred to v0.5.5+. Parallel ralph-loop is an architectural
+change and needs its own RFC.
+
+---
+
 ## v0.5.3 (2026-04-17)
 
 Fix-the-fixes release per fresh ultra-review of v0.5.2. **One P0 security

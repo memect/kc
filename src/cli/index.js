@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { render, Box, Text, useApp, useInput } from "ink";
 import { loadSettings } from "../config.js";
 import { LLMClient } from "../agent/llm-client.js";
-import { AgentEngine } from "../agent/engine.js";
+import { AgentEngine, NEXT_PHASE } from "../agent/engine.js";
 import { Workspace } from "../agent/workspace.js";
 import { ConversationHistory } from "../agent/history.js";
 import { Scheduler } from "../agent/scheduler.js";
@@ -17,6 +17,18 @@ import {
 } from "./components.js";
 
 const h = React.createElement;
+
+// Only the last N messages stay in the Ink render tree. Older messages
+// remain in React state (so /compact can summarize them) but aren't
+// diffed on every keystroke — this is what keeps long sessions responsive
+// and prevents the 4 GB heap OOM observed in the v0.5.3 E2E test.
+// Full conversation is persisted to logs/events.jsonl on every event,
+// so dropping from render is purely visual.
+const VISIBLE_WINDOW = 50;
+
+// How many recent messages render their ToolBlock with full preview.
+// Older ToolBlocks show header only. Both still persist full output to disk.
+const RECENT_TOOL_WINDOW = 10;
 
 /**
  * Main KC Agent CLI App using Ink (React for terminals).
@@ -159,6 +171,7 @@ function App({ engine, config }) {
             "  /help                Show this help\n" +
             "  /status              Show session info, model, phase, workspace\n" +
             "  /tasks               Show task progress\n" +
+            "  /phase [sub]         advance | status | <name> — manual phase override\n" +
             "  /schedule            Show scheduled ingestion jobs and recent log lines\n" +
             "  /clear               Clear conversation history (keep workspace)\n" +
             "  /compact             Summarize older messages to reduce context\n" +
@@ -195,6 +208,55 @@ function App({ engine, config }) {
         });
         return true;
 
+      case "/phase": {
+        // User-driven phase override. Useful when auto-advance fails to fire
+        // or when debugging. Subcommands:
+        //   /phase                 → current phase (alias: /phase status)
+        //   /phase advance | next  → move to NEXT_PHASE[current]
+        //   /phase <name>          → force-jump to any phase (forward or back)
+        const engine = engineRef.current;
+        const sub = (parts[1] || "").toLowerCase();
+
+        if (!sub || sub === "status") {
+          const next = NEXT_PHASE[engine.currentPhase];
+          addMessage({
+            role: "system",
+            content:
+              `Current phase: ${engine.currentPhase.toUpperCase()}` +
+              (next ? `  (next auto: ${next})` : "  (final phase)"),
+          });
+          return true;
+        }
+
+        if (sub === "advance" || sub === "next") {
+          const next = NEXT_PHASE[engine.currentPhase];
+          if (!next) {
+            addMessage({ role: "system", content: `Already in final phase (${engine.currentPhase}).` });
+            return true;
+          }
+          const ok = engine._advancePhase(next, "manual /phase advance");
+          addMessage({
+            role: "system",
+            content: ok
+              ? `→ phase advanced to ${next.toUpperCase()}.`
+              : `Failed to advance from ${engine.currentPhase}.`,
+          });
+          updateContextStats();
+          return true;
+        }
+
+        // /phase <name> — force-jump. Uses {force:true} to allow backward jumps.
+        const ok = engine._advancePhase(sub, "manual /phase <name>", { force: true });
+        addMessage({
+          role: "system",
+          content: ok
+            ? `→ phase set to ${sub.toUpperCase()}.`
+            : `Unknown phase: ${sub}. Valid: bootstrap, extraction, skill_authoring, skill_testing, distillation, production_qc`,
+        });
+        updateContextStats();
+        return true;
+      }
+
       case "/schedule": {
         const sched = new Scheduler(engineRef.current.workspace);
         const jobs = sched.list();
@@ -228,15 +290,22 @@ function App({ engine, config }) {
 
       case "/compact": {
         addMessage({ role: "system", content: "Compacting conversation history..." });
-        // Run compact asynchronously
         (async () => {
           try {
             const result = await engineRef.current.compact();
             if (result) {
-              addMessage({
+              // Claude Code pattern: after successful compact, clear the
+              // visible TUI messages and start fresh with a single summary
+              // line. The underlying engine.history already contains the
+              // compact-summary message pair; the TUI doesn't need to keep
+              // showing the pre-compact history (it's on disk in
+              // logs/events.jsonl anyway) and clearing it immediately frees
+              // Ink render-tree memory — fixing the lag that builds up over
+              // long sessions.
+              setMessages([{
                 role: "system",
-                content: `Compacted: removed ${result.removedCount} messages, kept ${result.retainedCount}. Summary: ~${result.summaryTokens} tokens.`,
-              });
+                content: `✓ 上下文已压缩：合并了 ${result.removedCount} 条早期消息（摘要约 ${result.summaryTokens} tokens，保留最近 ${result.retainedCount} 条）`,
+              }]);
             } else {
               addMessage({ role: "system", content: "Nothing to compact (conversation is short enough)." });
             }
@@ -392,31 +461,41 @@ function App({ engine, config }) {
     // Task dashboard (ralph-loop)
     taskList.length > 0 ? h(TaskDashboard, { tasks: taskList, progress: taskProgress }) : null,
 
-    // Message history
-    ...messages.map((msg, i) => {
+    // Message history (virtualized — only last VISIBLE_WINDOW render).
+    // Hidden-count hint for earlier messages, so users know the full
+    // history still exists (on disk) even though the TUI is slim.
+    messages.length > VISIBLE_WINDOW ? h(Box, { key: "hidden-hint" },
+      h(Text, { dimColor: true },
+        `— 前 ${messages.length - VISIBLE_WINDOW} 条消息已折叠，完整记录在 logs/events.jsonl —`),
+    ) : null,
+    ...messages.slice(-VISIBLE_WINDOW).map((msg, i, arr) => {
+      // Global index (for stable React keys) vs visible index (for isRecent).
+      const globalIdx = messages.length - arr.length + i;
+      const visibleIdx = arr.length - 1 - i;  // 0 = most recent
       if (msg.role === "user") {
-        return h(Box, { key: `msg-${i}` },
+        return h(Box, { key: `msg-${globalIdx}` },
           h(Text, { dimColor: true }, "❯ "),
           h(Text, null, msg.content),
         );
       }
       if (msg.role === "agent") {
-        return h(Box, { key: `msg-${i}` },
+        return h(Box, { key: `msg-${globalIdx}` },
           h(Text, null, msg.content),
         );
       }
       if (msg.role === "tool") {
         return h(ToolBlock, {
-          key: `msg-${i}`,
+          key: `msg-${globalIdx}`,
           name: msg.toolName,
           input: msg.toolInput,
           output: msg.toolOutput,
           isError: msg.toolIsError,
           isRunning: false,
+          isRecent: visibleIdx < RECENT_TOOL_WINDOW,
         });
       }
       if (msg.role === "system") {
-        return h(Box, { key: `msg-${i}` },
+        return h(Box, { key: `msg-${globalIdx}` },
           h(Text, { dimColor: true }, msg.content),
         );
       }
