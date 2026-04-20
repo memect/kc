@@ -1,5 +1,163 @@
 # KC Agent CLI — Development Log
 
+## v0.5.5 (2026-04-20)
+
+Post-v0.5.4 followup release. Four small bug fixes from an ultra-review pass
+(race conditions / API-shape mismatches that would have surfaced on long
+sessions) plus one new provider — **iFlytek Astro (xfyun) coding plan** — and
+onboarding UX fixes that came out of actually configuring the new provider.
+
+Background context: v0.5.4 itself had been published to npm for 2 days but
+the user's machine had never run `npm install -g` since v0.3.2, so all of
+v0.4.0 through v0.5.4 were technically shipped but never field-tested. The
+v0.5.5 window is the first real trial of the hardening in those releases —
+hence the cluster of small fixes found by the ultra-review on top.
+
+### Bug 1 — `_maybeWindowAfterToolResult` wrote a read-only getter
+
+`engine.js:344` was `this.history.messages = windowed.messages`. But
+`ConversationHistory.messages` is a getter-only property (backed by
+`_messages`); assigning to it is a silent no-op under strict mode and raises
+in non-strict. Either way the windowed state was never persisted, so the
+post-tool-result windowing fix from v0.5.4 (C.4.b) was half-working: it
+correctly computed the windowed slice and emitted the `context_windowed`
+event, but `this.history._messages` was never updated and `_save()` was
+never called. Next turn's windowing had to redo the same work.
+
+Fix: write `this.history._messages = windowed.messages` and call
+`this.history._save()`, matching the pattern `compact()` already used.
+
+### Bug 2 — context window could yield an orphan `tool` message
+
+`context-window.js:41` sliced `messages.slice(splitPoint, ...)` at a
+fixed offset from the end without checking the role at the boundary. If
+the split landed on a `tool` row (tool-result), the recent slice started
+with an orphan tool message — its `tool_call_id` references an assistant
+`tool_calls` entry that had just been compressed into the summary. The
+LLM provider rejects the request:
+- OpenAI: "Messages with role 'tool' must be a response to a preceding
+  message with 'tool_calls'."
+- Anthropic: unpaired `tool_use` / `tool_result` blocks.
+
+Reproduced during the E2E #3 opening turns where the tool-call density
+is high (KC explores the workspace aggressively in the first few minutes).
+
+Fix: walk `splitPoint` forward while `messages[splitPoint].role === "tool"`.
+Ensures the recent window always starts on a turn boundary.
+
+### Bug 3 — `/phase <name>` could corrupt engine state on typos
+
+`cli/index.js` `handleSlashCommand` passed any string as a force-jump to
+`_advancePhase(sub, "...", {force:true})`. With `force:true` the engine
+accepts any string — including typos like `/phase ditillation` — and mutates
+`currentPhase` to the bad value. The TUI then shows the wrong phase in its
+status bar and the next pipeline lookup returns `undefined`.
+
+Also missing: after a successful `/phase advance`, React state for `phase`
+wasn't updated, so the status bar still showed the OLD phase until some
+unrelated event (like a context-stats refresh) happened to re-render.
+
+Fix: whitelist valid phase names against `Object.keys(engine.pipelines)`
+before calling `_advancePhase`, and `setPhase(engine.currentPhase)` on
+success so the TUI status bar refreshes immediately.
+
+### Bug 4 — `/compact` race with concurrent user input
+
+`cli/index.js` fired `compact()` async but left `InputPrompt` active
+(`isActive: !streaming` and `streaming` stayed `false`). If the user typed
+another message during the 5-20s compact window, it routed into
+`runTurn → history.addUser(...)`, appending to `_messages`. When compact
+resolved it overwrote `_messages` with `[summary, ack, ...recentMessages]`,
+silently dropping the concurrent user turn.
+
+Fix: set `streaming = true` + spinner status before firing compact; clear
+in `finally`; drain `queueRef` afterwards. Same pattern as normal LLM
+streaming.
+
+### New provider — iFlytek Astro (xfyun) coding plan
+
+Added as a standard OpenAI-compatible provider in `src/providers.js` with
+a single curated model (`astron-code-latest`) and no VLM/OCR offering.
+Appears as provider #4 in the onboarding picker (zh label:
+"科大讯飞 Astro 编程套餐（单模型）"; en: "iFlytek XfYun Astro (coding plan,
+single-model)"). Entry in `src/model-tiers.json` marks it tier1-only.
+
+Bearer auth with the provider's `ID:SECRET` composite key format —
+nothing special, just passed through as the bearer token. Tested against
+the E2E #3 run with KC-as-conductor on xfyun + SiliconFlow as worker
+(Worker LLM split, see below).
+
+### Onboarding UX fixes
+
+Found while re-configuring kc-beta to run the new provider:
+
+1. **Worker-provider prompted BEFORE tiers.** Previously the order was
+   conductor → tier1-4 → VLM tier1-3 → worker provider. For single-model
+   conductors (like xfyun astron-code-latest) the tier defaults came from
+   the conductor, so the user saw `TIER1 [astron-code-latest]` defaults
+   for worker tiers — wrong if the worker was going to be a different
+   provider. Now: conductor → worker provider → tiers (defaulting from
+   whichever provider ends up worker).
+
+2. **Worker-key prompt shows masked existing key.** Matches the main-key
+   prompt style (`API 密钥 (Worker) (sk-vmv...vyiq) (回车保留当前密钥)`).
+   Previously no mask was displayed, so users couldn't confirm a key was
+   already saved.
+
+3. **"Keep existing key" guarded against provider change.** Both main
+   and worker prompts: if the user picks a different provider than the
+   one the saved key belongs to, the mask clears and the prompt forces
+   an explicit paste. Previously an accidental Enter after switching
+   providers would save the OLD provider's key against the NEW provider's
+   base URL — silent authentication breakage.
+
+### Files changed
+
+```
+ src/agent/context-window.js | 14 ++++++-
+ src/agent/engine.js         |  5 ++-
+ src/cli/index.js            | 36 ++++++++++++++++-
+ src/cli/onboard.js          | 94 ++++++++++++++++++++++++++++-----------------
+ src/model-tiers.json        | 16 ++++++++
+ src/providers.js            | 23 +++++++++++
+```
+
+---
+
+## Post-v0.5.4 prep — E2E Test #2 corpus (2026-04-18)
+
+No code changes. Spent the afternoon assembling the corpus for the second
+end-to-end test — a production-grade 托管定期报告核对 scenario driven by the two
+Dec-2025 NFRA regs (《银行保险机构资产管理产品信息披露管理办法》 +
+《商业银行托管业务监督管理办法（试行）》) and the 文因互联 article describing
+the business pain.
+
+Deliverables, all under `archive/test_data_2/` (gitignored, never shipped):
+
+- **10 regulations** sourced from 中国政府网 / NFRA / 国务院公报 — 2 core 2025 NFRA
+  regs + 资管新规 + 4 银行理财侧 + 3 保险资管侧 supporting regulations (~317 KB total).
+- **9 real sample pairs** from 工行 托管业务 (`samples/public_fund/`) organized by
+  fund type: 1 货币市场基金 + 5 混合类 + 3 权益类. Each pair = `(定期报告, 估值数据)`
+  where the docx is the published 基金管理人报告 and the xlsx is 工行估值系统的 XBRL-format
+  真值数据. This is exactly the cross-reference 核对 task the article describes.
+- **4 `.doc` → `.docx` conversions** via `textutil` so KC's `document-parse` walks
+  one code path. Originals preserved as `.doc.orig`.
+- **10 synthetic violation samples** (`violations/V01`–`V10`) each with one planted
+  compliance issue mapped to a specific article of the 2025 信披办法 (保本保收益,
+  业绩基准调整未披露, 穿透后前十缺失, 7日年化缺失, 选择性披露, 关联交易省略,
+  年报缺审计, 基准免责声明缺失, 摊余成本法风险缺失, 不可比业绩比较). Answer key in
+  `violations/notes.md` lets us compute TP/FP rates on detection without manual review.
+
+Full test plan at `/Users/mac/.claude/plans/please-read-the-project-swift-rossum.md`.
+The 12-hour KC run is the next task; its output (rules extracted, skills built,
+release bundle, any engine regressions) will drive the next DEV_LOG entry.
+
+**Pending from user**: real 银行理财 / 保险资管 sample reports (the 工行 batch is
+all 公募基金, which is still in scope for 托管人 responsibility per the 2025 托管业务办法
+§3, but it's worth having NFRA-regulated samples too).
+
+---
+
 ## v0.5.4 (2026-04-18)
 
 Engine-reliability release driven by a 12-hour rental-contract E2E test of

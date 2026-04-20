@@ -46,6 +46,22 @@
     }
   },
 
+  "xfyun": {
+    "_comment": "iFlytek Astro coding plan exposes only astron-code-latest; no VLM.",
+    "conductor": "astron-code-latest",
+    "llm": {
+      "tier1": "astron-code-latest",
+      "tier2": "",
+      "tier3": "",
+      "tier4": ""
+    },
+    "vlm": {
+      "tier1": "",
+      "tier2": "",
+      "tier3": ""
+    }
+  },
+
   "anthropic": {
     "conductor": "claude-sonnet-4-20250514",
     "llm": {

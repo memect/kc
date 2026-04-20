@@ -38,8 +38,18 @@ export class ContextWindow {
       return { messages, wasWindowed: false, removedCount: 0 };
     }
 
-    // Split into older and recent
-    const splitPoint = Math.max(0, messages.length - this.recentWindowSize);
+    // Split into older and recent. The recent slice is fed directly to the
+    // LLM, so it must not begin with an orphan "tool" message — those carry a
+    // tool_call_id that references an assistant `tool_calls` entry, and if
+    // that assistant message ended up in the compressed older slice the
+    // provider rejects the request (OpenAI: "tool messages must follow an
+    // assistant with tool_calls"; Anthropic: unpaired tool_use/tool_result).
+    // Walk the split point forward past any leading tool rows so the recent
+    // window always starts on a turn boundary.
+    let splitPoint = Math.max(0, messages.length - this.recentWindowSize);
+    while (splitPoint < messages.length && messages[splitPoint]?.role === "tool") {
+      splitPoint++;
+    }
     const recentMessages = messages.slice(splitPoint);
     const olderMessages = messages.slice(0, splitPoint);
 

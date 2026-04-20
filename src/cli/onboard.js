@@ -171,13 +171,19 @@ export async function onboard() {
   }
 
   // --- API Key ---
-  const maskedExisting = existing.api_key ? existing.api_key.slice(0, 6) + "..." + existing.api_key.slice(-4) : "";
+  // Only offer to "keep" an existing key when the user hasn't switched
+  // providers. Otherwise an accidental Enter would silently save the OLD
+  // provider's key against the NEW provider's base URL — silent breakage.
+  const keyIsForSameProvider = existing.provider === provider.id;
+  const maskedExisting = keyIsForSameProvider && existing.api_key
+    ? existing.api_key.slice(0, 6) + "..." + existing.api_key.slice(-4)
+    : "";
   const keyHint = maskedExisting ? t.apiKeyKeep : t.apiKeyRequired;
   const keyPrompt = maskedExisting
     ? `  ${CYAN}${t.apiKey}${RESET} ${DIM}(${maskedExisting})${RESET}`
     : `  ${CYAN}${t.apiKey}${RESET} ${YELLOW}(${t.apiKeyRequired})${RESET}`;
   const apiKey = await ask(rl, keyPrompt, "", keyHint);
-  const finalKey = apiKey || existing.api_key || "";
+  const finalKey = apiKey || (keyIsForSameProvider ? existing.api_key : "") || "";
   if (!finalKey) { console.log(`  ${RED}${t.apiKeyMissing}${RESET}`); rl.close(); process.exit(1); }
   console.log();
 
@@ -245,34 +251,12 @@ export async function onboard() {
   );
   console.log();
 
-  // --- Worker LLM tiers ---
-  console.log(`  ${CYAN}${t.workerTiers}${RESET} ${DIM}(${t.tierHint})${RESET}`);
-  const tiers = {};
-  for (const tier of ["tier1", "tier2", "tier3", "tier4"]) {
-    const def = suggestedTiers?.[tier] || provider.defaultTiers[tier] || existing?.tiers?.[tier] || "";
-    tiers[tier] = await ask(
-      rl,
-      `    ${tier.toUpperCase()}`,
-      def,
-      t.discoveryAccept ? "" : "",
-    );
-  }
-  console.log();
-
-  // --- VLM tiers (vision/OCR) ---
-  console.log(`  ${CYAN}${t.vlmTiers}${RESET} ${DIM}(${t.tierHint})${RESET}`);
-  const vlmTiers = {};
-  for (const tier of ["tier1", "tier2", "tier3"]) {
-    const def = provider.defaultVlm?.[tier] || existing?.vlm_tiers?.[tier] || "";
-    vlmTiers[tier] = await ask(
-      rl,
-      `    ${tier.toUpperCase()}`,
-      def,
-    );
-  }
-  console.log();
-
   // --- Worker LLM provider (optional) ---
+  // Ask worker-provider BEFORE tier prompts so that when worker differs from
+  // conductor (e.g. conductor=xfyun single-model, worker=siliconflow) the
+  // tier-default suggestions come from the WORKER provider's model-tiers.json
+  // entry, not the conductor's. Previous ordering defaulted tiers from the
+  // conductor and produced nonsensical defaults for single-model conductors.
   console.log(`  ${CYAN}${t.workerConfig}${RESET}`);
   const sameProvider = await ask(rl, `  ${t.workerSameProvider}`, "Y", t.yesNo);
   let workerProvider = "";
@@ -280,6 +264,7 @@ export async function onboard() {
   let workerBaseUrl = "";
   let workerAuthType = "";
   let workerApiFormat = "";
+  let tierProviderDef = provider;  // where tier defaults come from
 
   if (sameProvider.toLowerCase() === "n" || sameProvider.toLowerCase() === "no") {
     // Pick a different provider for workers
@@ -294,21 +279,58 @@ export async function onboard() {
     workerAuthType = wp.authType;
     workerApiFormat = wp.apiFormat;
     workerBaseUrl = wp.baseUrl;
+    tierProviderDef = wp;
 
     if (wp.id === "custom") {
       workerBaseUrl = await ask(rl, `  ${t.baseUrl}`, existing.worker_base_url || "");
     }
 
-    // Worker API key
-    const wMasked = existing.worker_api_key ? existing.worker_api_key.slice(0, 6) + "..." + existing.worker_api_key.slice(-4) : "";
+    // Worker API key. Show masked existing key in the prompt (matches the
+    // main-provider prompt style) so the user can confirm what's saved
+    // without guessing. Like the main key, only offer to "keep" the existing
+    // value if the WORKER provider itself hasn't changed — otherwise Enter
+    // would silently carry the previous worker provider's key across.
+    const workerKeyIsForSameProvider = existing.worker_provider === wp.id;
+    const wMasked = workerKeyIsForSameProvider && existing.worker_api_key
+      ? existing.worker_api_key.slice(0, 6) + "..." + existing.worker_api_key.slice(-4)
+      : "";
     const wKeyHint = wMasked ? t.apiKeyKeep : t.apiKeyRequired;
-    workerApiKey = await ask(
+    const wKeyPrompt = wMasked
+      ? `  ${CYAN}${t.apiKey} (Worker)${RESET} ${DIM}(${wMasked})${RESET}`
+      : `  ${CYAN}${t.apiKey} (Worker)${RESET} ${YELLOW}(${t.apiKeyRequired})${RESET}`;
+    workerApiKey = await ask(rl, wKeyPrompt, "", wKeyHint);
+    workerApiKey = workerApiKey || (workerKeyIsForSameProvider ? existing.worker_api_key : "") || "";
+  }
+  console.log();
+
+  // --- Worker LLM tiers (defaults come from tierProviderDef set above) ---
+  // When worker==conductor, these default from the conductor's model-tiers.json
+  // entry. When worker is a separate provider, they default from the WORKER
+  // provider's entry — so e.g. siliconflow's GLM-5.1 tier1 defaults apply.
+  console.log(`  ${CYAN}${t.workerTiers}${RESET} ${DIM}(${t.tierHint})${RESET}`);
+  const tiers = {};
+  const tierSuggested = tierProviderDef.id === provider.id ? suggestedTiers : null;
+  for (const tier of ["tier1", "tier2", "tier3", "tier4"]) {
+    const def = tierSuggested?.[tier] || tierProviderDef.defaultTiers?.[tier] || existing?.tiers?.[tier] || "";
+    tiers[tier] = await ask(
       rl,
-      `  ${CYAN}${t.apiKey} (Worker)${RESET}`,
-      "",
-      wKeyHint,
+      `    ${tier.toUpperCase()}`,
+      def,
+      t.discoveryAccept ? "" : "",
     );
-    workerApiKey = workerApiKey || existing.worker_api_key || "";
+  }
+  console.log();
+
+  // --- VLM tiers (vision/OCR) — also from worker provider when split ---
+  console.log(`  ${CYAN}${t.vlmTiers}${RESET} ${DIM}(${t.tierHint})${RESET}`);
+  const vlmTiers = {};
+  for (const tier of ["tier1", "tier2", "tier3"]) {
+    const def = tierProviderDef.defaultVlm?.[tier] || existing?.vlm_tiers?.[tier] || "";
+    vlmTiers[tier] = await ask(
+      rl,
+      `    ${tier.toUpperCase()}`,
+      def,
+    );
   }
   console.log();
 

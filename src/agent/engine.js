@@ -341,7 +341,10 @@ export class AgentEngine {
     if (!this.contextWindow) return;
     const windowed = this.contextWindow.window(this.history.messages, this._phaseSummaries);
     if (windowed.wasWindowed) {
-      this.history.messages = windowed.messages;
+      // `messages` is a getter-only property on ConversationHistory; write the
+      // backing field and persist (same pattern as compact()).
+      this.history._messages = windowed.messages;
+      this.history._save();
       this.eventLog.append("context_windowed", {
         removed: windowed.removedCount,
         trigger: "post_tool_result",

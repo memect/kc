@@ -99,6 +99,27 @@ const PROVIDERS = [
     },
   },
   {
+    id: "xfyun",
+    name: "XfYun Astro",
+    // iFlytek Astro coding plan — OpenAI-compatible endpoint. Only exposes
+    // a single model (astron-code-latest) today, so no /models discovery and
+    // the tier assignment in model-tiers.json only fills tier1 / conductor.
+    baseUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+    authType: "bearer",
+    apiFormat: "openai",
+    modelsEndpoint: null,
+    defaultModel: getTierConfig("xfyun").conductor || "astron-code-latest",
+    defaultTiers: getTierConfig("xfyun").llm,
+    defaultVlm: getTierConfig("xfyun").vlm,
+    curatedModels: [
+      { id: "astron-code-latest", ownedBy: "iflytek" },
+    ],
+    labels: {
+      en: "iFlytek XfYun Astro (coding plan, single-model)",
+      zh: "科大讯飞 Astro 编程套餐（单模型）",
+    },
+  },
+  {
     id: "anthropic",
     name: "Anthropic",
     baseUrl: "https://api.anthropic.com",
@@ -244,6 +265,8 @@ const MODEL_RANKING = {
   // Others
   "kimi-k2.5": 85,
   "kimi-k2": 80,
+  // iFlytek Astro
+  "astron-code": 90,
   "minimax-m2": 80,
   "deepseek-v3": 85,
   "deepseek-r1": 90,

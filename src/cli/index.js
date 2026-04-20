@@ -235,6 +235,7 @@ function App({ engine, config }) {
             return true;
           }
           const ok = engine._advancePhase(next, "manual /phase advance");
+          if (ok) setPhase(engine.currentPhase);
           addMessage({
             role: "system",
             content: ok
@@ -246,12 +247,28 @@ function App({ engine, config }) {
         }
 
         // /phase <name> — force-jump. Uses {force:true} to allow backward jumps.
+        // Whitelist against known phases first so an unknown name doesn't
+        // silently corrupt engine state (_advancePhase with {force:true}
+        // would otherwise accept any string and mutate currentPhase).
+        const validPhases = Object.keys(engine.pipelines);
+        if (!validPhases.includes(sub)) {
+          addMessage({
+            role: "system",
+            content: `Unknown phase: ${sub}. Valid: ${validPhases.join(", ")}`,
+          });
+          return true;
+        }
+        if (sub === engine.currentPhase) {
+          addMessage({ role: "system", content: `Already in phase ${sub.toUpperCase()}.` });
+          return true;
+        }
         const ok = engine._advancePhase(sub, "manual /phase <name>", { force: true });
+        if (ok) setPhase(engine.currentPhase);
         addMessage({
           role: "system",
           content: ok
             ? `→ phase set to ${sub.toUpperCase()}.`
-            : `Unknown phase: ${sub}. Valid: bootstrap, extraction, skill_authoring, skill_testing, distillation, production_qc`,
+            : `Failed to set phase to ${sub}.`,
         });
         updateContextStats();
         return true;
@@ -290,6 +307,15 @@ function App({ engine, config }) {
 
       case "/compact": {
         addMessage({ role: "system", content: "Compacting conversation history..." });
+        // Gate the prompt while compact() is in flight. Without this,
+        // InputPrompt stays active (isActive: !streaming) and a concurrent
+        // user submission routes into runTurn → history.addUser(...), which
+        // appends to _messages AFTER compact()'s pre-await snapshot. When
+        // compact resolves it overwrites _messages with [summary, ack,
+        // ...recentMessages] and silently drops the concurrent turn.
+        streamingRef.current = true;
+        setStreaming(true);
+        setSpinnerStatus("Compacting...");
         (async () => {
           try {
             const result = await engineRef.current.compact();
@@ -312,6 +338,14 @@ function App({ engine, config }) {
             updateContextStats();
           } catch (err) {
             addMessage({ role: "system", content: `Compact failed: ${err.message}` });
+          } finally {
+            streamingRef.current = false;
+            setStreaming(false);
+            setSpinnerStatus(null);
+            if (queueRef.current.length > 0) {
+              const next = queueRef.current.shift();
+              runTurn(next);
+            }
           }
         })();
         return true;
