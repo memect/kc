@@ -77,14 +77,20 @@ const PROVIDERS = [
   {
     id: "volcanocloud",
     name: "VolcanoCloud",
+    // Regular Ark API — serves doubao / deepseek / glm-4-7-251222.
+    // Coding plan uses api/coding/v3 and serves glm-5.1 (aliased to glm-4.7
+    // server-side, thinking model).
     baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    codingPlanUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
     authType: "bearer",
     apiFormat: "openai",
-    modelsEndpoint: null, // VolcanoCloud coding plan — use curated list
+    modelsEndpoint: null, // VolcanoCloud — use curated list
+    supportsCodingPlanKey: true,
     defaultModel: getTierConfig("volcanocloud").conductor || "doubao-seed-2-0-pro-260215",
     defaultTiers: getTierConfig("volcanocloud").llm,
     defaultVlm: getTierConfig("volcanocloud").vlm,
     curatedModels: [
+      { id: "glm-5.1", ownedBy: "zhipu" },
       { id: "doubao-seed-2-0-pro-260215", ownedBy: "bytedance" },
       { id: "deepseek-v3-2-251201", ownedBy: "deepseek" },
       { id: "glm-4-7-251222", ownedBy: "zhipu" },
@@ -259,6 +265,7 @@ const MODEL_RANKING = {
   "qwen3.5-122b": 75,
   "qwen3.5-35b": 65,
   // Zhipu
+  "glm-5.1": 92,
   "glm-5": 90,
   "glm-4.7": 80,
   "glm-4": 75,

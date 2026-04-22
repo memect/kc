@@ -1,5 +1,51 @@
 # KC Agent CLI — Development Log
 
+## v0.5.6 (2026-04-22)
+
+Small provider-focused release. Wires up **VolcanoCloud's new coding plan**
+(`api/coding/v3`, serving `glm-5.1`) as a first-class option alongside the
+existing regular-plan Ark endpoint (`api/v3`, doubao/deepseek/glm-4-7).
+Shipped on its own because VolcanoCloud is now the team's primary engine —
+doesn't wait for the rest of the v0.5.6 patch list in `update_design_v5.md`.
+
+### VolcanoCloud coding plan support
+
+Same dual-key pattern already used by Aliyun: a single provider entry
+exposes both the regular base URL and a coding-plan URL, and the onboard
+flow asks which key type you're using. No cross-talk with `.env` —
+credentials live in `~/.kc_agent/config.json` as usual, keeping onboarding
+the one source of truth.
+
+**`src/providers.js` — volcanocloud entry:**
+- Added `codingPlanUrl: "https://ark.cn-beijing.volces.com/api/coding/v3"`.
+- Added `supportsCodingPlanKey: true` so the onboard flow presents the
+  "regular key / coding-plan key" choice.
+- Added `{ id: "glm-5.1", ownedBy: "zhipu" }` at the top of
+  `curatedModels` (coding plan aliases `glm-5.1` to GLM-4.7 server-side —
+  a thinking model that streams `reasoning_content` deltas before regular
+  `content`; KC's SSE parser silently drops the reasoning trace, which is
+  functionally fine but will need a surfacing fix if we want the think
+  trace visible in the TUI later).
+- Added `"glm-5.1": 92` to `MODEL_RANKING` (above glm-5's 90) so the
+  auto-classifier places it in tier1.
+
+**`src/model-tiers.json` — volcanocloud section:**
+- `conductor` → `glm-5.1`.
+- `tier1` list now leads with `glm-5.1` and keeps the existing
+  doubao/deepseek entries behind it for regular-plan users.
+- Added a `_comment` line noting that coding-plan users get `glm-5.1`
+  and regular-plan users should pick doubao/deepseek at onboard time.
+
+**Usage:** `kc-beta onboard` → VolcanoCloud → pick "编程套餐专用 API Key"
+(choice 2) → paste the `ark-...` key. Writes the coding-plan URL +
+`glm-5.1` model into `~/.kc_agent/config.json`. Verified end-to-end
+against the live endpoint — non-stream + SSE stream both work; response
+reports `model: glm-4.7` per server-side alias.
+
+**Size:** ~10 lines across 2 files. No engine, TUI, or llm-client changes.
+
+---
+
 ## v0.5.5 (2026-04-20)
 
 Post-v0.5.4 followup release. Four small bug fixes from an ultra-review pass

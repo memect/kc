@@ -32,9 +32,10 @@
   },
 
   "volcanocloud": {
-    "conductor": "doubao-seed-2-0-pro-260215",
+    "_comment": "Coding plan (api/coding/v3) serves glm-5.1 only. Regular plan (api/v3) serves doubao/deepseek/glm-4-7. Pick conductor per the plan you onboarded.",
+    "conductor": "glm-5.1",
     "llm": {
-      "tier1": "doubao-seed-2-0-pro-260215, deepseek-v3-2-251201",
+      "tier1": "glm-5.1, doubao-seed-2-0-pro-260215, deepseek-v3-2-251201",
       "tier2": "glm-4-7-251222, doubao-1-5-pro-32k-250115",
       "tier3": "doubao-seed-2-0-mini-260215",
       "tier4": "doubao-seed-2-0-lite-260215, doubao-1-5-lite-32k-250115"
