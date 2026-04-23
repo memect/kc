@@ -5,6 +5,46 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SKILLS_DIR = path.resolve(__dirname, "../../template/skills");
 
+// D3b: Phase-relevance map. Skills not listed here are always visible
+// (safe default for future additions). Skills listed here are only
+// included in the context index for the named phases — unrelated
+// phases save the system-prompt budget. This is a soft filter: the
+// agent can still `workspace_file` read any skill on-demand.
+//
+// Keep this close to the skill set it describes — one hardcoded table
+// per release, not spread across files. When adding a skill to
+// template/skills/, add it here if phase-specific, or leave it out
+// to default to always-visible.
+const PHASE_RELEVANT_SKILLS = {
+  "bootstrap-workspace": ["bootstrap"],
+  "rule-extraction":     ["bootstrap", "extraction"],
+  "rule-graph":          ["extraction", "skill_authoring"],
+  "task-decomposition":  ["extraction", "skill_authoring", "distillation"],
+  "skill-authoring":     ["skill_authoring", "skill_testing"],
+  "skill-to-workflow":   ["distillation"],
+  "evolution-loop":      ["skill_testing", "distillation", "production_qc"],
+  "version-control":     ["bootstrap", "extraction", "skill_authoring", "skill_testing", "distillation", "production_qc"],
+  "quality-control":     ["production_qc"],
+  "confidence-system":   ["distillation", "production_qc"],
+  "dashboard-reporting": ["production_qc"],
+  "cross-document-verification": ["production_qc"],
+  "corner-case-management": ["skill_testing", "distillation", "production_qc"],
+  "data-sensibility":    ["extraction", "skill_authoring"],
+  "entity-extraction":   ["skill_authoring", "distillation"],
+  "document-parsing":    ["bootstrap", "extraction", "skill_authoring"],
+  "document-chunking":   ["bootstrap", "extraction"],
+  "tree-processing":     ["skill_authoring", "skill_testing"],
+  "compliance-judgment": ["skill_authoring", "skill_testing", "production_qc"],
+  "skill-creator":       ["skill_authoring"],
+};
+
+function isSkillRelevantToPhase(skillName, phase) {
+  const relevantPhases = PHASE_RELEVANT_SKILLS[skillName];
+  if (!relevantPhases) return true; // unknown skill → always visible
+  if (!phase) return true; // caller didn't pass phase → always visible
+  return relevantPhases.includes(phase);
+}
+
 /**
  * Discover and index meta skills from template/skills/.
  * Follows Claude Code's pattern: skills are NOT dumped into the system prompt.
@@ -79,15 +119,25 @@ export class SkillLoader {
   /**
    * Format the skill index for injection into agent context.
    * Brief listing — agent reads full content on demand.
+   *
+   * D3b: when `phase` is provided, filter out skills that aren't relevant
+   * to the phase (per PHASE_RELEVANT_SKILLS). Unknown skills stay visible
+   * so new additions to template/skills/ aren't accidentally hidden.
+   *
+   * @param {string} [phase] - Current engine phase for filtering
    * @returns {string}
    */
-  formatForContext() {
+  formatForContext(phase) {
     const index = this.getIndex();
     if (index.length === 0) return "";
 
-    const metaMeta = index.filter((s) => s.category === "meta-meta");
-    const meta = index.filter((s) => s.category === "meta");
-    const other = index.filter((s) => s.category !== "meta-meta" && s.category !== "meta");
+    const visible = phase
+      ? index.filter((s) => isSkillRelevantToPhase(s.name, phase))
+      : index;
+
+    const metaMeta = visible.filter((s) => s.category === "meta-meta");
+    const meta = visible.filter((s) => s.category === "meta");
+    const other = visible.filter((s) => s.category !== "meta-meta" && s.category !== "meta");
 
     const lines = ["## Available Methodology Skills",
       "Read full skill content from the skills/ directory when needed.\n"];

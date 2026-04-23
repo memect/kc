@@ -380,7 +380,7 @@ export class AgentEngine {
   getContextStats() {
     const systemPrompt = this.context.build({
       agentMd: this._readAgentMd(),
-      skillIndex: this._skillLoader.formatForContext(),
+      skillIndex: this._skillLoader.formatForContext(this.currentPhase),
       pipelineState: this.pipelines[this.currentPhase]?.describeState?.() || null,
       workspaceState: this._buildWorkspaceState(),
     });
@@ -784,7 +784,7 @@ export class AgentEngine {
 
     const systemPrompt = this.context.build({
       agentMd: this._readAgentMd(),
-      skillIndex: this._skillLoader.formatForContext(),
+      skillIndex: this._skillLoader.formatForContext(this.currentPhase),
       pipelineState,
       workspaceState: this._buildWorkspaceState(),
     });
@@ -934,6 +934,29 @@ export class AgentEngine {
             isError: result.isError,
             traceId: offload?.traceId || null,
           });
+
+          // D3a: trace skill invocations. When the agent reads a SKILL.md via
+          // workspace_file (the canonical way KC "uses" a skill, since skills
+          // are progressively-disclosed markdown), emit a skill_invoked event.
+          // Makes "which skills did KC actually consult?" answerable in post-run
+          // analysis — before this, skills were opaque to the event log.
+          try {
+            if (
+              !result.isError &&
+              (tc.name === "workspace_file" || tc.name === "sandbox_exec")
+            ) {
+              const p = String(inputData?.path || inputData?.command || "");
+              const skillMatch = p.match(/(?:template\/)?skills\/[a-z-]+\/(?:meta-meta|meta|skill-creator)\/([a-zA-Z0-9_-]+)(?:\/SKILL\.md|\/)?|\bSKILL\.md\b/);
+              if (skillMatch) {
+                const skillName = skillMatch[1] || "(unknown)";
+                this.eventLog.append("skill_invoked", {
+                  skill: skillName,
+                  via_tool: tc.name,
+                  phase: this.currentPhase,
+                });
+              }
+            }
+          } catch { /* never let tracing break a tool call */ }
           yield new AgentEvent({
             type: "tool_result",
             name: tc.name,
