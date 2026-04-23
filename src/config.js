@@ -139,14 +139,17 @@ export function loadSettings(workspacePath) {
     // be set explicitly after heap.jsonl shows a flat RSS trajectory over
     // ≥ 2h. This prevents accidental $100+ runaway runs.
     //
-    // Desired parallelism (from --parallelism flag or session config) is
-    // parsed here; the actual effective value is computed by a helper
-    // below that downgrades to 1 if the flag isn't set.
-    parallelismVerified:
-      (env.KC_PARALLELISM_VERIFIED || gc.parallelism_verified || "").toString() === "1" ||
-      (env.KC_PARALLELISM_VERIFIED || gc.parallelism_verified || "").toString().toLowerCase() === "true",
+    // Source priority (highest first): process.env (B3 CLI flag sets this)
+    // → workspace .env → global config. Parsed here; the actual effective
+    // value is computed by a helper below that downgrades to 1 if the
+    // verified flag isn't set.
+    parallelismVerified: (() => {
+      const raw = (process.env.KC_PARALLELISM_VERIFIED ||
+        env.KC_PARALLELISM_VERIFIED || gc.parallelism_verified || "").toString();
+      return raw === "1" || raw.toLowerCase() === "true";
+    })(),
     parallelismRequested: (() => {
-      const raw = env.KC_PARALLELISM || gc.parallelism;
+      const raw = process.env.KC_PARALLELISM || env.KC_PARALLELISM || gc.parallelism;
       const n = Number.parseInt(raw, 10);
       if (!Number.isFinite(n) || n < 1) return 1;
       return Math.min(n, 8); // max 8 per plan — prevents API-spend runaway

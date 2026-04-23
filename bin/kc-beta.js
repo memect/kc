@@ -4,16 +4,27 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-// Parse --en / --zh from anywhere in argv (session-only language override)
+// Parse --en / --zh / --parallelism from anywhere in argv
 const args = process.argv.slice(2);
 let languageOverride = null;
+let parallelismOverride = null;
 const filtered = [];
 for (const arg of args) {
   if (arg === "--en") languageOverride = "en";
   else if (arg === "--zh") languageOverride = "zh";
+  else if (arg.startsWith("--parallelism=")) {
+    const n = parseInt(arg.slice("--parallelism=".length), 10);
+    if (Number.isFinite(n) && n >= 1) parallelismOverride = Math.min(n, 8);
+  }
   else filtered.push(arg);
 }
 const subcommand = filtered[0];
+
+// B3: Surface parallelism intent via env so loadSettings() picks it up uniformly.
+// Matches the workspace-.env pattern other KC configs use.
+if (parallelismOverride !== null) {
+  process.env.KC_PARALLELISM = String(parallelismOverride);
+}
 
 // A4: Startup banner. Prevents the v0.3.2-ghost-install problem (user ran
 // 4 releases worth of "fixes" that were silently not installed because of

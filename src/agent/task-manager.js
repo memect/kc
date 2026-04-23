@@ -62,11 +62,63 @@ export class TaskManager {
   }
 
   /**
-   * Get the next pending task.
+   * Get the next pending task (read-only). For serial-mode callers.
+   * Parallel workers MUST use claimNextPending() to avoid racing.
    * @returns {object|null}
    */
   getNextPending() {
     return this._tasks.find((t) => t.status === "pending") || null;
+  }
+
+  /**
+   * B2: Atomically claim the next pending task — flips status to
+   * "in_progress" and records the worker. Single-threaded JavaScript
+   * means this is race-free WITHOUT a filesystem lock as long as neither
+   * the find nor the status mutation awaits, because the event loop
+   * won't interleave another worker's call between them. If we ever
+   * move TaskManager to share state across processes (unlikely; each
+   * session has its own file), wrap with workspace.withFileLock.
+   *
+   * @param {string} [workerLabel] - optional identifier for the claimer,
+   *   stored on the task for debugging + the TUI taskboard.
+   * @returns {object|null} The claimed task, or null if none pending.
+   */
+  claimNextPending(workerLabel) {
+    const task = this._tasks.find((t) => t.status === "pending");
+    if (!task) return null;
+    task.status = "in_progress";
+    task.startedAt = new Date().toISOString();
+    if (workerLabel) task.worker = String(workerLabel);
+    this.save();
+    return task;
+  }
+
+  /**
+   * B2: Mark a previously-claimed task as done. Pass an optional
+   * summary for the taskboard / display. Worker label is cleared since
+   * the task has left in_progress state.
+   */
+  markDone(id, summary) {
+    const task = this._tasks.find((t) => t.id === id);
+    if (!task) return;
+    task.status = "completed";
+    task.completedAt = new Date().toISOString();
+    if (summary !== undefined) task.summary = summary;
+    delete task.worker;
+    this.save();
+  }
+
+  /**
+   * B2: Mark a claimed task as failed. Preserves the worker label so
+   * post-mortems can trace which slot crashed.
+   */
+  markFailed(id, errorMessage) {
+    const task = this._tasks.find((t) => t.id === id);
+    if (!task) return;
+    task.status = "failed";
+    task.completedAt = new Date().toISOString();
+    if (errorMessage) task.summary = String(errorMessage).slice(0, 500);
+    this.save();
   }
 
   /**

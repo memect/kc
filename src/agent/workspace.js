@@ -210,22 +210,74 @@ export class Workspace {
 
     if (!this._gitAvailable) return traceId;
 
-    try {
-      const r = spawnSync("git", ["add", "--", relPath], {
-        cwd: this.path,
-        stdio: "ignore",
-      });
-      if (r.status !== 0) return traceId; // gitignored or other add error — skip commit
-      const msg = `[${this._currentPhase}] ${opLabel} ${relPath} [trace:${traceId}]`;
-      spawnSync("git", ["commit", "-m", msg, "--allow-empty-message"], {
-        cwd: this.path,
-        stdio: "ignore",
-      });
-      // Status doesn't matter — "nothing to commit" is fine.
-    } catch {
-      // Never let a git failure break a workspace write.
-    }
+    // B5: Serialize concurrent git operations. Two sub-agents committing
+    // at the same time used to race on .git/index.lock — one would fail
+    // silently ("fatal: Unable to create '.git/index.lock': File exists"),
+    // its auto-commit lost but its workspace write still on disk so
+    // downstream readers see the change without commit history.
+    //
+    // withGitSyncLock is a synchronous best-effort wrapper around
+    // withFileLock — using flock-on-sibling-.lock-file semantics but
+    // implemented inline since autoCommit is sync. A dedicated gitlock
+    // file (not a real git lockfile) coordinates across engines.
+    this._withGitSyncLock(() => {
+      try {
+        const r = spawnSync("git", ["add", "--", relPath], {
+          cwd: this.path,
+          stdio: "ignore",
+        });
+        if (r.status !== 0) return; // gitignored or other add error — skip commit
+        const msg = `[${this._currentPhase}] ${opLabel} ${relPath} [trace:${traceId}]`;
+        spawnSync("git", ["commit", "-m", msg, "--allow-empty-message"], {
+          cwd: this.path,
+          stdio: "ignore",
+        });
+        // Status doesn't matter — "nothing to commit" is fine.
+      } catch {
+        // Never let a git failure break a workspace write.
+      }
+    });
     return traceId;
+  }
+
+  /**
+   * B5: Synchronous gitops lock. Mirror of withFileLock but sync to fit
+   * autoCommit's existing call signature. Times out and proceeds anyway
+   * after 5s — we'd rather lose one commit than deadlock a write.
+   */
+  _withGitSyncLock(fn, { timeoutMs = 5_000, staleMs = 30_000 } = {}) {
+    const lockPath = path.join(this.path, ".git", "kc-commit.lock");
+    const start = Date.now();
+    let acquired = false;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+        try { fs.writeSync(fd, Buffer.from(`${process.pid}|${Date.now()}\n`)); } catch { /* best effort */ }
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        acquired = true;
+        break;
+      } catch (e) {
+        if (e.code !== "EEXIST" && e.code !== "ENOENT") break; // ENOENT: .git dir missing — proceed unlocked
+        // Check for stale
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > staleMs) {
+            try { fs.unlinkSync(lockPath); } catch { /* race with another stealer */ }
+            continue;
+          }
+        } catch {
+          continue; // vanished, retry
+        }
+        // Busy-wait briefly
+        const deadline = Date.now() + 20;
+        while (Date.now() < deadline) { /* spin */ }
+      }
+    }
+    try {
+      fn();
+    } finally {
+      if (acquired) { try { fs.unlinkSync(lockPath); } catch { /* already gone */ } }
+    }
   }
 
   /**

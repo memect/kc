@@ -96,7 +96,9 @@ function App({ engine, config }) {
     let accumulated = "";
 
     try {
-      for await (const event of engineRef.current.runTaskLoop(text)) {
+      for await (const event of engineRef.current.runTaskLoop(text, {
+        parallelism: config.effectiveParallelism?.() ?? 1,
+      })) {
         switch (event.type) {
           case "text_delta":
             accumulated += event.text ?? "";
@@ -193,6 +195,7 @@ function App({ engine, config }) {
             "  /tasks               Show task progress\n" +
             "  /phase [sub]         advance | status | <name> — manual phase override\n" +
             "  /schedule            Show scheduled ingestion jobs and recent log lines\n" +
+            "  /parallelism [N]     Show or set parallel ralph-loop worker count (1-8)\n" +
             "  /clear               Clear conversation history (keep workspace)\n" +
             "  /compact             Summarize older messages to reduce context\n" +
             "  /sessions            List all sessions\n" +
@@ -204,19 +207,57 @@ function App({ engine, config }) {
 
       case "/status": {
         const stats = engineRef.current.getContextStats();
+        const par = config.effectiveParallelism?.() ?? 1;
+        const parLine = par > 1
+          ? `${par} (verified)`
+          : `${config.parallelismRequested || 1} requested` +
+            (config.parallelismRequested > 1 && !config.parallelismVerified
+              ? ` — clamped to 1 (KC_PARALLELISM_VERIFIED not set; run heap baseline first)`
+              : "");
         addMessage({
           role: "system",
           content:
-            `Session:   ${engineRef.current.workspace.sessionId}\n` +
-            `Phase:     ${engineRef.current.currentPhase.toUpperCase()}\n` +
-            `Model:     ${config.kcModel}\n` +
-            `Provider:  ${config.provider || "unknown"}\n` +
-            `LLM URL:   ${config.llmBaseUrl}\n` +
-            `Project:   ${engineRef.current.workspace.projectDir || "(none)"}\n` +
-            `Workspace: ${engineRef.current.workspace.cwd}\n` +
-            `Tools:     ${engineRef.current.toolRegistry.size} registered\n` +
-            `History:   ${engineRef.current.history.messages.length} messages\n` +
-            `Context:   ~${stats.totalTokens} tokens (${stats.percentage}% of ${stats.limit})`,
+            `Session:     ${engineRef.current.workspace.sessionId}\n` +
+            `Phase:       ${engineRef.current.currentPhase.toUpperCase()}\n` +
+            `Model:       ${config.kcModel}\n` +
+            `Provider:    ${config.provider || "unknown"}\n` +
+            `LLM URL:     ${config.llmBaseUrl}\n` +
+            `Project:     ${engineRef.current.workspace.projectDir || "(none)"}\n` +
+            `Workspace:   ${engineRef.current.workspace.cwd}\n` +
+            `Tools:       ${engineRef.current.toolRegistry.size} registered\n` +
+            `History:     ${engineRef.current.history.messages.length} messages\n` +
+            `Context:     ~${stats.totalTokens} tokens (${stats.percentage}% of ${stats.limit})\n` +
+            `Parallelism: ${parLine}`,
+        });
+        return true;
+      }
+
+      case "/parallelism": {
+        // B3: set parallelism at runtime. Respects the B0.6 guard —
+        // takes effect only if KC_PARALLELISM_VERIFIED is already set.
+        const n = parseInt(arg, 10);
+        if (!Number.isFinite(n) || n < 1) {
+          addMessage({
+            role: "system",
+            content:
+              `Usage: /parallelism <N> (1-8)\n` +
+              `Current: requested=${config.parallelismRequested || 1}, ` +
+              `effective=${config.effectiveParallelism?.() ?? 1}. ` +
+              (config.parallelismVerified
+                ? "Verified — new value takes effect next /run."
+                : "Unverified — clamped to 1. Set KC_PARALLELISM_VERIFIED=1 after a clean 2h heap-baseline run."),
+          });
+          return true;
+        }
+        const clamped = Math.min(Math.max(n, 1), 8);
+        config.parallelismRequested = clamped;
+        addMessage({
+          role: "system",
+          content:
+            `Parallelism requested=${clamped}. ` +
+            (config.parallelismVerified
+              ? `Effective=${config.effectiveParallelism()} (verified).`
+              : `Effective=1 (verified flag not set — see /status).`),
         });
         return true;
       }

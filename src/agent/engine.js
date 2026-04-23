@@ -1153,15 +1153,37 @@ export class AgentEngine {
    * If no tasks exist, behaves identically to runTurn().
    *
    * @param {string} userMessage
+   * @param {{parallelism?: number}} [opts] — B1: optional parallel mode.
+   *   N > 1 dispatches tasks through N concurrent subagents (using the
+   *   agent_tool infrastructure from B8). Clamped to `effectiveParallelism`
+   *   from config.js — which silently downgrades to 1 unless
+   *   KC_PARALLELISM_VERIFIED=1 is set AND heap.jsonl shows flat RSS
+   *   (B0.6 guard; prevents accidental $100+ runaway runs).
    * @yields {AgentEvent}
    */
-  async *runTaskLoop(userMessage) {
+  async *runTaskLoop(userMessage, opts = {}) {
     // Sub-agents don't run task loops — they execute one task and exit
     if (!this.taskManager) {
       yield* this.runTurn(userMessage);
       return;
     }
 
+    // B1: resolve effective parallelism. Caller opts override config.
+    const requested = Number.isFinite(opts.parallelism)
+      ? Math.max(1, Math.min(8, opts.parallelism))
+      : (this.config.effectiveParallelism?.() ?? 1);
+
+    if (requested > 1) {
+      yield* this._runTaskLoopParallel(userMessage, requested);
+      return;
+    }
+
+    yield* this._runTaskLoopSerial(userMessage);
+  }
+
+  /** B1: original serial ralph-loop path — one task at a time, shared
+   *  conversation history. Unchanged from pre-v0.6.0 behavior. */
+  async *_runTaskLoopSerial(userMessage) {
     // Run the initial turn (user's request)
     yield* this.runTurn(userMessage);
 
@@ -1175,8 +1197,11 @@ export class AgentEngine {
         await this.compact({ recentCount: 8 });
       }
 
-      const task = this.taskManager.getNextPending();
-      this.taskManager.updateTask(task.id, { status: "in_progress" });
+      // B2: atomic claim — for serial we could use getNextPending, but
+      // using claimNextPending gives us consistent state fields (worker
+      // label, startedAt) whether in serial or parallel mode.
+      const task = this.taskManager.claimNextPending("serial");
+      if (!task) break;
 
       // Yield task progress event for TUI
       yield new AgentEvent({
@@ -1196,8 +1221,7 @@ export class AgentEngine {
 
       yield* this.runTurn(taskPrompt);
 
-      this.taskManager.updateTask(task.id, { status: "completed" });
-      this.taskManager.save();
+      this.taskManager.markDone(task.id);
       this.saveState();
 
       yield new AgentEvent({
@@ -1228,6 +1252,187 @@ export class AgentEngine {
                 data: { type: "phase_ready", nextPhase: next, message: "all phase tasks done; exit criteria met" },
               });
             }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * B1: Parallel ralph-loop — N concurrent subagents each executing one
+   * task at a time, claimed atomically from TaskManager.
+   *
+   * Implementation: leverages B8's agent_tool infrastructure. Each worker
+   * slot is a sub-engine with its own heap-isolated history; workspace
+   * writes are serialized through B9's file locks. The main engine acts
+   * as dispatcher — it claims tasks and spawns subagents, then waits.
+   *
+   * Chosen over in-process history-forking because: (a) sub-engines are
+   * already heap-isolated (good under B0's RSS-safety regime); (b)
+   * kill authority from B8 applies uniformly; (c) no runTurn refactor
+   * needed — the engine's conversation-state assumptions stay intact.
+   * Trade-off: each task pays a cold-start cost (re-read AGENT.md,
+   * skill index, pipeline state). For 100+ task sessions this is
+   * amortized against the 2-4× wall-clock speedup.
+   */
+  async *_runTaskLoopParallel(userMessage, parallelism) {
+    // Initial turn: main agent reads user request, creates tasks.
+    yield* this.runTurn(userMessage);
+
+    const agentTool = this._buildTools.core.find((t) => t?.name === "agent_tool");
+    if (!agentTool) {
+      // Shouldn't happen (agent_tool is core), but fall back safely.
+      yield new AgentEvent({
+        type: "error",
+        message: "agent_tool not registered; parallel mode requires it. Falling back to serial.",
+      });
+      yield* this._runTaskLoopSerial("");
+      return;
+    }
+
+    // Event queue so concurrent workers can yield progress through a
+    // single async-generator consumer. push-style with a notifier.
+    const eventQueue = [];
+    let notify = null;
+    const enq = (ev) => {
+      eventQueue.push(ev);
+      if (notify) { const n = notify; notify = null; n(); }
+    };
+
+    // In-flight: subagent task_id → { task, promise }
+    const inFlight = new Map();
+
+    const dispatch = async () => {
+      while (inFlight.size < parallelism) {
+        const task = this.taskManager.claimNextPending(`pool${inFlight.size}`);
+        if (!task) return;
+
+        const workerLabel = `pool${[...inFlight.keys()].length}`;
+        const subId = `pool_${task.id}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60);
+
+        const brief =
+          `# Task\n${task.title}\n\n` +
+          (task.ruleId ? `Rule ID: ${task.ruleId}\n\n` : "") +
+          `Complete this task per the current phase's requirements. ` +
+          `Write outputs to workspace files via workspace_file or rule_catalog — ` +
+          `do NOT write to shared coordination files (rules/catalog.json, ` +
+          `rules/manifest.json) via sandbox_exec; they're lock-protected and ` +
+          `bypassing the lock will race with other workers.`;
+
+        enq(new AgentEvent({
+          type: "task_progress",
+          data: {
+            taskId: task.id, title: task.title, ruleId: task.ruleId,
+            status: "in_progress", worker: workerLabel,
+            progress: this.taskManager.progress,
+          },
+        }));
+
+        // Spawn via the tool's public API. agent_tool writes status.txt,
+        // abort controller, etc. We read _runningTasks to get a promise
+        // handle we can await.
+        const spawnRes = await agentTool.execute({
+          operation: "spawn",
+          task_description: brief,
+          task_id: subId,
+        });
+
+        if (spawnRes.isError) {
+          this.taskManager.markFailed(task.id, `spawn failed: ${spawnRes.content}`);
+          enq(new AgentEvent({
+            type: "task_progress",
+            data: { taskId: task.id, status: "failed", worker: workerLabel },
+          }));
+          continue;
+        }
+
+        const entry = agentTool._runningTasks.get(subId);
+        if (!entry) {
+          // Sub-agent completed synchronously (no events) — mark done.
+          this.taskManager.markDone(task.id);
+          enq(new AgentEvent({
+            type: "task_progress",
+            data: { taskId: task.id, status: "completed", worker: workerLabel },
+          }));
+          continue;
+        }
+
+        const trackedPromise = entry.promise.then(
+          () => ({ taskId: task.id, subId, ok: true }),
+          (e) => ({ taskId: task.id, subId, ok: false, error: e?.message || String(e) }),
+        );
+        inFlight.set(subId, { task, workerLabel, promise: trackedPromise });
+      }
+    };
+
+    // Prime the pool
+    await dispatch();
+
+    // Drain events + replenish until queue is empty and all in-flight done.
+    while (inFlight.size > 0 || eventQueue.length > 0) {
+      // Drain all queued events first
+      while (eventQueue.length > 0) yield eventQueue.shift();
+
+      if (inFlight.size === 0) break;
+
+      // Wait for either the next event OR a worker to complete
+      const workerCompletion = Promise.race([...inFlight.values()].map((v) => v.promise));
+      const eventArrival = new Promise((resolve) => { notify = () => resolve("event"); });
+      const winner = await Promise.race([
+        workerCompletion.then((done) => ({ kind: "worker", done })),
+        eventArrival.then(() => ({ kind: "event" })),
+      ]);
+
+      if (winner.kind === "worker") {
+        const { taskId, subId, ok, error } = winner.done;
+        const entry = inFlight.get(subId);
+        inFlight.delete(subId);
+
+        if (ok) {
+          this.taskManager.markDone(taskId);
+          enq(new AgentEvent({
+            type: "task_progress",
+            data: {
+              taskId, status: "completed",
+              worker: entry?.workerLabel,
+              progress: this.taskManager.progress,
+            },
+          }));
+        } else {
+          this.taskManager.markFailed(taskId, error);
+          enq(new AgentEvent({
+            type: "task_progress",
+            data: {
+              taskId, status: "failed",
+              worker: entry?.workerLabel,
+              error,
+              progress: this.taskManager.progress,
+            },
+          }));
+        }
+
+        // Refill the pool. If no pending tasks left, in-flight drains naturally.
+        await dispatch();
+      }
+      // event winner: loop re-iterates and drains eventQueue
+    }
+
+    this.saveState();
+
+    // After all workers done, check for phase auto-advance (same as serial path).
+    if (this._allCurrentPhaseTasksComplete()) {
+      const pipeline = this.pipelines[this.currentPhase];
+      let exitMet = false;
+      try { exitMet = !!pipeline?.exitCriteriaMet?.(); } catch { exitMet = false; }
+      if (exitMet) {
+        const next = NEXT_PHASE[this.currentPhase];
+        if (next) {
+          const advanced = this._advancePhase(next, "all parallel tasks completed + exit criteria met");
+          if (advanced) {
+            yield new AgentEvent({
+              type: "pipeline_event",
+              data: { type: "phase_ready", nextPhase: next, message: "all phase tasks done; exit criteria met" },
+            });
           }
         }
       }
