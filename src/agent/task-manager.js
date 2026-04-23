@@ -87,12 +87,23 @@ export class TaskManager {
   // --- Bulk creation from rule catalog ---
 
   /**
-   * Create one task per rule for a given phase.
-   * Reads rules from the provided array (typically from rules/catalog.json).
+   * Phases where one-task-per-rule is the natural unit of work.
+   * For BOOTSTRAP / EXTRACTION the unit is a regulation (one PDF → many rules);
+   * ralph-loop shouldn't drive per-rule there because the rules don't exist yet
+   * (or are the *output*, not the input) — see E2E #3 coverage check.
+   */
+  static PER_RULE_PHASES = new Set(["skill_authoring", "skill_testing"]);
+
+  /**
+   * Create one task per rule for a given phase — but only if the phase's unit
+   * of work is actually a rule. For other phases this is a no-op, and any
+   * per-regulation tasks are created separately at session init.
+   *
    * @param {Array<{id: string, title?: string, description?: string}>} rules
    * @param {string} phase - The phase these tasks belong to
    */
   createRuleTasks(rules, phase) {
+    if (!TaskManager.PER_RULE_PHASES.has(phase)) return;
     for (const rule of rules) {
       const ruleId = rule.id || rule.rule_id;
       const title = rule.title || rule.description || ruleId;

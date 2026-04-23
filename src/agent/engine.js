@@ -353,21 +353,37 @@ export class AgentEngine {
 
     // Heap-pressure diagnostic. The TUI has its own virtualization + tool-
     // output truncation (Bug 3 fixes), so Ink itself should never OOM. If we
-    // still see high heap usage, something else is leaking — log it once per
-    // pressure-crossing so operators can investigate without flooding logs.
+    // still see high heap usage, something else is leaking.
+    //
+    // A9: Original design logged once per pressure-crossing (edge-triggered),
+    // which went silent for 17h during E2E #3 while RSS climbed to 3.8GB.
+    // Now: still edge-trigger on entry (noisy otherwise), but ALSO re-emit
+    // every 15min while we're still above the threshold, so an operator
+    // watching logs after hour 4 still sees the signal. Drops to silent on
+    // recovery below 0.60.
     try {
       const mem = process.memoryUsage();
       const frac = mem.heapUsed / (mem.heapTotal || 1);
-      if (frac > 0.80 && !this._memPressureLogged) {
-        this._memPressureLogged = true;
-        this.eventLog.append("memory_pressure", {
-          heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
-          heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
-          rssMB: Math.round(mem.rss / 1024 / 1024),
-          historyLength: this.history.messages.length,
-        });
+      const now = Date.now();
+      const REPRESS_INTERVAL_MS = 15 * 60 * 1000;
+      if (frac > 0.80) {
+        const firstCrossing = !this._memPressureLogged;
+        const dueForRepress = this._memPressureLastEmittedAt &&
+          (now - this._memPressureLastEmittedAt) >= REPRESS_INTERVAL_MS;
+        if (firstCrossing || dueForRepress) {
+          this._memPressureLogged = true;
+          this._memPressureLastEmittedAt = now;
+          this.eventLog.append("memory_pressure", {
+            heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+            heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
+            rssMB: Math.round(mem.rss / 1024 / 1024),
+            historyLength: this.history.messages.length,
+            kind: firstCrossing ? "crossing" : "sustained",
+          });
+        }
       } else if (frac < 0.60 && this._memPressureLogged) {
         this._memPressureLogged = false;  // re-arm for next crossing
+        this._memPressureLastEmittedAt = null;
       }
     } catch { /* process.memoryUsage failures are non-fatal */ }
   }
@@ -781,6 +797,30 @@ export class AgentEngine {
         });
 
         if (toolCallsAcc.size === 0) {
+          // A3: Empty-response guard. If the LLM returned no content AND no
+          // tool calls, count it. Two in a row almost always means the
+          // provider is silently failing (context exceeded, rate-limit
+          // corruption, auth expired) and continuing wastes tokens + time.
+          // Reset on any non-empty turn. Reason-tagged so /status can
+          // surface the running rate.
+          if (!collectedText || !collectedText.trim()) {
+            this._consecutiveEmptyResponses = (this._consecutiveEmptyResponses || 0) + 1;
+            this._totalEmptyResponses = (this._totalEmptyResponses || 0) + 1;
+            if (this._consecutiveEmptyResponses >= 2) {
+              const message =
+                `LLM returned empty response ${this._consecutiveEmptyResponses}× in a row — ` +
+                `likely context-length exceeded or provider-side silent failure. ` +
+                `Stopping this turn to prevent runaway API spend.`;
+              this.eventLog.append("error", { message, kind: "empty_response_streak" });
+              yield new AgentEvent({ type: "error", message });
+              this._consecutiveEmptyResponses = 0; // reset so next /run isn't blocked
+              return;
+            }
+          } else {
+            this._consecutiveEmptyResponses = 0;
+          }
+          this._totalTurns = (this._totalTurns || 0) + 1;
+
           // Bug 4 trigger (1): re-check phase criteria at end of every turn —
           // KC may have advanced state via conversation alone, without any
           // tool that the pipeline narrowly watches.
@@ -793,6 +833,10 @@ export class AgentEngine {
           return;
         }
 
+        // A3: A turn with tool_calls or content is not empty — reset streak.
+        this._consecutiveEmptyResponses = 0;
+        this._totalTurns = (this._totalTurns || 0) + 1;
+
         // Tool execution loop
         for (const tc of toolCallsAcc.values()) {
           let inputData = {};
@@ -803,6 +847,12 @@ export class AgentEngine {
           this.eventLog.append("tool_start", { name: tc.name, input: inputData });
           yield new AgentEvent({ type: "tool_start", name: tc.name, input: inputData });
 
+          // A1: Capture phase BEFORE tool execution. Some tools — notably
+          // phase_advance — mutate this.currentPhase via a callback without
+          // yielding any AgentEvent, so the TUI's status bar never gets the
+          // signal. We diff after execute() and emit a synthetic
+          // pipeline_event so subscribers can sync.
+          const beforePhase = this.currentPhase;
           const result = await this.toolRegistry.execute(tc.name, inputData);
 
           // Tool-call offloading: large outputs go to logs/tool_results/<traceId>.txt;
@@ -837,6 +887,22 @@ export class AgentEngine {
           // user saw "CTX: 210% / stream terminated" with no recovery.
           this._maybeWindowAfterToolResult();
 
+          // A1: If the tool mutated the phase (e.g. phase_advance), emit the
+          // signal the TUI and pipelines need to re-sync state. Runs BEFORE
+          // pipeline.onToolResult so the fresh phase is active if the pipeline
+          // itself wants to react to the transition.
+          if (this.currentPhase !== beforePhase) {
+            yield new AgentEvent({
+              type: "pipeline_event",
+              data: {
+                type: "phase_changed",
+                from: beforePhase,
+                nextPhase: this.currentPhase,
+                reason: `via ${tc.name}`,
+              },
+            });
+          }
+
           // Pipeline controller: update state and re-register tools on phase change
           if (pipeline?.onToolResult) {
             const pEvent = pipeline.onToolResult(tc.name, inputData, result);
@@ -857,8 +923,15 @@ export class AgentEngine {
         if (ev) yield ev;
 
       } catch (err) {
-        this.eventLog.append("error", { message: err.message });
-        yield new AgentEvent({ type: "error", message: err.message });
+        // A8: If the LLM client tagged the stream termination reason, pass
+        // it through. Upstream log consumers + the TUI can then distinguish
+        // "provider returned 429" from "socket died mid-token" from "SSE
+        // buffer exploded" — today they're all just "Error: ...".
+        const payload = { message: err.message };
+        if (err.streamTermination) payload.kind = err.streamTermination;
+        if (err.status) payload.status = err.status;
+        this.eventLog.append("error", payload);
+        yield new AgentEvent({ type: "error", message: err.message, ...payload });
         return;
       }
     }

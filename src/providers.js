@@ -28,6 +28,16 @@ function getTierConfig(providerId) {
   return MODEL_TIERS[providerId] || { conductor: "", llm: {}, vlm: {} };
 }
 
+// A2: Per-provider context-window caps. Without these, every provider
+// inherited the generic 200000-token default from config.js, which caused
+// silent empty-response failures on smaller-window models (xfyun
+// astron-code-latest behaves like it has ~32K during E2E #3). The
+// _maybeWindowAfterToolResult threshold only fires around 70% of budget, so
+// with a 200K budget on a 32K-limit model windowing never fires in time.
+// These numbers are conservative minimums — users can still override via
+// KC_CONTEXT_LIMIT env or kc_context_limit in global config.
+const DEFAULT_CONTEXT_LIMIT = 200000;
+
 const PROVIDERS = [
   {
     id: "siliconflow",
@@ -36,6 +46,7 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
+    contextLimit: 200000, // GLM-5.1, Kimi-K2.5 — 200K native
     defaultModel: getTierConfig("siliconflow").conductor || "glm-5",
     defaultTiers: getTierConfig("siliconflow").llm,
     defaultVlm: getTierConfig("siliconflow").vlm,
@@ -54,6 +65,7 @@ const PROVIDERS = [
     apiFormat: "openai",
     modelsEndpoint: null, // Aliyun coding plan doesn't support /models
     supportsCodingPlanKey: true,
+    contextLimit: 131072, // Qwen3.x family — 128K on the coding plan
     defaultModel: getTierConfig("aliyun").conductor || "qwen3.6-plus",
     defaultTiers: getTierConfig("aliyun").llm,
     defaultVlm: getTierConfig("aliyun").vlm,
@@ -86,6 +98,7 @@ const PROVIDERS = [
     apiFormat: "openai",
     modelsEndpoint: null, // VolcanoCloud — use curated list
     supportsCodingPlanKey: true,
+    contextLimit: 131072, // doubao-seed / glm-5.1 coding plan — 128K
     defaultModel: getTierConfig("volcanocloud").conductor || "doubao-seed-2-0-pro-260215",
     defaultTiers: getTierConfig("volcanocloud").llm,
     defaultVlm: getTierConfig("volcanocloud").vlm,
@@ -114,6 +127,10 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: null,
+    // xfyun astron-code-latest — empirical ~32K-64K window per E2E #3. Set
+    // conservatively at 32K so windowing fires early and the provider never
+    // sees a request it will silently fail on.
+    contextLimit: 32768,
     defaultModel: getTierConfig("xfyun").conductor || "astron-code-latest",
     defaultTiers: getTierConfig("xfyun").llm,
     defaultVlm: getTierConfig("xfyun").vlm,
@@ -132,6 +149,7 @@ const PROVIDERS = [
     authType: "x-api-key",
     apiFormat: "anthropic",
     modelsEndpoint: null, // Use curated list
+    contextLimit: 200000, // Claude Sonnet 4 / Opus 4 / Haiku 4.5 — 200K
     defaultModel: getTierConfig("anthropic").conductor || "claude-sonnet-4-20250514",
     defaultTiers: getTierConfig("anthropic").llm,
     defaultVlm: getTierConfig("anthropic").vlm,
@@ -152,6 +170,7 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
+    contextLimit: 128000, // gpt-4o — 128K
     defaultModel: getTierConfig("openai").conductor || "gpt-4o",
     defaultTiers: getTierConfig("openai").llm,
     defaultVlm: getTierConfig("openai").vlm,
@@ -167,6 +186,7 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
+    contextLimit: 131072, // GLM-4.x / GLM-5.x family — 128K
     defaultModel: getTierConfig("zhipu").conductor || "glm-4-plus",
     defaultTiers: getTierConfig("zhipu").llm,
     defaultVlm: getTierConfig("zhipu").vlm,
@@ -182,6 +202,7 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
+    contextLimit: 245760, // MiniMax-M2.5 — 240K
     defaultModel: getTierConfig("minimax").conductor || "MiniMax-M2.5",
     defaultTiers: getTierConfig("minimax").llm,
     defaultVlm: getTierConfig("minimax").vlm,
@@ -197,6 +218,10 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
+    // OpenRouter proxies many models; defaulting to 200K matches the underlying
+    // frontier Anthropic/Google routes most users pick. Lower-context models
+    // behind OpenRouter will still work, just won't benefit from early windowing.
+    contextLimit: 200000,
     defaultModel: getTierConfig("openrouter").conductor || "anthropic/claude-sonnet-4-20250514",
     defaultTiers: getTierConfig("openrouter").llm,
     defaultVlm: getTierConfig("openrouter").vlm,
@@ -212,6 +237,7 @@ const PROVIDERS = [
     authType: "aws-sigv4",
     apiFormat: "anthropic",
     modelsEndpoint: null,
+    contextLimit: 200000, // Bedrock Anthropic routes mirror native Claude 200K
     defaultModel: getTierConfig("bedrock").conductor || "anthropic.claude-sonnet-4-20250514-v1:0",
     defaultTiers: getTierConfig("bedrock").llm,
     defaultVlm: getTierConfig("bedrock").vlm,

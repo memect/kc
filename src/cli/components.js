@@ -1,7 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 const h = React.createElement;
+
+// A4: Resolve once at module load (package.json doesn't change mid-session).
+// Lazy-safe via try/catch so dev-mode from odd cwd never breaks the TUI.
+const KC_VERSION = (() => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(resolve(here, "..", "..", "package.json"), "utf-8"));
+    return pkg.version;
+  } catch { return null; }
+})();
 
 // --- Cooking spinner ---
 
@@ -100,7 +113,7 @@ export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
   return h(Box, { flexDirection: "column", marginBottom: 1, borderStyle: "round", borderColor: "gray", paddingLeft: 1, paddingRight: 1 },
     h(Box, null,
       h(Text, { bold: true }, "KC AGENT CLI"),
-      h(Text, { dimColor: true }, "  (beta)"),
+      h(Text, { dimColor: true }, KC_VERSION ? `  v${KC_VERSION}  (beta)` : "  (beta)"),
     ),
     h(Text, { dimColor: true }, "Hope you never know what KC was."),
     h(Text, null, ""),

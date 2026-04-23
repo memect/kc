@@ -1,5 +1,20 @@
 import { withRetry } from "./retry.js";
 
+// A5: SSE accumulator safety cap. If a provider ever sends an abnormally
+// large `data: ...` line without a newline terminator, the parser's
+// `buffer += decoder.decode(chunk)` + `buffer.split("\n")` would grow
+// unbounded and trigger O(n²) splitting once it gets into the hundreds
+// of MB. 8 MB is multiple orders of magnitude above any legitimate single
+// SSE frame (largest seen in the wild: ~80 KB for multi-tool-call deltas).
+const SSE_BUFFER_CAP_BYTES = 8 * 1024 * 1024;
+
+class SseOverflowError extends Error {
+  constructor(bytes) {
+    super(`SSE buffer overflow (${bytes} bytes without newline) — aborting stream`);
+    this.code = "SSE_BUFFER_OVERFLOW";
+  }
+}
+
 /**
  * Multi-protocol LLM client using native fetch + SSE parsing.
  * Supports OpenAI-compatible APIs and Anthropic Messages API.
@@ -144,26 +159,56 @@ export class LLMClient {
   async *streamChat({ model, messages, tools, maxTokens }) {
     const body = this._buildStreamBody({ model, messages, tools, maxTokens });
 
-    const resp = await withRetry(async () => {
-      const r = await fetch(this._getEndpoint(), {
-        method: "POST",
-        headers: this._buildHeaders(),
-        body: JSON.stringify(body),
+    let resp;
+    try {
+      resp = await withRetry(async () => {
+        const r = await fetch(this._getEndpoint(), {
+          method: "POST",
+          headers: this._buildHeaders(),
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const text = await r.text();
+          const err = new Error(`LLM API error ${r.status}: ${text}`);
+          err.status = r.status;
+          err.retryAfter = r.headers.get("retry-after");
+          err.streamTermination = "http_error";
+          throw err;
+        }
+        return r;
       });
-      if (!r.ok) {
-        const text = await r.text();
-        const err = new Error(`LLM API error ${r.status}: ${text}`);
-        err.status = r.status;
-        err.retryAfter = r.headers.get("retry-after");
-        throw err;
-      }
-      return r;
-    });
+    } catch (err) {
+      // A8: Any pre-stream failure (network, auth, 4xx/5xx after retry) is
+      // tagged and re-thrown. Engine's outer catch sees exactly one tagged
+      // error event.
+      if (!err.streamTermination) err.streamTermination = "connect_error";
+      throw err;
+    }
 
-    if (this.apiFormat === "anthropic") {
-      yield* this._parseAnthropicSSE(resp.body);
-    } else {
-      yield* this._parseOpenaiSSE(resp.body);
+    // A8: Wrap the SSE consumption so ALL termination paths — clean EOS,
+    // mid-token abort, SSE overflow, provider disconnect — surface as a
+    // single tagged error the engine can report consistently. The inner
+    // parsers throw for overflow (A5) and return silently on clean EOS;
+    // mid-stream socket errors (undici "terminated") raise here.
+    try {
+      if (this.apiFormat === "anthropic") {
+        yield* this._parseAnthropicSSE(resp.body);
+      } else {
+        yield* this._parseOpenaiSSE(resp.body);
+      }
+    } catch (err) {
+      if (!err.streamTermination) {
+        if (err.code === "SSE_BUFFER_OVERFLOW") err.streamTermination = "sse_overflow";
+        else if (err.name === "AbortError") err.streamTermination = "aborted";
+        else if (/terminated|reset|ECONNRESET|UND_ERR_ABORTED/i.test(err.message || err.code || ""))
+          err.streamTermination = "stream_terminated";
+        else err.streamTermination = "stream_error";
+      }
+      throw err;
+    } finally {
+      // Best-effort: cancel the body so the underlying socket returns to the
+      // connection pool even if the consumer bailed mid-stream.
+      try { await resp.body?.cancel?.(); } catch { /* ignore */ }
     }
   }
 
@@ -261,6 +306,8 @@ export class LLMClient {
 
     for await (const chunk of body) {
       buffer += decoder.decode(chunk, { stream: true });
+      // A5: bail out before O(n²) split explodes on pathological input.
+      if (buffer.length > SSE_BUFFER_CAP_BYTES) throw new SseOverflowError(buffer.length);
       const lines = buffer.split("\n");
       buffer = lines.pop();
 
@@ -313,6 +360,8 @@ export class LLMClient {
 
     for await (const rawChunk of body) {
       buffer += decoder.decode(rawChunk, { stream: true });
+      // A5: cap applies to both SSE parsers.
+      if (buffer.length > SSE_BUFFER_CAP_BYTES) throw new SseOverflowError(buffer.length);
       const lines = buffer.split("\n");
       buffer = lines.pop();
 

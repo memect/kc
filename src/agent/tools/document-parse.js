@@ -113,8 +113,15 @@ export class DocumentParseTool extends BaseTool {
 
     if (result) return new ToolResult(this._formatOutput(result, "pdfjs (low quality)", resolved));
 
+    // A7: Original message implied worker-LLM setup was missing which
+    // confused users in early phases (BOOTSTRAP/EXTRACTION) where the
+    // worker LLM is intentionally inactive anyway. Clearer phrasing: name
+    // exactly what's needed and where to set it, and why.
+    const ocrHint = this._ocrModel
+      ? `Tried pdfjs / VLM (${this._ocrModel}) / MineRU; all failed — the file may be encrypted, corrupted, or an unsupported format.`
+      : `pdfjs extraction failed. Set VLM_TIER1 in the workspace .env to enable OCR fallback for image-based / scanned PDFs.`;
     return new ToolResult(
-      `Could not extract text from ${pathStr}. Configure OCR models in .env for image-based documents.`,
+      `Could not extract text from ${pathStr}. ${ocrHint}`,
       true,
     );
   }
