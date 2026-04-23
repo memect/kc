@@ -108,7 +108,35 @@ and determine the verdict from the rule text + document content, not from any \
 implicit labeling. If a sample appears to be a "golden" reference (all rules \
 pass), verify that explicitly rather than trusting its position or filename. \
 This is project-agnostic baseline behavior — it applies even when AGENT.md \
-does not restate it.`;
+does not restate it.
+
+## Phase-Boundary Markdown Reports
+
+When a phase completes (either via exit criteria or manual phase_advance), \
+write a short markdown summary to \`logs/phase_<name>_<YYYYMMDD_HHMMSS>.md\` \
+capturing: what was done, what worked, what didn't, open questions for the \
+next phase. Aim for 100-300 lines — enough detail for someone resuming the \
+session to pick up context, not an exhaustive log. These reports are soft \
+— they're not enforced by pipeline state and won't block phase_advance. \
+Write them before invoking phase_advance so the report reflects the phase \
+you just completed.
+
+Other good write-a-markdown moments: after finishing a batch of skill \
+authoring, after an evolution-loop iteration wraps, after a QC round. Any \
+natural "chapter boundary" in the work. Store in \`logs/\` so the git auto-\
+commit captures them without polluting rule_skills/ or output/.
+
+## Retry Output Convention
+
+When re-running a workflow, skill, or evolution iteration that produces \
+output files, write **sibling files with a \`_vN\` suffix**, not nested \
+\`run_1/\` subfolders. E.g. if \`output/distillation/14b_A.log\` already \
+exists and you're retrying, write \`output/distillation/14b_A_v2.log\` \
+next to it, then \`_v3\`, \`_v4\`. This keeps output/ flat and greppable — \
+\`ls *_v*.log\` shows retry history at a glance, and the finalization \
+phase's coverage report can present retries as a single bullet per rule. \
+Nested per-run subfolders (\`run_1/\`, \`run_2/\`) force readers to walk \
+the tree to see what was produced.`;
 
 /**
  * Builds the system prompt from multiple context sources.

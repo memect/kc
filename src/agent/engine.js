@@ -41,6 +41,7 @@ import { SkillAuthoringPipeline } from "./pipelines/skill-authoring.js";
 import { SkillTestingPipeline } from "./pipelines/skill-testing.js";
 import { DistillationEngine as DistillationPipeline } from "./pipelines/distillation.js";
 import { ProductionQCPipeline } from "./pipelines/production-qc.js";
+import { FinalizationPipeline } from "./pipelines/finalization.js";
 import { EventLog } from "./event-log.js";
 import { ContextWindow } from "./context-window.js";
 import { SessionState } from "./session-state.js";
@@ -51,8 +52,10 @@ import { estimateTokens, estimateMessagesTokens } from "./token-counter.js";
 // or kc_max_tokens in the global config.
 const DEFAULT_KC_MAX_TOKENS = 65536;
 
-// Phases where worker LLM tools are available (DISTILL mode)
-const DISTILL_PHASES = new Set([Phase.DISTILLATION, Phase.PRODUCTION_QC]);
+// Phases where worker LLM tools are available (DISTILL mode).
+// E1: FINALIZATION inherits worker-LLM access so one-last-pass validation
+// runs + dashboard_render + workflow_run stay usable during packaging.
+const DISTILL_PHASES = new Set([Phase.DISTILLATION, Phase.PRODUCTION_QC, Phase.FINALIZATION]);
 
 // Linear phase order — used by auto-advance (Bug 4). Last phase has no successor.
 // Exported so the TUI's /phase slash command (src/cli/index.js) can call
@@ -63,6 +66,7 @@ export const NEXT_PHASE = {
   [Phase.SKILL_AUTHORING]: Phase.SKILL_TESTING,
   [Phase.SKILL_TESTING]: Phase.DISTILLATION,
   [Phase.DISTILLATION]: Phase.PRODUCTION_QC,
+  [Phase.PRODUCTION_QC]: Phase.FINALIZATION, // E1: new 7th phase
 };
 
 /**
@@ -165,6 +169,7 @@ export class AgentEngine {
       [Phase.SKILL_TESTING]: new SkillTestingPipeline(this.workspace),
       [Phase.DISTILLATION]: new DistillationPipeline(this.workspace),
       [Phase.PRODUCTION_QC]: new ProductionQCPipeline(this.workspace),
+      [Phase.FINALIZATION]: new FinalizationPipeline(this.workspace), // E1
     };
 
     // Skill discovery (Claude Code pattern: index in context, full content on demand)
