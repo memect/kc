@@ -754,13 +754,59 @@ Catches the leak regression at 3 % of the cost of a failed full E2E.
 - **B7** — TUI taskboard updates. `src/cli/components.js` Taskboard: render
   N concurrent `in_progress` rows (today's assumes 1). Worker slot column
   optional.
-- **B8** (was deferred **Bug 9** — sub-agent dedup). Parent re-spawns children
-  when it misses `status.txt` flip to `completed`. Dangerous under parallelism
-  (multiplies duplicates). Fix: `src/agent/tools/agent-tool.js` — add
-  `operation` input field with values `spawn` (current, default), `wait`
-  (block until child done or timeout), `poll` (non-blocking status read),
-  `list` (enumerate running subagents). Parent uses `poll`/`wait` to check
-  before spawning a same-task child. Closes the dedup gap without hard-capping.
+- **B8** (was deferred **Bug 9** — sub-agent dedup, expanded 2026-04-23
+  after live observation in session `6304673afaa0`). Parent re-spawns
+  children when it misses `status.txt` flip to `completed`; combined with
+  recursive fan-out (core subagent spawned 8 children of its own) and
+  `sandbox_exec` writes that bypass the workspace layer, catalog.json was
+  being concurrently rewritten by 8+ engines in parallel (464 → 364 →
+  736 → 636 → 307 rule-count thrash in a 60-second window). Expanded fix:
+  `src/agent/tools/agent-tool.js` gains `operation` with values:
+  - `spawn` — current behavior, default.
+  - `wait` — block until child done or timeout. Lets parent confirm
+    completion before dispatching a duplicate.
+  - `poll` — non-blocking status read. Cheap visibility.
+  - `list` — enumerate running subagents (with depth, age, scope).
+  - `kill` — **new.** Abort a named subagent by rejecting its task
+    promise via AbortController + closing any in-flight stream. Does
+    NOT SIGKILL sandbox_exec grandchildren — those exit on their own
+    timeout. Subagent's `status.txt` flips to `killed`. A subagent can
+    only kill children it spawned (not the main agent, not siblings).
+  Also: on phase_advance, engine emits a `stale_subagents` pipeline
+  event listing running subagents from the prior phase. The next main-
+  agent turn sees this in context and decides — **NOT automated**. The
+  auto-terminate alternative was rejected because it couples the phase
+  state machine with subagent lifecycle, tangling blast radius on any
+  phase-advance bug (including `_maybeAutoAdvance` misfires).
+
+- **B9** (NEW 2026-04-23, promoted from "item 10" reference in B8 text).
+  **Workspace file locking primitive** — `Workspace.withFileLock(path,
+  fn)` coordinates writers across engine instances via OS-level `flock`
+  on a sibling lockfile (`<path>.lock`). Applies to:
+  - `rules/catalog.json` — single-writer discipline for the main agent,
+    but even subagent/`rule_catalog` edits serialize through this.
+  - `rules/manifest.json`, `session-state.json`, other shared
+    coordination files.
+  - Workspace git auto-commit (the B5 hotspot) becomes a consumer of
+    B9 rather than having its own dedicated lock.
+  Subagent engines get their own `Workspace` but share the lock-file
+  directory with the parent, so a subagent's `workspace_file` write
+  blocks the main agent's concurrent write and vice versa. **Also**:
+  `sandbox_exec` wraps commands that touch shared files with a wrapper
+  that acquires the same lock (best-effort — detectable via path regex
+  against the allow-list). Addresses the architectural race observed
+  in session `6304673afaa0` where catalog.json was being rewritten by
+  8+ engines in ~60 s windows with no coordination. B9 is the real
+  remediation; B8's kill authority is the intervention UX when locking
+  alone isn't enough (e.g. a runaway that holds the lock forever).
+
+**Files for B9:** `src/agent/workspace.js` (`withFileLock`, lockfile
+management), `src/agent/tools/sandbox-exec.js` (path-sniff wrapper),
+`src/agent/tools/rule-catalog.js` + `src/agent/tools/workspace-file.js`
+(route through `withFileLock` for shared paths), engine's auto-commit
+path (refactor to consume the same lock). ~150 lines + test. Depends
+on native `flock`/`fs.open` APIs — `proper-lockfile` npm module is a
+clean off-the-shelf option that covers macOS + Linux.
 
 **Files:** `src/agent/engine.js`, `src/agent/task-manager.js`, `src/agent/workspace.js`,
 `src/agent/tools/agent-tool.js`, `src/agent/tool-result-store.js` (new, B0.4),
@@ -819,6 +865,113 @@ search) to Node.js as native KC tools. These become the foundation for D1
 - `archive/pr_verify_app/backend/shared/chunker.py` — onion-peeler logic
 - `archive/pr_verify_app/backend/shared/classifier.py` — classifier + fallback
 - `archive/pr_verify_app/backend/shared/file_reader.py` — parser dispatch
+
+---
+
+### Group H — Testing-derived fixes (NEW, added 2026-04-23)
+
+Bugs and behavioral observations from live testing of the v0.6.0-WIP
+build (Groups A + C + B0 landed) against the `archive/test_data_3/`
+regulation bundle in session `6304673afaa0`. The session was killed
+early due to a catalog.json race + runaway subagents, but not before
+surfacing these seven items. Each fits naturally AFTER Group B because
+some (H3, H4) build on B8's kill authority + stale-subagents signal,
+and others (H1, H2, H7) are small UX cleanups that make sense to ship
+as a batch after the big B work.
+
+- **H1** — `phase_advance` tool result distinguishes "already in target
+  phase" (no-op, informational) from "non-adjacent transition" (refused,
+  actionable). Today both return the same "Did not advance to <phase>.
+  Either you're already there, or the transition is non-adjacent" —
+  confusing when the engine auto-advanced silently via
+  `_maybeAutoAdvance` and the LLM's explicit phase_advance hits the
+  already-there branch. Fix: `src/agent/tools/phase-advance.js` reads
+  the engine's phase BEFORE and AFTER calling `_advance`, and emits one
+  of: `{status: "advanced", from, to}` / `{status: "already_in", phase}`
+  / `{status: "refused", reason, hint}`. ~10 lines.
+
+- **H2** — `volcanocloud` `contextLimit: 131072 → 200000`. glm-5.1 on
+  the coding plan has 200K native window; my conservative 128K cap was
+  wrong. One-line edit in `src/providers.js`.
+
+- **H3** — **Main-agent dispatch completeness**. In the test session,
+  the main agent composed an `agent_tool` brief to `extract_rules_core`
+  listing "法规1" (信披办法) with per-article detail but silently
+  omitting "法规2" (托管办法) — even though AGENT.md labeled both as
+  核心. The subagent dispatched 8 children for regs 03-10 and salvaged
+  reg 02 via ad-hoc `sandbox_exec` python reads only after noticing the
+  gap itself. Pure LLM composition error, no automation caught it.
+  Fix (two-sided):
+  (a) **Soft — skill text.** `template/skills/*/meta-meta/task-decomposition/SKILL.md`
+  adds an explicit checklist: "when composing a subagent brief from
+  AGENT.md, list every named item from the source before drafting the
+  prompt body; verify the final brief mentions each by name."
+  (b) **Harder — dispatch linter.** When `agent_tool.spawn` is called
+  with a `task_description` that references N items (detected by
+  simple pattern: "法规1", "法规2", ... or a numbered list), warn if
+  fewer than N distinct items appear in the brief body. Non-blocking,
+  shows in tool result so the main-agent LLM can self-correct.
+  ~40 lines across the two files.
+
+- **H4** — **CTX indicator never updates in tool-heavy runs.** The TUI's
+  `contextTokens` state only refreshes on `turn_complete` / `runTurn`
+  finish (`src/cli/index.js:95, 151`). In a session with 908 events and
+  zero turn_complete (the 30-minute tool-heavy extraction we observed),
+  the indicator sat at `0/131k`. Distinct from the F7 "misleading peak
+  numbers" bug — this is "numbers literally never move." Fix: update
+  `contextTokens` after each `tool_result` event too (cheap — one extra
+  `getContextStats()` call per tool call; already called on turn_complete
+  anyway). ~5 lines in `cli/index.js` runTurn switch.
+
+- **H5** — **Extraction-phase granularity calibration.** Today's
+  `rule-extraction/SKILL.md` has no target counts, no "typical rule"
+  example, no cross-regulation dedup guidance. Subagents dispatched with
+  generic "Extract ALL atomic, testable verification rules" briefs
+  produced 60-108 rules per regulation, 4-5× what was needed. Main agent
+  had to cull 638 → ~300. D2 covers granularity in skill_authoring but
+  NOT extraction. Fix: edit
+  `template/skills/zh/meta-meta/rule-extraction/SKILL.md` (and `en/`
+  sibling) to add (i) an expected count band (e.g. "typical: 10-20
+  atomic rules per regulation"); (ii) a sample "good" rule in context;
+  (iii) dedup contract — "if a rule is already covered by a rule_id in
+  the parent's catalog, DO NOT re-extract." ~60 lines of skill text per
+  language, no engine changes.
+
+- **H6** — **`sandbox_exec` shared-file write audit.** When the
+  `command` input touches known coordination files (`rules/catalog.json`,
+  `rules/manifest.json`, `session-state.json`), the tool result prepends
+  a warning: "⚠️ This command writes to a shared coordination file via
+  sandbox_exec, which bypasses workspace locking. Use `workspace_file`
+  or `rule_catalog` instead." Soft — does not block execution; just
+  makes the behavior visible so the LLM self-corrects. ~20 lines in
+  `src/agent/tools/sandbox-exec.js`. Once B9 (workspace file locking)
+  lands, H6's warning can be upgraded to actually routing the sandbox
+  command through B9's `withFileLock`.
+
+- **H7** — **Session-start priority-phrasing nudge.** Extends F1's
+  welcome banner guide text: "If you have multiple regulations / docs
+  where some are authoritative (核心) and others are supporting context
+  (支撑 / reference), tell KC explicitly at session start — e.g.
+  `focus on rules/01 and rules/02 as core regulations; treat rules/03-10
+  as supporting context for cross-references`. Without this, KC may
+  treat all inputs equally and produce uniform output."
+  `src/cli/components.js` WelcomeBanner. ~20 lines in each language.
+
+**Files:** `src/agent/tools/phase-advance.js` (H1),
+`src/providers.js` (H2), `template/skills/*/meta-meta/task-decomposition/SKILL.md`
+(H3a), `src/agent/tools/agent-tool.js` (H3b),
+`src/cli/index.js` (H4), `template/skills/*/meta-meta/rule-extraction/SKILL.md`
+(H5), `src/agent/tools/sandbox-exec.js` (H6),
+`src/cli/components.js` (H7). ~180 lines across 8 files.
+
+**Dependency on earlier groups:**
+- H3b dispatch linter can land independently but benefits from B8's
+  `list`/`poll` so subagent survival is already queryable when the
+  linter evaluates.
+- H4 is independent.
+- H6's soft warning lands independently; the lock-routing upgrade
+  requires B9 (workspace file locking) to be in place.
+- Everything else is independent of B.
 
 ---
 
@@ -1002,20 +1155,31 @@ search) to Node.js as native KC tools. These become the foundation for D1
 Per v3 doc discipline, implement one group, finish, verify, then move on:
 
 1. **Group A** (small patches, ~1-2 days) — land first, de-risks everything.
+   **DONE 2026-04-23.**
 2. **Group C** (chunker/RAG tools, ~3-4 days) — foundation for D1.
-3. **Group B** (parallel ralph-loop, **~7-9 days** — B0 prereq + B1-B8).
+   **DONE 2026-04-23.**
+3. **Group B** (parallel ralph-loop, **~8-10 days** — B0 prereq + B1-B9).
    - **B0.1-B0.2** (~1 day): instrumentation + baseline serial measurement.
+     **B0.1 + B0.3 + B0.5 + B0.6 DONE 2026-04-23; B0.2 + B0.7 are live-run gates.**
    - **B0.3-B0.5** (~2-3 days): fix the three candidate leak root causes.
    - **B0.7** (~1 day wall-clock of instrumented runs): conformance gate.
-   - **B1-B8** (~3-4 days): parallel loop implementation.
+   - **B1-B7** (~3-4 days): parallel loop implementation.
+   - **B8** (~1 day): agent_tool spawn/wait/poll/list/kill + stale_subagents
+     pipeline event.
+   - **B9** (~1 day): workspace file locking primitive, consumed by B5 +
+     shared-file writers (catalog.json, rule_catalog tool, sandbox_exec).
    - Full E2E #4 at parallelism=4 is downstream of B0.7 passing.
-4. **Group D** (skill hardening, ~3 days) — uses C's BundleTree.
-5. **Group E** (finalization + reports, ~2 days) — uses D's coverage data.
-6. **Group F** (UX polish, ~2-3 days) — can partially overlap with earlier
+4. **Group H** (testing-derived fixes, ~1-2 days) — mostly UX and skill-text
+   cleanups found during the v0.6.0-WIP test session. H1/H2 are one-liners;
+   H3-H7 are modest. Lands after B because H3b linter + H6 soft warning
+   both benefit from B8/B9 being in place first.
+5. **Group D** (skill hardening, ~3 days) — uses C's BundleTree.
+6. **Group E** (finalization + reports, ~2 days) — uses D's coverage data.
+7. **Group F** (UX polish, ~2-3 days) — can partially overlap with earlier
    groups but final wiring waits until others are stable.
-7. **Group G** (release, ~1 day).
+8. **Group G** (release, ~1 day).
 
-Total estimate: **~19-24 implementation days**, then **E2E #4 beta trial** of
+Total estimate: **~21-27 implementation days**, then **E2E #4 beta trial** of
 ~2 days wall-clock (target 48 h for 378 tasks at parallelism=4), then publish.
 B0 prereq runs add ~$60-120 of LLM spend for heap verification; cheap insurance
 vs. the $100+ risk of a full failed run.
@@ -1128,6 +1292,28 @@ what lets the release credibly close out v0.5.x:
 | User 15-item 15 | /meme easter egg | F6 |
 
 No checkbox from the design doc is uncovered.
+
+### Testing-derived follow-ups (2026-04-23 live test of v0.6.0-WIP)
+
+Seven items surfaced from live testing of the A+C+B0 build against
+`test_data_3/` in session `6304673afaa0`. All captured in Group H:
+
+| Origin | Item | Plan home |
+|---|---|---|
+| Test obs 1 | phase_advance "Did not advance" UX conflation | H1 |
+| Test obs 2 | volcanocloud contextLimit 128K → 200K | H2 |
+| Test obs 3 | Main-agent dispatch dropped reg 02 (propagation break) | H3 |
+| Test obs 4 | CTX indicator stuck at 0 in tool-heavy runs | H4 |
+| Test obs 5 | Extraction granularity not briefed to subagents | H5 |
+| Test obs 6 | sandbox_exec writes bypass workspace layer | H6 + B9 |
+| Test obs 7 | Session-start priority-phrasing nudge | H7 (extends F1) |
+
+And two architectural items lifted to Group B from the same session:
+
+| Origin | Item | Plan home |
+|---|---|---|
+| Test obs 8 | catalog.json race between 8+ concurrent writers | **B9** (workspace file locking) |
+| Test obs 9 | KC has no way to kill subagents; recursive fan-out | **B8 expanded** (kill + stale_subagents signal) |
 
 ---
 
