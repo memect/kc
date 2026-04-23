@@ -1037,11 +1037,31 @@ export class AgentEngine {
       reason,
       forced: force && nextPhase !== expected,
     });
+    const fromPhase = this.currentPhase;
     this.currentPhase = nextPhase;
     this._registerToolsForPhase(this.currentPhase);
     this.workspace.setPhase(this.currentPhase);
     this._createTasksForPhase(this.currentPhase);
     this.saveState();
+
+    // B8: Soft signal — surface any sub-agents left running from the prior
+    // phase so the main agent's next turn can decide whether to kill them.
+    // NOT automated: phase_advance can fire from _maybeAutoAdvance on a
+    // criteria-flip, and auto-killing would couple lifecycle with blast
+    // radius. This just informs.
+    try {
+      const agentTool = this._buildTools?.core?.find((t) => t?.name === "agent_tool");
+      const runningIds = agentTool?.getRunningTaskIds?.() || [];
+      if (runningIds.length > 0) {
+        this.eventLog.append("stale_subagents", {
+          from_phase: fromPhase,
+          to_phase: nextPhase,
+          running_task_ids: runningIds,
+          hint: "These sub-agents were dispatched during the prior phase. Consider operation=poll to check status, or operation=kill to abort if stale.",
+        });
+      }
+    } catch { /* never let signal emission break phase advance */ }
+
     return true;
   }
 
