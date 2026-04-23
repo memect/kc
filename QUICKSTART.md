@@ -93,7 +93,12 @@ Once regulations and samples are in place, the agent advances through 6 phases a
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
-| `/status` | Session info, model, phase, context usage |
+| `/status` | Session info, model, phase, context usage, parallelism |
+| `/tasks` | Show ralph-loop task list and progress |
+| `/tools` | List registered tools + which phase gates each (v0.6.0) |
+| `/phase [sub]` | advance / status / `<name>` — manual phase override |
+| `/parallelism [N]` | Show / set parallel worker count 1-8 (v0.6.0) |
+| `/schedule` | Show scheduled ingestion jobs and recent logs |
 | `/clear` | Clear conversation history |
 | `/compact` | Summarize older messages to reduce context usage |
 | `/sessions` | List all sessions |
@@ -101,9 +106,12 @@ Once regulations and samples are in place, the agent advances through 6 phases a
 | `/rename <name>` | Rename current session |
 | `/exit` | Save state and quit |
 
-## Keyboard Shortcuts
+## Keyboard Shortcuts (v0.6.0 TUI upgrades)
 
-- **Enter** — Send message
+- **Enter** — Send message (or queue it if the agent is mid-turn)
+- **Left / Right** — Move cursor inside the current line
+- **Up / Down** — Navigate session-local input history
+- **Ctrl+A / Ctrl+E** — Jump to start / end of line
 - **Ctrl+C** — Clear queue (if streaming) or save & exit
 - **Ctrl+D** — Save & exit
 
@@ -111,7 +119,12 @@ Once regulations and samples are in place, the agent advances through 6 phases a
 
 The status bar shows:
 - Session ID and current phase
-- **Context usage**: `CTX: 45.2k/200k (23%)` — turns green/yellow/red as context fills
+- **Context usage**: `CTX: 45.2k/200k (23%)` — smoothed over 30 samples;
+  shows `· peak 52.1k` when the session has spiked meaningfully above
+  the current value
+- **Parallelism**: effective worker count (silently clamped to 1 unless
+  `KC_PARALLELISM_VERIFIED=1` — see the "Parallel Ralph-Loop" section
+  of the README)
 
 ## Per-Project Config
 

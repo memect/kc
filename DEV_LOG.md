@@ -1,5 +1,251 @@
 # KC Agent CLI — Development Log
 
+## v0.6.0 (2026-04-23)
+
+First intentional architectural release. Ships 15 commits worth of work
+organized into seven groups (A/C/B0/B/H/D/E/F/G) per the v5 plan
+[`docs/update_design_v5.md`](./docs/update_design_v5.md). Folds in the
+entire v0.5.6 patch list, promotes parallel ralph-loop out of "deferred,"
+ports the AMC verification app's chunker/RAG infra as native KC tools,
+and adds a seventh FINALIZATION phase for shippable deliverables.
+
+### Headline changes
+
+- **Parallel ralph-loop (Group B).** `--parallelism=N` (1-8) dispatches
+  tasks through N concurrent subagents with atomic task-claim from
+  `TaskManager`. Gated behind `KC_PARALLELISM_VERIFIED=1` — without the
+  flag, effective parallelism silently clamps to 1 to prevent accidental
+  $100+ runaway runs before the user has confirmed heap behavior.
+- **Native chunker + RAG (Group C).** `document_chunk`, `bundle_search`,
+  `document_classify` — onion-peeler header-based splitting with a CJK
+  bigram + English word keyword index, cached under
+  `<workspace>/cache/bundles/<hash>.json`. Porting from the AMC app
+  (`archive/pr_verify_app/backend/shared/`). Same API surface for the
+  agent; no Python dependency.
+- **Workspace file locking (B9).** `Workspace.withFileLock(path, fn)`
+  serializes concurrent writers to shared coordination files
+  (`rules/catalog.json`, `rules/manifest.json`, `tasks.json`).
+  `rule_catalog` tool routes writes through the lock; `sandbox_exec`
+  emits an audit warning when it detects writes to shared paths.
+- **Sub-agent control (B8).** `agent_tool` gains `operation` with values
+  `spawn` / `wait` / `poll` / `list` / `kill` + a `stale_subagents`
+  pipeline event emitted on phase_advance so the main agent can see and
+  clean up children from the prior phase.
+- **Source-context auto-attach (D1).** `skill_authoring` task prompts
+  now include the rule's NL description, `source_ref`, severity,
+  falsifiability statement, source chunks from the BundleTree cache,
+  and sibling rule ids — the author agent sees all context in one turn
+  instead of making multiple `document_search` calls.
+- **New FINALIZATION phase (E1).** 7th phase, terminal. Packages
+  `rule_skills/` into a canonical per-rule layout, writes a `README.md`
+  + `coverage_report.md` under `rule_skills/`, snapshots the final
+  dashboard.
+
+### Group A — engine correctness (commit `65c1d4f`)
+
+Small, high-leverage patches. Folds in the entire v0.5.6 patch list.
+
+- **A1** `phase_advance` tool emits a synthetic `pipeline_event` so the
+  TUI status bar refreshes after agent-driven phase changes.
+- **A2** Per-provider `contextLimit` in `src/providers.js` (xfyun=32K,
+  openai=128K, volcano=200K, anthropic=400K, siliconflow/zhipu/open-
+  router/bedrock=200K, minimax=240K, aliyun=131K). Prevents silent
+  empty-response failures on small-window models.
+- **A3** Empty-response guard — two empty responses in a row emits a
+  tagged error and stops the turn.
+- **A4** Startup banner printing version + script path to stderr and
+  TUI scrollback. Prevents the v0.3.2-ghost-install class of bug.
+- **A5** SSE accumulator capped at 8 MB.
+- **A6** `TaskManager.createRuleTasks` gated to `PER_RULE_PHASES =
+  {skill_authoring, skill_testing}` — no more fake `-extraction` tasks.
+- **A7** Document-parse error phrasing clarified.
+- **A8** Stream-termination errors tagged (`http_error`, `sse_overflow`,
+  `aborted`, `stream_terminated`, `connect_error`).
+- **A9** `memory_pressure` event re-emits every 15 min while still above
+  threshold (was one-shot, went silent during E2E #3).
+
+### Group C — chunker + RAG (commit `d05da43`)
+
+- **C1** `document_chunk` — onion-peeler header-based splitting, max 2K
+  tokens per leaf, cached by content hash. ~550 lines in
+  `src/agent/bundle-tree.js` (pure logic) + wrapper tool.
+- **C2** `bundle_search` — bigram keyword index over a cached
+  BundleTree. No embedding model required.
+- **C3** `document_classify` — one-shot LLM bundle classifier with
+  balanced-brace JSON repair + keyword fallback. Classification cached
+  alongside the BundleTree.
+- (C4/C5 absorbed into Group D as D1b/D6.)
+
+### Group B0 — heap-safety prereq (commit `20db20c`)
+
+Addresses the 3.8 GB RSS creep observed during 17h of E2E #3.
+
+- **B0.1** Permanent heap sampler writing `<workspace>/logs/heap.jsonl`
+  every 60 s with RSS / heap / external / arrayBuffers / history length
+  / task counts.
+- **B0.3** Bounded React `messages` state (cap 500 entries, drop oldest
+  non-system on overflow).
+- **B0.5** `React.memo(ToolBlock)` so every `setMessages` / `setStreaming-
+  Text` doesn't re-render all 50 visible tool blocks.
+- **B0.6** `KC_PARALLELISM_VERIFIED` env gate; `effectiveParallelism()`
+  helper on config.
+- **B0.7** Conformance gate (live runs, not code): 2 h serial + 4 h
+  N=2 must confirm FLAT RSS before enabling `parallelism=4`.
+- `scripts/heap-analyze.js` — verdict classifier (FLAT / DRIFTING /
+  GROWING) against the gate.
+
+### Group B1-B9 — parallel ralph-loop + workspace lock
+
+Three commits: `890ad23` (B9), `fba9592` (B8), `7339a76` (B1+B2+B3+B5).
+
+- **B1** `_runTaskLoopParallel()` — dispatches N concurrent subagents
+  via `agent_tool`, each owning one task. Leverages B8 + B9 for safety.
+- **B2** `TaskManager.claimNextPending(workerLabel)` — atomic task
+  claim. Plus `markDone` / `markFailed`. Race-free under 20-way
+  concurrent contention (stress-tested).
+- **B3** `--parallelism=N` CLI flag (max 8) → `process.env.KC_PARALLELISM`
+  → `loadSettings`. `/parallelism` slash command and `/status` display.
+- **B5** Git commit serialization via a sync `_withGitSyncLock` (sibling
+  `.git/kc-commit.lock` using `O_EXCL | O_CREAT`). Multiple subagents
+  committing concurrently used to drop commits silently.
+- **B8** `agent_tool.execute({operation, ...})` with spawn / wait /
+  poll / list / kill. Kill is cooperative via AbortController; status.txt
+  flips to `killed`. Orphan detection for runaways from prior processes.
+  `stale_subagents` phase-advance event.
+- **B9** `Workspace.withFileLock(relPath, fn)` primitive — atomic POSIX
+  `O_CREAT | O_EXCL` on a sibling `.lock` file with stale-reap. Shared
+  paths list: `rules/catalog.json`, `rules/manifest.json`,
+  `refs/manifest.json`, `session-state.json`, `tasks.json`.
+
+Deferred: B4 (per-task event isolation audit), B6 (per-worker 429 backoff
+— `withRetry` already handles it), B7 (multi-row TUI taskboard).
+
+### Group H — testing-derived fixes
+
+Two commits: `5e4e652` (H1+H2 as pre-B micro-patch), `432ea5e` (H3-H7).
+
+- **H1** `phase_advance` tool now distinguishes "already in target
+  phase" from "refused non-adjacent" in the tool result.
+- **H2** volcanocloud `contextLimit: 131072 → 200000` (glm-5.1 coding
+  plan actually has 200K).
+- **H3** Dispatch-completeness linter in `agent_tool`: detects numbered-
+  item gaps (e.g. "法规1, 法规3" without "法规2") and warns in the
+  spawn result.
+- **H4** CTX indicator updates on every `tool_result`, not just on
+  `turn_complete` — fixes the stuck-at-zero display during tool-heavy
+  sessions.
+- **H5** Granularity calibration added to
+  `template/skills/{zh,en}/meta-meta/rule-extraction/SKILL.md`: 10-20
+  rule target band per regulation, sample "good" rule, cross-regulation
+  dedup contract, sub-agent delegation guidance (name every item in the
+  brief, pass catalog ID ranges, prefer `rule_catalog` over
+  `sandbox_exec`).
+- **H6** `sandbox_exec` audit — detects commands touching shared
+  coordination paths and prepends a ⚠️ warning to the tool result.
+- **H7** Welcome banner priority-phrasing nudge.
+
+### Group D — skill system hardening
+
+Three commits: `620814d` (D2+D4+D5), `a7ae0c5` (D1+D1b+D6), `d48fd96`
+(D3a+D3b).
+
+- **D1** `_buildEnrichedTaskPrompt(task)` — for `skill_authoring` /
+  `skill_testing` tasks, builds a prompt with rule NL + `source_ref` +
+  severity + falsifiability + source chunks (from BundleTree cache) +
+  sibling rule IDs + granularity hint. Wired into both serial and
+  parallel paths. Falls back gracefully when catalog / cache is missing.
+- **D1b** Skill-text driven: `rule-extraction/SKILL.md` instructs the
+  extractor to populate `source_chunk_ids` via `bundle_search`. Reader
+  side is D1.
+- **D2** `SkillAuthoringPipeline` now counts **distinct rule-id
+  coverage** via filename parsing (recognizes `R014/`, `check_r014.py`,
+  `check_r002_r007.py`, `R078_R128/`). Exit criterion requires every
+  catalog rule_id to appear in some skill — no more false-complete
+  signal when rules are grouped.
+- **D3a** `skill_invoked` event emitted when the agent reads a SKILL.md
+  via `workspace_file` or `sandbox_exec`. First-class tracing of skill
+  consumption.
+- **D3b** `SkillLoader.formatForContext(phase)` filters the injected
+  index by phase. 22 skills total → 12 visible in SKILL_AUTHORING, 7 in
+  BOOTSTRAP. ~45% reduction in skill-index tokens.
+- **D3c** Skill validator — deferred (defensive; needs more design).
+- **D4** "Samples are not labeled" paragraph baked into the baseline
+  system prompt in `src/agent/context.js`.
+- **D5** `evolution-loop` skill gains a 4th stopping criterion: accuracy
+  delta < 1% between iterations is itself a stopping signal.
+- **D6** Applicability pre-filter in `_createTasksForPhase` —
+  `skill_authoring` / `skill_testing` tasks check rule
+  `applicable_product_types` / `report_types` against the cached bundle
+  classification; non-matching rules skip task creation.
+
+### Group E — workspace outputs & FINALIZATION (commit `55a3d01`)
+
+- **E1** New `FinalizationPipeline` (7th phase) — tracks four deliverable
+  artifacts (`rule_skills/README.md`, `rule_skills/coverage_report.md`,
+  `output/final_dashboard.html`, canonical per-rule layout). Terminal
+  phase (no successor). Added to `NEXT_PHASE`, `DISTILL_PHASES`, and
+  `PHASE_RELEVANT_SKILLS`.
+- **E2** Soft prompt instruction — write
+  `logs/phase_<name>_<YYYYMMDD_HHMMSS>.md` at phase boundaries.
+- **E3** Soft prompt instruction — retry outputs should be sibling files
+  with `_vN` suffix, not nested `run_1/` subfolders.
+
+### Group F — UX polish (commit `428bb09`)
+
+- **F1a** Welcome banner priority-phrasing hint (landed in H7 earlier).
+- **F1b** Bootstrap describes worker-LLM tier snapshot from `.env`,
+  flagging empty tiers ⚠️.
+- **F2** Input unlock — `isActive: true` always; submissions during
+  streaming push to a queue with a `(N queued)` indicator.
+- **F3** Arrow-key cursor movement + up/down history recall + Ctrl-A/
+  Ctrl-E in `InputPrompt`.
+- **F4** Subagent limit — no code change, documented.
+- **F5** `/tools` slash command — lists registered tools, phase gating,
+  explicit "not separately installable."
+- **F6** `/meme` easter egg (not in `/help`).
+- **F7** CTX status bar smoothed over 30 samples + session peak.
+- **F8** Spinner race after `/compact` — finally block skips reset when
+  a queued task is about to kick off.
+
+### Group G — release (this commit)
+
+- `package.json` 0.5.6 → 0.6.0.
+- README.md and QUICKSTART.md updated with 7-phase list, parallelism
+  section, new slash commands, arrow-key shortcuts.
+- DEV_LOG entry (this section).
+- `docs/update_design_v5.md` left inline with commit-hash references
+  so the audit trail is preserved.
+
+### What's not in v0.6.0
+
+- **E2E #4 beta trial** — conducted by the user + team after publish.
+- **Actual parallel execution verification** — users set
+  `KC_PARALLELISM_VERIFIED=1` only after running the B0.2 baseline +
+  B0.7 conformance sequence in their own environment.
+- **B4 per-task event isolation audit**, **B6 per-worker 429 backoff
+  beyond existing withRetry**, **B7 multi-row TUI taskboard**, **D3c
+  skill validator**, **rule_catalog → workspace_file deprecation** —
+  all documented in the design doc as follow-ups for v0.6.1+.
+
+### Migration notes for users on v0.5.x
+
+- `--parallelism=N` on the command line is inert unless you also set
+  `KC_PARALLELISM_VERIFIED=1` (env or workspace `.env`). We silently
+  downgrade to 1 — no error, no warning. Check `/status` to see
+  effective vs requested.
+- `TaskManager.createRuleTasks` no longer creates tasks for BOOTSTRAP
+  or EXTRACTION. If you had scripts reading `tasks.json` expecting
+  per-rule extraction tasks, they'll now find zero. Per-regulation
+  bootstrap/extraction work is the main agent's job directly.
+- New `FINALIZATION` phase is reachable via `/phase advance` or
+  auto-advance from PRODUCTION_QC. Sessions resumed from v0.5.x will
+  continue in their previous phase; FINALIZATION is only entered going
+  forward.
+- `<workspace>/logs/heap.jsonl` is now written permanently (one line
+  per minute). Check `scripts/heap-analyze.js` for analysis.
+
+---
+
 ## v0.5.6 (2026-04-22)
 
 Small provider-focused release. Wires up **VolcanoCloud's new coding plan**

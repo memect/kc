@@ -29,7 +29,7 @@ Requires **Node.js 20+**. See [QUICKSTART.md](./QUICKSTART.md) for the full setu
 
 ## What It Does
 
-KC drives a single coding agent through six phases:
+KC drives a single coding agent through seven phases:
 
 | Phase | What it does |
 |-------|-------------|
@@ -39,10 +39,11 @@ KC drives a single coding agent through six phases:
 | **SKILL_TESTING**   | Run skills on samples, iterate via the evolution loop |
 | **DISTILLATION**    | Convert proven skills into cheap worker-LLM workflows |
 | **PRODUCTION_QC**   | Run workflows on production batches with confidence-based sampling |
+| **FINALIZATION**    | Package deliverables — canonical layout, README, coverage report, final dashboard (v0.6.0) |
 
 The conductor LLM (your main model) drives all reasoning. Worker LLM tools
-are gated to DISTILL phases only, so the build phase is always grounded in
-high-quality output.
+are gated to DISTILL + FINALIZATION phases, so the build phase is always
+grounded in high-quality output.
 
 ---
 
@@ -127,8 +128,12 @@ the task manager only tells it *what's next*.
 
 ```
 /help                Show available commands
-/status              Session, model, phase, context usage
+/status              Session, model, phase, context usage, parallelism
 /tasks               Show task list and progress
+/tools               List registered tools + which phase gates each (v0.6.0)
+/phase [sub]         advance | status | <name> — manual phase override
+/parallelism [N]     Show / set parallel ralph-loop worker count 1-8 (v0.6.0)
+/schedule            Show scheduled ingestion jobs
 /clear               Clear conversation (workspace preserved)
 /compact             Summarize older messages via the conductor
 /sessions            List all sessions
@@ -137,7 +142,12 @@ the task manager only tells it *what's next*.
 /exit                Save state and quit
 ```
 
-`--en` / `--zh` flags override language for one session without writing config.
+`--en` / `--zh` / `--parallelism=N` flags override for one session without writing config.
+
+**v0.6.0 TUI upgrades:** input stays active during streaming (type-ahead
+queues automatically), left/right arrow keys move the cursor, up/down
+recalls session history, Ctrl-A/Ctrl-E jump to start/end. CTX status bar
+smooths over 30 samples and tracks a session peak.
 
 ---
 
@@ -155,6 +165,27 @@ demand, rather than always-on dependencies:
 
 Both are bundled in `template/skills/{en,zh}/meta-meta/` and discovered by
 the skill loader at startup.
+
+## Parallel Ralph-Loop (v0.6.0)
+
+`--parallelism=N` (1-8) runs up to N verification tasks concurrently via
+subagent orchestration. Safety guardrails:
+
+- Silently clamps to 1 unless `KC_PARALLELISM_VERIFIED=1` is set in the
+  workspace `.env` — prevents accidental multi-hundred-dollar runs before
+  you've confirmed heap behavior.
+- `logs/heap.jsonl` is sampled every 60 s permanently. Run
+  `node scripts/heap-analyze.js` to get a FLAT / DRIFTING / GROWING
+  verdict from the current workspace's run.
+- `rules/catalog.json` writes serialize through a POSIX file lock;
+  concurrent workers no longer race each other.
+- `agent_tool` operations: `spawn` / `wait` / `poll` / `list` / `kill`
+  give the agent visibility and control over its own subagents. A
+  `stale_subagents` pipeline event on phase_advance lets the main agent
+  clean up before moving on.
+
+Recommended flow: run a 2h serial baseline first, confirm the heap
+verdict is FLAT, then set `KC_PARALLELISM_VERIFIED=1` and try N=2.
 
 ---
 
@@ -185,13 +216,29 @@ Quality Thresholds, Language.
 
 ## Status
 
-**v0.3.1 — beta.** Production-readiness update covering the seven blocks
-of the v3 design plan: dual-directory permissions, AGENT.md per-project
-context, PDF review dashboard skill, parsing/extraction skill rewrites,
-production-experience meta-skill polish, model-tier baseline + Context7
-plugin, and ralph-loop autonomous task execution.
+**v0.6.0 — first architectural beta.** This release lands:
 
-We are inviting a small group of developer users to test before public launch.
+- Parallel ralph-loop (up to 8 concurrent workers) with a heap-safety
+  conformance gate
+- Native chunker + RAG (onion-peeler + CJK bigram keyword index +
+  one-shot LLM bundle classifier, ported from the AMC verification app)
+- Source-context auto-attach on skill_authoring tasks (rule NL + evidence
+  chunks + sibling rules injected into the prompt, no manual search needed)
+- Workspace file locking for shared coordination files (`rules/catalog.json`,
+  `rules/manifest.json`, `tasks.json`, etc.)
+- `agent_tool` gets `wait` / `poll` / `list` / `kill` operations +
+  `stale_subagents` phase-advance signal
+- New FINALIZATION phase packages the session into a shippable deliverable
+  (canonical `rule_skills/` layout + README + coverage report + final
+  dashboard)
+- Input stays active during streaming (type-ahead queue), arrow keys +
+  history recall, CTX smoothing + peak, per-provider context-limit caps,
+  `/tools`, `/parallelism`, and more
+
+See [DEV_LOG.md](./DEV_LOG.md) for the full v0.6.0 change breakdown and
+[docs/update_design_v5.md](./docs/update_design_v5.md) for the plan that
+drove it.
+
 Bug reports and PRs welcome at <https://github.com/kitchen-engineer42/kc-cli>.
 
 ---
