@@ -19,6 +19,9 @@ import { ReleaseTool } from "./tools/release.js";
 import { PhaseAdvanceTool } from "./tools/phase-advance.js";
 import { DocumentParseTool } from "./tools/document-parse.js";
 import { DocumentSearchTool } from "./tools/document-search.js";
+import { DocumentChunkTool } from "./tools/document-chunk.js";
+import { BundleSearchTool } from "./tools/bundle-search.js";
+import { DocumentClassifyTool } from "./tools/document-classify.js";
 import { WorkerLLMCallTool } from "./tools/worker-llm-call.js";
 import { WorkflowRunTool } from "./tools/workflow-run.js";
 import { RuleCatalogTool } from "./tools/rule-catalog.js";
@@ -223,6 +226,12 @@ export class AgentEngine {
           ocrModel: vlmModel,
         }),
         new DocumentSearchTool(this.workspace),
+        // Group C — chunker/RAG infrastructure ported from AMC app. Core
+        // tools (not phase-gated): useful from BOOTSTRAP through FINALIZATION
+        // for any doc-heavy project, not just rule extraction.
+        new DocumentChunkTool(this.workspace),
+        new BundleSearchTool(this.workspace),
+        new DocumentClassifyTool(this.workspace, this.config),
         new RuleCatalogTool(this.workspace),
         new EvolutionCycleTool(this.workspace, this.cornerCases),
         new DashboardRenderTool(this.workspace),
