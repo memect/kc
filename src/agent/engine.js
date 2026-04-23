@@ -184,6 +184,61 @@ export class AgentEngine {
     this._lastReady = Object.fromEntries(
       Object.keys(this.pipelines).map((p) => [p, false]),
     );
+
+    // B0.1: Heap sampler. Parent engines only — sub-agents share a process
+    // with the parent and would double-log. Writes a single JSONL line
+    // per minute to <workspace>/logs/heap.jsonl with the numbers needed
+    // to diagnose RSS creep (heapUsed/heapTotal/external/rss/arrayBuffers,
+    // plus active task count and history length). Always on, ~60 bytes
+    // per minute to disk.
+    this._heapSamplerStop = this._isSubagent ? null : this._startHeapSampler();
+  }
+
+  /**
+   * Start sampling process.memoryUsage() every 60 s into logs/heap.jsonl.
+   * Returns a stop fn. Timer is .unref()'d so it never keeps the process
+   * alive by itself. Failures are silently suppressed — this is a
+   * diagnostic, not a correctness feature.
+   */
+  _startHeapSampler() {
+    const logDir = path.join(this.workspace.cwd, "logs");
+    const logPath = path.join(logDir, "heap.jsonl");
+    const sample = () => {
+      try {
+        const mem = process.memoryUsage();
+        const row = {
+          t: new Date().toISOString(),
+          seq: this.eventLog?.currentSeq ?? 0,
+          phase: this.currentPhase,
+          rssMB: Math.round(mem.rss / 1024 / 1024),
+          heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+          heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
+          externalMB: Math.round((mem.external || 0) / 1024 / 1024),
+          arrayBuffersMB: Math.round((mem.arrayBuffers || 0) / 1024 / 1024),
+          historyLen: this.history?.messages?.length ?? 0,
+          tasksPending: this.taskManager?.progress?.pending ?? 0,
+          tasksInProgress: this.taskManager?.progress?.inProgress ?? 0,
+        };
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.appendFileSync(logPath, JSON.stringify(row) + "\n", "utf-8");
+      } catch { /* never fatal */ }
+    };
+    // Record one sample at startup so we have a baseline even on short runs.
+    sample();
+    const timer = setInterval(sample, 60_000);
+    timer.unref?.();
+    return () => {
+      try {
+        clearInterval(timer);
+        sample(); // one final sample on shutdown
+      } catch { /* ignore */ }
+    };
+  }
+
+  /** Stop background diagnostics. Call on graceful shutdown. */
+  stop() {
+    try { this._heapSamplerStop?.(); } catch { /* ignore */ }
+    this._heapSamplerStop = null;
   }
 
   /**

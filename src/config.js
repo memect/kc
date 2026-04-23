@@ -132,7 +132,32 @@ export function loadSettings(workspacePath) {
 
     // Language
     language: env.LANGUAGE || gc.language || "en",
+
+    // B0.6: Parallel ralph-loop guard. Parallelism > 1 is a LOADED footgun
+    // until the heap-safety conformance gate (B0.7) passes. Unsetting the
+    // verified flag forces serial execution — KC_PARALLELISM_VERIFIED must
+    // be set explicitly after heap.jsonl shows a flat RSS trajectory over
+    // ≥ 2h. This prevents accidental $100+ runaway runs.
+    //
+    // Desired parallelism (from --parallelism flag or session config) is
+    // parsed here; the actual effective value is computed by a helper
+    // below that downgrades to 1 if the flag isn't set.
+    parallelismVerified:
+      (env.KC_PARALLELISM_VERIFIED || gc.parallelism_verified || "").toString() === "1" ||
+      (env.KC_PARALLELISM_VERIFIED || gc.parallelism_verified || "").toString().toLowerCase() === "true",
+    parallelismRequested: (() => {
+      const raw = env.KC_PARALLELISM || gc.parallelism;
+      const n = Number.parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 1) return 1;
+      return Math.min(n, 8); // max 8 per plan — prevents API-spend runaway
+    })(),
   };
+
+  // Effective parallelism is silently clamped to 1 unless KC_PARALLELISM_VERIFIED
+  // is set. Callers (engine.runTaskLoop, /parallelism slash command, CLI flag)
+  // should read this instead of parallelismRequested.
+  settings.effectiveParallelism = () =>
+    settings.parallelismVerified ? settings.parallelismRequested : 1;
 
   // Effective worker config (falls back to conductor config)
   settings.effectiveWorkerProvider = () => settings.workerProvider || settings.provider;

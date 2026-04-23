@@ -30,6 +30,17 @@ const VISIBLE_WINDOW = 50;
 // Older ToolBlocks show header only. Both still persist full output to disk.
 const RECENT_TOOL_WINDOW = 10;
 
+// B0.3: Hard cap on the React `messages` array. Without this, the array
+// grows forever (setMessages((prev) => [...prev, msg]) via addMessage) —
+// the VISIBLE_WINDOW virtualization hides old entries from render but
+// they still sit in state. Over a 17 h session with 2-4 messages per
+// turn, that's 1000s of entries holding tool-result digest strings and
+// pipeline messages. /compact resets messages to a 1-item summary, so
+// this cap is really a safety net between compacts. On cap hit, drop
+// oldest non-system entries (system messages carry session-level
+// context — pipeline transitions, errors — that users want retained).
+const MAX_RETAINED_MESSAGES = 500;
+
 /**
  * Main KC Agent CLI App using Ink (React for terminals).
  */
@@ -63,7 +74,16 @@ function App({ engine, config }) {
   }, []);
 
   const addMessage = useCallback((msg) => {
-    setMessages((prev) => [...prev, msg]);
+    setMessages((prev) => {
+      if (prev.length < MAX_RETAINED_MESSAGES) return [...prev, msg];
+      // Cap hit: drop the oldest non-system entry. If everything is system
+      // (unlikely but possible), fall back to dropping the very oldest.
+      const dropIdx = prev.findIndex((m) => m.role !== "system");
+      const next = dropIdx >= 0
+        ? [...prev.slice(0, dropIdx), ...prev.slice(dropIdx + 1), msg]
+        : [...prev.slice(1), msg];
+      return next;
+    });
   }, []);
 
   const runTurn = useCallback(async (text) => {
@@ -436,8 +456,9 @@ function App({ engine, config }) {
 
       case "/exit":
       case "/quit":
-        // Save state before exit
+        // Save state + stop diagnostics before exit
         try { engineRef.current.saveState(); } catch { /* ignore */ }
+        try { engineRef.current.stop(); } catch { /* ignore */ }
         exit();
         return true;
 
@@ -473,11 +494,13 @@ function App({ engine, config }) {
         addMessage({ role: "system", content: "[Queue cleared]" });
       } else {
         try { engineRef.current.saveState(); } catch { /* ignore */ }
+        try { engineRef.current.stop(); } catch { /* ignore */ }
         exit();
       }
     }
     if (key.ctrl && input === "d") {
       try { engineRef.current.saveState(); } catch { /* ignore */ }
+      try { engineRef.current.stop(); } catch { /* ignore */ }
       exit();
     }
   });
@@ -611,8 +634,12 @@ export async function main({ languageOverride } = {}) {
 
   const engine = new AgentEngine({ client, config });
 
-  // Save state on process exit
-  const saveOnExit = () => { try { engine.saveState(); } catch { /* ignore */ } };
+  // Save state on process exit + stop background diagnostics (B0.1 heap
+  // sampler). saveState is idempotent; stop() is safe to call twice.
+  const saveOnExit = () => {
+    try { engine.saveState(); } catch { /* ignore */ }
+    try { engine.stop(); } catch { /* ignore */ }
+  };
   process.on("SIGINT", saveOnExit);
   process.on("SIGTERM", saveOnExit);
 

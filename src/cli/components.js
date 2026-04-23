@@ -147,7 +147,14 @@ export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
  */
 const RECENT_PREVIEW_LINES = 4;
 
-export function ToolBlock({ name, input, output, isError, isRunning, isRecent = true }) {
+// B0.5: React.memo — ToolBlock renders the heaviest subtree in the TUI
+// (multi-line Box + colored Text + per-line Box wrappers). Without memo,
+// every `setMessages` / `setStreamingText` causes React to re-render ALL
+// 50 visible ToolBlocks even though none of their props changed. Ink
+// then diffs the result against the prior render. Memo lets us skip
+// that work for untouched rows. The props are small primitives + short
+// strings — shallow equality is the right comparator.
+function ToolBlockImpl({ name, input, output, isError, isRunning, isRecent = true }) {
   const borderColor = isRunning ? "yellow" : isError ? "red" : "green";
   const outStr = typeof output === "string" ? output : "";
   const lines = outStr ? outStr.split("\n") : [];
@@ -203,6 +210,8 @@ export function ToolBlock({ name, input, output, isError, isRunning, isRecent = 
     ),
   );
 }
+
+export const ToolBlock = React.memo(ToolBlockImpl);
 
 // --- Message display ---
 
