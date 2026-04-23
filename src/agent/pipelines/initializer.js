@@ -138,6 +138,31 @@ export class ProjectInitializer extends Pipeline {
     this.configReady = !!gc.api_key;
   }
 
+  /**
+   * F1b: Worker LLM health snapshot. Static check only — inspect whether
+   * TIER1-4 and OCR_MODEL_TIER1 are populated in .env. Does NOT make
+   * network calls — a live ping would be invasive for bootstrap (slow,
+   * charges money, and the worker LLM isn't actually used until
+   * DISTILLATION). Surfacing the config state is enough for bootstrap.
+   * The agent can then decide to validate via worker_llm_call later if
+   * warranted. Returns null when no .env exists yet.
+   */
+  _workerConfigSnapshot() {
+    const envPath = path.join(this._workspace.cwd, ".env");
+    if (!fs.existsSync(envPath)) return null;
+    const tiers = { TIER1: "", TIER2: "", TIER3: "", TIER4: "", OCR_MODEL_TIER1: "" };
+    try {
+      for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
+        for (const k of Object.keys(tiers)) {
+          if (line.startsWith(`${k}=`)) {
+            tiers[k] = line.slice(k.length + 1).trim();
+          }
+        }
+      }
+    } catch { return null; }
+    return tiers;
+  }
+
   _loadGlobalConfig() {
     const p = path.join(os.homedir(), ".kc_agent", "config.json");
     if (fs.existsSync(p)) { try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { /* skip */ } }
@@ -157,6 +182,21 @@ export class ProjectInitializer extends Pipeline {
     }
     if (completed.length) parts.push("### Done\n" + completed.map((c) => `- [x] ${c}`).join("\n"));
     if (pending.length) parts.push("### Needed\n" + pending.map((p) => `- [ ] ${p}`).join("\n"));
+
+    // F1b: surface worker-LLM tier status as part of bootstrap state so
+    // the agent can flag missing tiers to the developer user upfront,
+    // rather than hitting "worker LLM unreachable" hours later during
+    // DISTILLATION. Static inspection only — no network calls.
+    const workerConfig = this._workerConfigSnapshot();
+    if (workerConfig) {
+      const tierLines = [];
+      for (const [k, v] of Object.entries(workerConfig)) {
+        if (v) tierLines.push(`- ${k}: ${v}`);
+        else tierLines.push(`- ${k}: ⚠️ (empty — set before DISTILLATION, or worker_llm_call tools will fail)`);
+      }
+      parts.push("### Worker LLM tiers (.env snapshot)\n" + tierLines.join("\n") +
+        "\n\nThese drive `worker_llm_call`, `workflow_run`, `document_parse` OCR, etc. Empty tiers don't block bootstrap — but DISTILLATION requires at least TIER1 to be live. Discuss with the developer user if any are missing.");
+    }
 
     if (this.exitCriteriaMet()) {
       parts.push("### Exit\nBootstrap requirements met. Proceed to EXTRACTION.");

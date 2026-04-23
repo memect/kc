@@ -52,4 +52,14 @@ export class ToolRegistry {
   get size() {
     return this._tools.size;
   }
+
+  /** F5: tool names currently registered. */
+  names() {
+    return Array.from(this._tools.keys()).sort();
+  }
+
+  /** F5: lookup a specific tool — used by diagnostics/UI. */
+  get(name) {
+    return this._tools.get(name);
+  }
 }

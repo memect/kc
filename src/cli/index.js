@@ -15,6 +15,7 @@ import {
   HRule,
   InputPrompt,
 } from "./components.js";
+import { MemeOverlay } from "./meme.js"; // F6
 
 const h = React.createElement;
 
@@ -54,6 +55,7 @@ function App({ engine, config }) {
   const [sessionId, setSessionId] = useState(engine.workspace.sessionId);
   const [phase, setPhase] = useState(engine.currentPhase);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [showMeme, setShowMeme] = useState(false); // F6
   const [spinnerStatus, setSpinnerStatus] = useState(null);
   const [contextTokens, setContextTokens] = useState(0);
   const [contextLimit, setContextLimit] = useState(config.kcContextLimit || 200000);
@@ -182,7 +184,10 @@ function App({ engine, config }) {
     // Process queue
     if (queueRef.current.length > 0) {
       const next = queueRef.current.shift();
+      setQueueSize(queueRef.current.length); // F2
       runTurn(next);
+    } else {
+      setQueueSize(0); // F2
     }
   }, [addMessage, updateContextStats]);
 
@@ -202,6 +207,7 @@ function App({ engine, config }) {
             "  /tasks               Show task progress\n" +
             "  /phase [sub]         advance | status | <name> — manual phase override\n" +
             "  /schedule            Show scheduled ingestion jobs and recent log lines\n" +
+            "  /tools               List all registered tools and which phase gates them\n" +
             "  /parallelism [N]     Show or set parallel ralph-loop worker count (1-8)\n" +
             "  /clear               Clear conversation history (keep workspace)\n" +
             "  /compact             Summarize older messages to reduce context\n" +
@@ -236,6 +242,39 @@ function App({ engine, config }) {
             `Context:     ~${stats.totalTokens} tokens (${stats.percentage}% of ${stats.limit})\n` +
             `Parallelism: ${parLine}`,
         });
+        return true;
+      }
+
+      case "/meme":
+        // F6: easter egg. Not in /help.
+        setShowMeme(true);
+        return true;
+
+      case "/tools": {
+        // F5: list all registered tools + which phase gates them. Reads
+        // from the live toolRegistry so what you see is what the agent
+        // currently has available. Also names the distill-only tools
+        // explicitly so users understand why some tools "come and go"
+        // as phases advance.
+        const reg = engineRef.current.toolRegistry;
+        const names = reg?.names?.() || [];
+        const core = engineRef.current._buildTools?.core?.map((t) => t?.name).filter(Boolean) || [];
+        const distill = engineRef.current._buildTools?.distill?.map((t) => t?.name).filter(Boolean) || [];
+        const phase = engineRef.current.currentPhase.toUpperCase();
+        const lines = [
+          `Tools registered for phase ${phase}: ${names.length}`,
+          "",
+          `Core (always available, ${core.length}):`,
+          ...core.map((n) => `  • ${n}${names.includes(n) ? "" : " [not currently registered]"}`),
+        ];
+        if (distill.length > 0) {
+          lines.push("", `Distill-only (DISTILLATION / PRODUCTION_QC / FINALIZATION, ${distill.length}):`);
+          for (const n of distill) {
+            lines.push(`  • ${n}${names.includes(n) ? "" : " [gated out of this phase]"}`);
+          }
+        }
+        lines.push("", "Tools are not separately installable — they ship with the KC release. To see what each tool does, invoke it or ask the agent.");
+        addMessage({ role: "system", content: lines.join("\n") });
         return true;
       }
 
@@ -407,10 +446,25 @@ function App({ engine, config }) {
           } catch (err) {
             addMessage({ role: "system", content: `Compact failed: ${err.message}` });
           } finally {
+            // F8: Spinner-race fix. If a queued task is about to kick off
+            // via runTurn(next), DO NOT clear the streaming/spinner state
+            // here — runTurn's own entry sets streamingRef=true + spinner
+            // immediately, but there's a brief React-render window between
+            // our `setStreaming(false)` and its `setStreaming(true)` where
+            // the TUI paints "no spinner, no streaming" for 1-2 frames.
+            // Over long sessions that looked like a dead TUI when a user
+            // watched the moment /compact auto-chained to the next task.
+            // Order now: IF next task is queued, let runTurn(next) set all
+            // streaming state in one atomic render; we just reset the ref
+            // flags to avoid the input-is-locked issue. Otherwise do the
+            // full clear (idle-TUI case).
+            const hasQueuedWork = queueRef.current.length > 0;
             streamingRef.current = false;
-            setStreaming(false);
-            setSpinnerStatus(null);
-            if (queueRef.current.length > 0) {
+            if (!hasQueuedWork) {
+              setStreaming(false);
+              setSpinnerStatus(null);
+            }
+            if (hasQueuedWork) {
               const next = queueRef.current.shift();
               runTurn(next);
             }
@@ -515,6 +569,8 @@ function App({ engine, config }) {
     }
   }, [addMessage, config, exit, updateContextStats]);
 
+  const [queueSize, setQueueSize] = useState(0); // F2: count for TUI indicator
+
   const handleSubmit = useCallback((text) => {
     const trimmed = text.trim();
     setInputValue("");
@@ -529,6 +585,11 @@ function App({ engine, config }) {
 
     if (streamingRef.current) {
       queueRef.current.push(trimmed);
+      setQueueSize(queueRef.current.length); // F2
+      addMessage({
+        role: "system",
+        content: `⏳ Queued (${queueRef.current.length} waiting). Will be sent to KC on next turn boundary.`,
+      });
     } else {
       runTurn(trimmed);
     }
@@ -552,6 +613,12 @@ function App({ engine, config }) {
       exit();
     }
   });
+
+  // F6: /meme overlay short-circuits the rest of the UI until dismissed.
+  // Its own useInput handler owns ESC / Enter while it's up.
+  if (showMeme) {
+    return h(MemeOverlay, { onDismiss: () => setShowMeme(false) });
+  }
 
   return h(Box, { flexDirection: "column" },
     // Welcome banner
@@ -629,11 +696,16 @@ function App({ engine, config }) {
 
     // Separator + Input
     h(HRule),
+    // F2: Input stays active during streaming. Submissions while the
+    // agent is busy get queued (handleSubmit checks streamingRef) and
+    // flushed at the next natural turn boundary. Matches Claude Code's
+    // type-ahead behavior.
     h(InputPrompt, {
       value: inputValue,
       onChange: setInputValue,
       onSubmit: handleSubmit,
-      isActive: !streaming,
+      isActive: true,
+      placeholderRight: queueSize > 0 ? `(${queueSize} queued)` : null,
     }),
     h(HRule),
     h(StatusBar, { sessionId, phase, contextTokens, contextLimit }),

@@ -45,15 +45,36 @@ export function CookingSpinner({ status }) {
 
 const LENAT_QUOTE = "Intelligence is ten million rules.";
 
+// F7: rolling 30-sample window for CTX smoothing + peak tracking. 30
+// samples × observed update cadence (~1/sec during active turns) ≈ a
+// 30-second smoothed view, which absorbs the small spikes from
+// transient tool-result embeddings that made the old "instantaneous"
+// display jumpy. Peak stays at the highest seen this session.
+const CTX_SAMPLE_WINDOW = 30;
+
 export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
-  const pct = contextLimit ? Math.round((contextTokens / contextLimit) * 100) : 0;
+  const samplesRef = useRef([]);
+  const peakRef = useRef(0);
+
+  // Push current sample + cap the ring
+  const samples = samplesRef.current;
+  samples.push(contextTokens || 0);
+  if (samples.length > CTX_SAMPLE_WINDOW) samples.shift();
+  const smoothed = samples.length > 0
+    ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
+    : 0;
+  if ((contextTokens || 0) > peakRef.current) peakRef.current = contextTokens || 0;
+  const peak = peakRef.current;
+
+  const pct = contextLimit ? Math.round((smoothed / contextLimit) * 100) : 0;
   const ctxColor = pct > 80 ? "red" : pct > 60 ? "yellow" : "green";
-  const ctxLabel = contextTokens >= 1000
-    ? `${(contextTokens / 1000).toFixed(1)}k`
-    : `${contextTokens || 0}`;
-  const limitLabel = contextLimit >= 1000
-    ? `${(contextLimit / 1000).toFixed(0)}k`
-    : `${contextLimit || 0}`;
+  const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n || 0}`;
+  const ctxLabel = fmt(smoothed);
+  const limitLabel = fmt(contextLimit || 0);
+  // F7: peak shown when meaningfully higher than smoothed (by at least
+  // 5% of the limit) so users see "we hit high water, currently back
+  // down." Otherwise skip to keep the bar compact.
+  const showPeak = contextLimit > 0 && (peak - smoothed) / contextLimit > 0.05;
 
   // Soft-threshold hint — shows up before auto-windowing kicks in at ~70%
   // so users know they can run /compact to reduce context more aggressively
@@ -68,6 +89,7 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
     phase ? h(Text, { color: "cyan" }, ` ${phase.toUpperCase()}`) : null,
     h(Text, { color: "green" }, "  ●  "),
     h(Text, { color: ctxColor }, `CTX: ${ctxLabel}/${limitLabel} (${pct}%)`),
+    showPeak ? h(Text, { dimColor: true }, ` · peak ${fmt(peak)}`) : null,
     compactHint ? h(Text, { color: ctxColor }, compactHint) : null,
     h(Text, { dimColor: true }, `  · ${LENAT_QUOTE}`),
   );
@@ -275,29 +297,122 @@ export function MessagesList({ messages }) {
 
 // --- Input prompt ---
 
-export function InputPrompt({ value, onChange, onSubmit, isActive }) {
+/**
+ * F3: cursor-aware input with arrow-key support.
+ *
+ * - Left/Right: move cursor within the current line. Cursor position is
+ *   internal state (not hoisted) so the parent's onChange contract
+ *   stays stable.
+ * - Up/Down: when the input is empty (OR cursor is at start/end), walk
+ *   through a session-local history buffer of the user's past
+ *   submissions. Non-destructive: editing a recalled line doesn't mutate
+ *   the history entry.
+ * - Home/End (or Ctrl-A/Ctrl-E): jump cursor to start/end.
+ * - Backspace/Delete: deletes at cursor position (not always end-of-line).
+ *
+ * History is in-memory only (`historyRef`) — not persisted across sessions,
+ * per v0.6.0 plan item F3 "keep simple." Cleared on `/clear`.
+ */
+export function InputPrompt({ value, onChange, onSubmit, isActive, placeholderRight = null }) {
+  const [cursor, setCursor] = useState(value.length);
+  const historyRef = useRef([]); // session-local submission history
+  const historyIdxRef = useRef(null); // index while browsing history; null = live editing
+
+  // Keep cursor in range when value changes externally (e.g. recall).
+  useEffect(() => {
+    if (cursor > value.length) setCursor(value.length);
+  }, [value, cursor]);
+
   useInput((input, key) => {
     if (!isActive) return;
 
+    // Submit
     if (key.return) {
-      onSubmit(value);
+      const v = value;
+      if (v.trim()) historyRef.current.push(v);
+      historyIdxRef.current = null;
+      setCursor(0);
+      onSubmit(v);
       return;
     }
+
+    // Backspace at cursor
     if (key.backspace || key.delete) {
-      onChange(value.slice(0, -1));
+      if (cursor === 0) return;
+      const next = value.slice(0, cursor - 1) + value.slice(cursor);
+      onChange(next);
+      setCursor(cursor - 1);
+      historyIdxRef.current = null;
       return;
     }
-    // Skip control characters
+
+    // Arrow keys
+    if (key.leftArrow) {
+      if (cursor > 0) setCursor(cursor - 1);
+      return;
+    }
+    if (key.rightArrow) {
+      if (cursor < value.length) setCursor(cursor + 1);
+      return;
+    }
+    if (key.upArrow) {
+      const hist = historyRef.current;
+      if (hist.length === 0) return;
+      const idx = historyIdxRef.current == null ? hist.length : historyIdxRef.current;
+      const nextIdx = Math.max(0, idx - 1);
+      historyIdxRef.current = nextIdx;
+      const recalled = hist[nextIdx] || "";
+      onChange(recalled);
+      setCursor(recalled.length);
+      return;
+    }
+    if (key.downArrow) {
+      const hist = historyRef.current;
+      if (historyIdxRef.current == null) return;
+      const nextIdx = historyIdxRef.current + 1;
+      if (nextIdx >= hist.length) {
+        historyIdxRef.current = null;
+        onChange("");
+        setCursor(0);
+        return;
+      }
+      historyIdxRef.current = nextIdx;
+      const recalled = hist[nextIdx] || "";
+      onChange(recalled);
+      setCursor(recalled.length);
+      return;
+    }
+
+    // Home/End — Ctrl-A / Ctrl-E (terminal convention)
+    if (key.ctrl && input === "a") { setCursor(0); return; }
+    if (key.ctrl && input === "e") { setCursor(value.length); return; }
+
+    // Skip other control combos
     if (key.ctrl || key.meta || key.escape) return;
-    // Append printable characters
+
+    // Printable characters insert at cursor
     if (input) {
-      onChange(value + input);
+      const next = value.slice(0, cursor) + input + value.slice(cursor);
+      onChange(next);
+      setCursor(cursor + input.length);
+      historyIdxRef.current = null;
     }
   }, { isActive });
 
+  // Render: split the value at the cursor so the block-cursor appears
+  // inline, not just at the end.
+  const before = value.slice(0, cursor);
+  const after = value.slice(cursor);
+
   return h(Box, null,
     h(Text, { dimColor: true }, "❯ "),
-    h(Text, null, value),
-    isActive ? h(Text, { color: "gray" }, "█") : null,
+    h(Text, null, before),
+    isActive
+      ? h(Text, { color: "gray", inverse: true }, after.length > 0 ? after[0] : " ")
+      : null,
+    h(Text, null, after.length > 0 ? after.slice(1) : ""),
+    placeholderRight
+      ? h(Box, { marginLeft: 2 }, h(Text, { dimColor: true, color: "cyan" }, placeholderRight))
+      : null,
   );
 }
