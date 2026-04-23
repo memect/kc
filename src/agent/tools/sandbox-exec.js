@@ -1,7 +1,25 @@
 import { spawn } from "node:child_process";
 import { BaseTool, ToolResult } from "./base.js";
+import { SHARED_COORDINATION_PATHS } from "../workspace.js";
 
 const MAX_OUTPUT = 10_000;
+
+// H6: detect sandbox_exec commands that touch shared coordination files.
+// Doesn't block — just prepends a warning to the tool result. In session
+// 6304673afaa0 we observed 8+ subagents doing `cat catalog.json | python`
+// and `json.dump()` to overwrite catalog.json directly, racing each other
+// because sandbox_exec bypasses the workspace-file lock (B9). The warning
+// nudges the LLM toward workspace_file / rule_catalog which ARE lock-safe.
+function detectSharedFileWrites(command) {
+  if (!command) return [];
+  const hits = new Set();
+  for (const shared of SHARED_COORDINATION_PATHS) {
+    // Match both bare and quoted forms (e.g. rules/catalog.json or "rules/catalog.json")
+    const re = new RegExp(shared.replace(/\//g, "\\/").replace(/\./g, "\\."));
+    if (re.test(command)) hits.add(shared);
+  }
+  return Array.from(hits);
+}
 
 /**
  * Execute shell commands in the workspace directory.
@@ -59,6 +77,11 @@ export class SandboxExecTool extends BaseTool {
       ? this._workspace.projectDir
       : this._workspace.cwd;
 
+    // H6: warn before the command runs when it touches shared files. The
+    // warning becomes part of the tool result so the LLM sees it on every
+    // subsequent call and self-corrects toward workspace_file / rule_catalog.
+    const sharedHits = detectSharedFileWrites(command);
+
     try {
       const { output, code } = await this._run(command, effectiveCwd);
       let result = output;
@@ -67,6 +90,13 @@ export class SandboxExecTool extends BaseTool {
       }
       if (code !== 0) {
         result += `\n[exit code: ${code}]`;
+      }
+      if (sharedHits.length > 0) {
+        const prefix =
+          `⚠️  This command touches shared coordination file(s): ${sharedHits.join(", ")}.\n` +
+          `   sandbox_exec writes bypass workspace file locking (B9).\n` +
+          `   Under concurrent subagents this races — use workspace_file or rule_catalog instead.\n\n`;
+        result = prefix + result;
       }
       return new ToolResult(result, code !== 0);
     } catch (err) {

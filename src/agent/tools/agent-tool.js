@@ -110,6 +110,52 @@ export class AgentTool extends BaseTool {
 
   // ---- spawn ----
 
+  /**
+   * H3: Dispatch-completeness linter. When the task_description starts by
+   * declaring it covers N items — "从以下核心法规中" / "法规1...法规2..."
+   * or "items 1 through 5" — check whether the body actually lists that
+   * many distinct items. Doesn't block spawn; prepends a warning to the
+   * tool result so the composing LLM sees the discrepancy on the next
+   * turn and can self-correct.
+   *
+   * Motivated by session 6304673afaa0: main agent wrote a brief titled
+   * "从以下核心法规中提取" (plural) but only listed 法规1. Reg 02 was
+   * silently dropped — no automation caught it until the rules were
+   * already half-extracted.
+   */
+  _lintBriefCompleteness(taskDesc) {
+    const issues = [];
+    // Chinese enumerated: 法规1、法规2... / 文件1、文件2... / 任务1... etc
+    const zhEnumMatches = Array.from(taskDesc.matchAll(/(?:法规|文件|任务|步骤|规则组|项目)(\d+)/g))
+      .map((m) => parseInt(m[1], 10))
+      .filter((n) => Number.isFinite(n));
+    if (zhEnumMatches.length > 0) {
+      const maxN = Math.max(...zhEnumMatches);
+      const uniqueN = new Set(zhEnumMatches).size;
+      if (maxN > uniqueN) {
+        issues.push(
+          `Brief references items up to ${maxN} but only ${uniqueN} distinct item numbers appear — ` +
+          `possible dropped item (e.g. saying "法规1, 法规3" without listing 法规2).`,
+        );
+      }
+    }
+    // English enumerated: "item 1", "step 2" etc, or bullet list mismatch
+    const enEnumMatches = Array.from(taskDesc.matchAll(/\b(?:item|step|task|regulation|file)\s+(\d+)/gi))
+      .map((m) => parseInt(m[1], 10))
+      .filter((n) => Number.isFinite(n));
+    if (enEnumMatches.length > 0) {
+      const maxN = Math.max(...enEnumMatches);
+      const uniqueN = new Set(enEnumMatches).size;
+      if (maxN > uniqueN) {
+        issues.push(
+          `Brief references items up to ${maxN} but only ${uniqueN} distinct item numbers appear — ` +
+          `possible dropped item.`,
+        );
+      }
+    }
+    return issues;
+  }
+
   async _spawn(input) {
     const taskDesc = input.task_description || "";
     const requestedId = (input.task_id || "").trim();
@@ -200,7 +246,11 @@ export class AgentTool extends BaseTool {
     this._runningTasks.set(taskId, { promise: taskPromise, abortController, startedAt });
     taskPromise.catch(() => {}).finally(() => this._runningTasks.delete(taskId));
 
-    return new ToolResult(JSON.stringify({
+    // H3: linter runs on the brief we just saved. Non-blocking; warning
+    // surfaces in the tool result so the LLM sees it.
+    const lintWarnings = this._lintBriefCompleteness(taskDesc);
+
+    const result = {
       task_id: taskId,
       requested_id: labelOverridden ? requestedId : undefined,
       status: "running",
@@ -208,7 +258,11 @@ export class AgentTool extends BaseTool {
       message: labelOverridden
         ? `Sub-agent started under sanitized id '${taskId}' (your '${requestedId}' wasn't a valid path component). Use operation=poll with task_id=${taskId} to check progress.`
         : `Sub-agent '${taskId}' started. Use operation=poll to check progress, operation=wait to block for completion, operation=kill to abort.`,
-    }, null, 2));
+    };
+    if (lintWarnings.length > 0) {
+      result.brief_lint_warnings = lintWarnings;
+    }
+    return new ToolResult(JSON.stringify(result, null, 2));
   }
 
   // ---- poll ----

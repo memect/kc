@@ -139,6 +139,13 @@ function App({ engine, config }) {
             });
             setCurrentTool(null);
             setSpinnerStatus("Analyzing results...");
+            // H4: Refresh the CTX indicator after every tool_result. Without
+            // this, contextTokens only updates on turn_complete, which never
+            // fires in long tool-heavy sessions — we observed 908 events with
+            // zero turn_complete in session 6304673afaa0, CTX stuck at 0/131k
+            // for 30+ minutes. getContextStats() is a cheap pure calc over
+            // the history array; safe to call on every tool call.
+            updateContextStats();
             break;
 
           case "pipeline_event": {

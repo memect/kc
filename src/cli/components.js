@@ -127,6 +127,17 @@ export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
       ? h(Text, { color: "cyan" }, `📥 ${pendingInputCount} new file(s) pending in input/ — run /schedule for details`)
       : null,
     h(Text, null, ""),
+    // H7: priority-phrasing nudge. If the developer has multiple inputs
+    // with mixed roles (authoritative vs supporting), KC treats them
+    // equally unless told otherwise — which led to the reg 02 starvation
+    // + reg 03-10 bloat in session 6304673afaa0. Prompt explicit up-front.
+    h(Text, { dimColor: true, color: "cyan" },
+      "💡 Tip: If your inputs include BOTH authoritative and supporting"),
+    h(Text, { dimColor: true, color: "cyan" },
+      "   sources, say so at session start — e.g. \"prioritize rules/01 and"),
+    h(Text, { dimColor: true, color: "cyan" },
+      "   rules/02 as core; rules/03-10 are supporting context only.\""),
+    h(Text, null, ""),
     h(Text, { dimColor: true }, "Product of Memium / kitchen-engineer42"),
   );
 }

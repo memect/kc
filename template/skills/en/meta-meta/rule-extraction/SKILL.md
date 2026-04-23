@@ -59,6 +59,80 @@ Rules will be distilled into workflows (see `skill-to-workflow`). Design with di
 ### Catalog Versioning
 When rules change (additions, modifications, deprecations), version the entire rule catalog as a unit. Individual rule versions track specific rules; the catalog version tracks the coherent set. Record the catalog version in `versions.json` alongside individual rule versions.
 
+## Granularity Calibration (read before extracting)
+
+A well-extracted rule catalog has **10-20 rules per typical regulation PDF**
+(a 30-80 page disclosure regulation). Over-extraction into 60-100 rules per
+regulation signals you're treating every clause as its own rule — downstream
+consumers (skill-authoring, workflow-run) can't distinguish meaningful
+checks from boilerplate.
+
+If your first pass produces more than ~25 rules for a single regulation:
+- **Merge rules that share evidence and fail together** (e.g., "must
+  disclose X" and "must disclose Y" where both come from the same
+  required-fields table → one rule: "must disclose the required-fields
+  list including X, Y").
+- **Drop procedural language** that isn't checkable against a report
+  (definitions, scope statements, references to other regs that just
+  transitively apply).
+- **Keep only checkable obligations, prohibitions, and thresholds** —
+  things where you can read a sample report and say pass or fail.
+
+### Sample "good" rule
+
+```json
+{
+  "id": "R014",
+  "source_ref": "Disclosure Reg §15.2",
+  "description": "Quarterly reports must be disclosed within 15 business days after quarter-end.",
+  "applicable_sections": ["public funds"],
+  "severity": "high",
+  "machine_checkable": true,
+  "falsifiability_statement": "If disclosure date is later than 15th business day after quarter-end, the rule fails.",
+  "test_case_stub": "Read the quarterly report's disclosure date + the quarter-end date, compute business-day difference."
+}
+```
+
+Note: one pass/fail outcome, a single `source_ref` to a specific clause,
+clear applicability scope. Skill-authoring can write `check_r014.py` from
+this alone.
+
+### Cross-regulation dedup (when working across multiple PDFs)
+
+If the developer user provides N regulations, rules from later regs often
+duplicate cross-cutting requirements already captured by earlier ones
+(e.g., a 2018 generic disclosure rule vs. a 2025 specific version).
+Before emitting a rule from reg N:
+
+1. **Check the existing catalog.** Use `rule_catalog` (operation: list)
+   to see what's already there. Skip if a rule with equivalent scope +
+   intent exists.
+2. **Prefer the newer / more specific source_ref** when rules overlap.
+3. **If you merged rules**, record the consolidated sources in
+   `source_ref`: e.g., `"New Reg §15.2 + Old Reg §24"`.
+
+### Delegation to sub-agents
+
+If you dispatch extraction to sub-agents (one per regulation), the
+sub-agent inherits ONLY its `task_description` — it cannot see your
+conversation or existing catalog. Therefore, when composing the brief:
+
+- **Specify the target count band** explicitly: "Extract 10-20 atomic
+  rules from this regulation."
+- **Include a sample rule** in the brief body (paste the JSON above
+  verbatim) so the sub-agent's calibration matches yours.
+- **Name every regulation the sub-agent should process.** If AGENT.md
+  lists 10 core regulations, the brief must list all 10 by name, not
+  "the core regs" as a pronoun — LLMs composing long structured briefs
+  frequently drop items (observed in session 6304673afaa0 where reg 02
+  was silently omitted).
+- **State the dedup contract**: "Rules already in the parent's catalog
+  (R001–Rnnn) should NOT be re-extracted. If a requirement is already
+  covered, skip it." Then pass the current catalog's ID ranges.
+- **Prefer `rule_catalog` create operations over sandbox_exec writes to
+  catalog.json.** rule_catalog uses workspace file locking;
+  sandbox_exec bypasses it and races with other writers.
+
 ## Extraction Strategies
 
 ### Strategy 1: Structured Input (Developer User Provides Rules)
