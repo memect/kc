@@ -796,13 +796,19 @@ search) to Node.js as native KC tools. These become the foundation for D1
   file names + first ~5K chars of each file, calls worker LLM, returns
   `{product_type, report_type, confidence, reasoning, source}`. Keyword
   fallback when LLM fails. Result cached per bundle hash.
-- **C4** — Extraction phase integration. When extraction writes
+- **C4** — ~~Extraction phase integration~~ **Moved to Group D** (2026-04-23,
+  implementation-time scope adjustment). When extraction writes
   `rules/catalog.json`, each rule gets `source_chunk_ids: [...]` and
-  `source_ref: "..."` back-refs. This is the input D1 needs.
-- **C5** — Applicability pre-filter (used in D1). For each rule, check
-  `applicable_product_types` / `report_types` against bundle classification
-  before dispatching a skill_authoring task. If no match, mark
-  `not_applicable` and skip (consistent with AMC app behavior).
+  `source_ref: "..."` back-refs. Coupled with D1 (skill_authoring
+  context auto-attach) — back-refs with nothing that reads them is a
+  half-wired state, so both land together. See the Group D section
+  (new bullet D1b) for the consolidated plan.
+- **C5** — ~~Applicability pre-filter~~ **Moved to Group D** (same
+  adjustment as C4). Check overlap between `applicable_product_types` /
+  `report_types` and bundle classification before dispatching a
+  skill_authoring task; mark `not_applicable` and skip if no match.
+  Natural home: D1's task-dispatch path where the filter actually
+  runs. See Group D bullet D6 (renumbered) for the consolidated plan.
 
 **Files:** `src/agent/tools/document-chunk.js` (new), `src/agent/tools/bundle-search.js`
 (new), `src/agent/tools/document-classify.js` (new),
@@ -830,6 +836,22 @@ search) to Node.js as native KC tools. These become the foundation for D1
   Task: author rule_skills/R014/check_r014.py and SKILL.md
   ```
   No tool call required — agent sees context in first message.
+- **D1b** (absorbed from C4) — Extraction pipeline writes
+  `source_chunk_ids: [...]` and `source_ref: "..."` back-refs into
+  `rules/catalog.json` for every rule, using Group C's `bundle_search`
+  over the cached BundleTree. The back-ref field is what D1 reads; they
+  have to land together or D1 has nothing to read. Update
+  `src/agent/rule-catalog-normalize.js` so the normalized schema carries
+  the fields forward, and extend the extraction skill text so the LLM
+  populates them when emitting rules.
+- **D6** (absorbed from C5) — Applicability pre-filter at task dispatch.
+  In `_createTasksForPhase` for `skill_authoring` (or inside the D1
+  prompt assembly), for each rule check `applicable_product_types` /
+  `report_types` overlap with the bundle classification (produced by
+  Group C's `document_classify`, cached alongside the BundleTree). If
+  no overlap, mark the rule `not_applicable` and skip task creation for
+  it — consistent with AMC app behavior. Update the finalization phase
+  (E1) coverage report to show "not applicable" rules separately.
 - **D2** (item 9) — Soft granularity nudge + coverage audit.
   (a) System prompt for skill_authoring phase: "Prefer 1 rule = 1 skill dir.
   Group only when rules share evidence and logic (e.g. siblings from the same
@@ -861,9 +883,12 @@ search) to Node.js as native KC tools. These become the foundation for D1
   observed v5→v12 over-iteration past "good enough."
 
 **Files:** `src/agent/engine.js`, `src/agent/events.js`, `src/agent/skill-loader.js`,
-`src/agent/pipelines/skill-authoring.js`, `src/agent/skill-validator.js` (new),
+`src/agent/pipelines/skill-authoring.js`, `src/agent/pipelines/extraction.js`
+(D1b), `src/agent/rule-catalog-normalize.js` (D1b), `src/agent/task-manager.js`
+(D6 applicability gate), `src/agent/skill-validator.js` (new),
 `template/skills/*/meta-meta/*/SKILL.md` (prompt updates),
-`template/skills/*/meta/evolution-loop/SKILL.md` (D5). ~260 lines.
+`template/skills/*/meta/evolution-loop/SKILL.md` (D5). ~350 lines (grew from
+260 after absorbing C4+C5).
 
 ---
 
@@ -1096,8 +1121,8 @@ what lets the release credibly close out v0.5.x:
 | User 15-item 8 | workspace finalization | E1 |
 | User 15-item 9 | rule granularity | D2 |
 | User 15-item 10 | parser/chunker SOP | C1-C3 |
-| User 15-item 11 | AMC app takeaways | C1-C5 |
-| User 15-item 12 | rule NL → skill context | D1 |
+| User 15-item 11 | AMC app takeaways | C1-C3 + D1b + D6 (C4/C5 absorbed into D) |
+| User 15-item 12 | rule NL → skill context | D1 + D1b |
 | User 15-item 13 | skill loading + tracing | D3 |
 | User 15-item 14 | MD reports at phase boundaries | E2 |
 | User 15-item 15 | /meme easter egg | F6 |
