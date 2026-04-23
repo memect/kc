@@ -163,11 +163,23 @@ Track three metrics per iteration to know when to stop:
 
 ### Stopping Criteria
 
-Stop the loop when ALL three conditions hold for one iteration:
+Stop the loop when **ALL** three conditions hold for one iteration:
 
 1. Correction volume < 5% of total test cases.
 2. New pattern count = 0.
 3. Regression count = 0.
+
+**OR** when the standalone accuracy-convergence condition holds (D5, added
+2026-04-23):
+
+4. Overall accuracy changed by less than 1% between the last two
+   iterations — i.e. `|accuracy[N+1] − accuracy[N]| < 0.01`.
+
+Condition 4 prevents the observed over-iteration pattern of v5 → v12,
+where each iteration oscillated within a ~0.5% accuracy window. Once the
+model has reached "good enough," continuing burns tokens without
+delivering real improvement. When accuracy has plateaued, proceed to the
+next phase (distillation / production).
 
 If correction volume *increases* between consecutive iterations, this is a regression signal. Pause the loop and diagnose before continuing — the last fix may be destabilizing the system.
 

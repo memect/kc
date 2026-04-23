@@ -97,7 +97,18 @@ the primary view.
 
 The developer user configures the project, provides regulations and samples, and \
 makes business decisions (accuracy thresholds, cost trade-offs, rule scope). Discuss \
-unclear regulations with them. Present results and let them judge.`;
+unclear regulations with them. Present results and let them judge.
+
+## Samples Are Not Labeled
+
+The developer user may provide samples that are a MIX of compliant and \
+non-compliant documents — not pre-classified, not pre-annotated. Do not assume \
+any sample is correct. YOU are the ground truth: apply each rule to each sample \
+and determine the verdict from the rule text + document content, not from any \
+implicit labeling. If a sample appears to be a "golden" reference (all rules \
+pass), verify that explicitly rather than trusting its position or filename. \
+This is project-agnostic baseline behavior — it applies even when AGENT.md \
+does not restate it.`;
 
 /**
  * Builds the system prompt from multiple context sources.
