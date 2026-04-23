@@ -8,6 +8,32 @@ import { generateTraceId } from "./version-manager.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GITIGNORE_TEMPLATE = path.resolve(__dirname, "../../template/workspace.gitignore");
 
+// B9: Shared coordination files. Any writer touching these paths MUST go
+// through Workspace.withFileLock() so concurrent writers (main agent +
+// subagents + sandbox_exec) serialize. Observed in session 6304673afaa0:
+// 8+ engines rewriting catalog.json in a 60-second window with no
+// coordination, thrashing rule counts 464 → 364 → 736 → 307.
+//
+// Matching is done via path-suffix — a writer passing "rules/catalog.json"
+// or an absolute path ending in rules/catalog.json both match. Subpaths
+// like "rules/manifest.json" also match with their own distinct lock.
+export const SHARED_COORDINATION_PATHS = [
+  "rules/catalog.json",
+  "rules/manifest.json",
+  "refs/manifest.json",
+  "session-state.json",
+  "tasks.json",
+];
+
+export function isSharedCoordinationPath(relOrAbsPath) {
+  if (!relOrAbsPath) return false;
+  const norm = relOrAbsPath.replace(/\\/g, "/");
+  for (const p of SHARED_COORDINATION_PATHS) {
+    if (norm === p || norm.endsWith("/" + p)) return true;
+  }
+  return false;
+}
+
 /**
  * Per-session workspace directory with path traversal protection.
  * Each agent session gets its own directory under the workspace root.
@@ -90,6 +116,82 @@ export class Workspace {
       throw new Error(`Path escapes project directory: ${userPath}`);
     }
     return resolved;
+  }
+
+  /**
+   * B9: Execute `fn` while holding an exclusive lock on `relPath`. Use for
+   * any shared coordination file that multiple engines (main + subagents +
+   * sandbox_exec) could write. The lock is implemented as a sibling
+   * `<resolved>.lock` file created atomically via `O_CREAT | O_EXCL`,
+   * which is POSIX-guaranteed-atomic on any local filesystem. Stale
+   * lockfiles (mtime older than `staleMs`) are force-removed so a crashed
+   * holder doesn't block the whole workspace forever.
+   *
+   * Subagents and the parent share the same workspace directory, so their
+   * lockfiles collide correctly — no special IPC needed. Works across
+   * engine instances in the same Node process (async contention) and
+   * across Node processes (sibling CLI invocations).
+   *
+   * @template T
+   * @param {string} relPath - workspace-relative path being protected
+   * @param {() => Promise<T>|T} fn - critical section
+   * @param {{timeoutMs?: number, retryMs?: number, staleMs?: number}} [opts]
+   * @returns {Promise<T>}
+   */
+  async withFileLock(relPath, fn, { timeoutMs = 10_000, retryMs = 50, staleMs = 60_000 } = {}) {
+    const target = this.resolvePath(relPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const lockPath = target + ".lock";
+    const start = Date.now();
+
+    while (true) {
+      let fd;
+      try {
+        fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+        // Lockfile exists. Check if stale — a crashed holder left it behind.
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > staleMs) {
+            try { fs.unlinkSync(lockPath); } catch { /* raced against another stealer */ }
+            continue;
+          }
+        } catch {
+          // Lockfile vanished between EEXIST and stat — retry to acquire.
+          continue;
+        }
+        if (Date.now() - start > timeoutMs) {
+          throw new Error(`Timeout acquiring lock on ${relPath} after ${timeoutMs}ms (held by another engine)`);
+        }
+        await new Promise((r) => setTimeout(r, retryMs));
+        continue;
+      }
+
+      // Acquired. Record holder metadata inside the lockfile — useful for
+      // debugging: `cat rules/catalog.json.lock` shows pid + acquired-at.
+      try {
+        fs.writeSync(fd, Buffer.from(`${process.pid}|${Date.now()}|${this.sessionId}\n`));
+      } catch { /* best-effort */ }
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+
+      try {
+        return await fn();
+      } finally {
+        try { fs.unlinkSync(lockPath); } catch { /* already gone, stale-reaped, or permission issue */ }
+      }
+    }
+  }
+
+  /**
+   * Convenience: run `fn` under a shared-coordination lock when the path
+   * is a known shared file. Otherwise runs `fn` directly without lock.
+   * Lets callsites uniformly wrap their writes without knowing which
+   * paths are shared.
+   */
+  async withSharedLockIfApplicable(relPath, fn) {
+    if (isSharedCoordinationPath(relPath)) return this.withFileLock(relPath, fn);
+    return fn();
   }
 
   /**

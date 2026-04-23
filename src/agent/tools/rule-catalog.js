@@ -85,11 +85,25 @@ export class RuleCatalogTool extends BaseTool {
     const ruleId = input.rule_id || "";
     const data = input.data || {};
 
+    // read operations don't need the lock — they're read-only
     if (op === "list") return this._list();
     if (op === "read") return this._read(ruleId || data.id || "");
-    if (op === "create") return this._create(data);
-    if (op === "update") return this._update(ruleId || data.id || "", data);
-    if (op === "delete") return this._delete(ruleId || data.id || "");
+
+    // B9: write operations acquire the catalog lock so concurrent engines
+    // (main + subagents + sandbox_exec-via-workspace_file) serialize their
+    // read-modify-write on catalog.json. Without this, two writers can
+    // both read N rules, one writes N+1, the other writes N+1 of its own,
+    // and one write is silently lost — exactly what we saw in session
+    // 6304673afaa0 thrashing catalog rule counts.
+    if (op === "create") {
+      return this._workspace.withFileLock("rules/catalog.json", () => this._create(data));
+    }
+    if (op === "update") {
+      return this._workspace.withFileLock("rules/catalog.json", () => this._update(ruleId || data.id || "", data));
+    }
+    if (op === "delete") {
+      return this._workspace.withFileLock("rules/catalog.json", () => this._delete(ruleId || data.id || ""));
+    }
     // More helpful than "Unknown operation: " — tells the agent exactly what's
     // allowed and what shape to call with next time (observed in v0.5.3 E2E
     // where GLM-5.1 sent input: {} 38+ times without learning).
