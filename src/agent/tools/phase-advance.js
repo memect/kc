@@ -14,9 +14,18 @@ const VALID_PHASES = new Set(Object.values(Phase));
  * asks). Description kept short to minimize system-prompt budget cost.
  */
 export class PhaseAdvanceTool extends BaseTool {
-  constructor(advanceFn) {
+  /**
+   * @param {(to: string, reason: string, opts: {force?: boolean}) => boolean} advanceFn
+   * @param {() => string} getCurrentPhaseFn - H1: lets the tool read the
+   *   engine's phase BEFORE the call, so it can distinguish "already there"
+   *   (silent no-op, informational) from "non-adjacent refusal" (actionable).
+   *   Before H1 both cases returned the same confusing "Either you're already
+   *   there, or transition is non-adjacent" message.
+   */
+  constructor(advanceFn, getCurrentPhaseFn) {
     super();
     this._advance = advanceFn;
+    this._getCurrentPhase = getCurrentPhaseFn || (() => null);
   }
 
   get name() { return "phase_advance"; }
@@ -47,14 +56,28 @@ export class PhaseAdvanceTool extends BaseTool {
   async execute(input) {
     const to = input.to;
     if (!VALID_PHASES.has(to)) return new ToolResult(`Unknown phase: ${to}`, true);
-    const advanced = this._advance(to, input.reason || "agent request", { force: !!input.force });
-    if (!advanced) {
-      // Either already in target phase, or non-adjacent without force
+
+    const beforePhase = this._getCurrentPhase();
+    // H1: short-circuit the "already in target" case with an informational
+    // message — the agent was trying to advance correctly, engine just
+    // auto-advanced ahead of it (common when _maybeAutoAdvance fires on a
+    // criteria flip). Treat as success, not refusal.
+    if (beforePhase && beforePhase === to) {
       return new ToolResult(
-        `Did not advance to ${to}. Either you're already there, or the transition is non-adjacent (set force:true to override).`,
-        false,
+        `Already in phase ${to} (engine auto-advanced earlier via criteria flip or prior explicit call). Proceed with phase-appropriate work.`,
       );
     }
-    return new ToolResult(`Advanced to ${to}${input.force ? " (forced)" : ""}`);
+
+    const advanced = this._advance(to, input.reason || "agent request", { force: !!input.force });
+    if (advanced) {
+      return new ToolResult(`Advanced${beforePhase ? ` from ${beforePhase}` : ""} to ${to}${input.force ? " (forced)" : ""}`);
+    }
+
+    // Truly refused — non-adjacent transition without force, or terminal-phase
+    // forward attempt. Give the actionable hint.
+    return new ToolResult(
+      `Did not advance to ${to}. Transition is non-adjacent${beforePhase ? ` (currently in ${beforePhase})` : ""} — set force:true to override, or advance to the immediate-next phase first.`,
+      false,
+    );
   }
 }

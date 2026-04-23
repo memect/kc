@@ -98,7 +98,7 @@ const PROVIDERS = [
     apiFormat: "openai",
     modelsEndpoint: null, // VolcanoCloud — use curated list
     supportsCodingPlanKey: true,
-    contextLimit: 131072, // doubao-seed / glm-5.1 coding plan — 128K
+    contextLimit: 200000, // H2: glm-5.1 on coding plan has 200K native
     defaultModel: getTierConfig("volcanocloud").conductor || "doubao-seed-2-0-pro-260215",
     defaultTiers: getTierConfig("volcanocloud").llm,
     defaultVlm: getTierConfig("volcanocloud").vlm,

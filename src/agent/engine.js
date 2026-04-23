@@ -272,7 +272,10 @@ export class AgentEngine {
         new ArchiveFileTool(this.workspace),
         new ScheduleFetchTool(this.workspace),
         new ReleaseTool(this.workspace, { kcVersion: "0.5.2" }),
-        new PhaseAdvanceTool((to, reason, opts) => this._advancePhase(to, reason, opts)),
+        new PhaseAdvanceTool(
+          (to, reason, opts) => this._advancePhase(to, reason, opts),
+          () => this.currentPhase, // H1: tool reads phase BEFORE its own call
+        ),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
           mineruApiKey: this.config.mineruApiKey,
