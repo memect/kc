@@ -1132,6 +1132,16 @@ export class AgentEngine {
   /**
    * Create per-rule tasks when entering a new phase.
    * Reads the rule catalog and creates one task per rule for the given phase.
+   *
+   * D6: For skill_authoring / skill_testing, filter rules via the bundle
+   * classification cache (`cache/bundles/<hash>.classification.json`,
+   * written by document_classify). Rules whose `applicable_product_types`
+   * or `report_types` don't overlap with the bundle's classification get
+   * SKIPPED at task-creation time — we don't mutate catalog.json to mark
+   * them not_applicable, we just keep them out of the task queue. The
+   * finalization phase (Group E) will report them in the coverage
+   * artifact as "not applicable to this bundle." Conservative default:
+   * if no classification exists, include all rules (pre-B9 behavior).
    */
   _createTasksForPhase(phase) {
     if (!this.taskManager) return; // Sub-agents don't manage tasks
@@ -1140,11 +1150,219 @@ export class AgentEngine {
 
     try {
       const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
-      const rules = normalizeRuleCatalog(catalog);
-      if (rules.length > 0) {
-        this.taskManager.createRuleTasks(rules, phase);
+      let rules = normalizeRuleCatalog(catalog);
+      if (rules.length === 0) return;
+
+      // D6: applicability pre-filter (skill phases only — bootstrap/extraction
+      // have no task creation here per A6).
+      if (phase === "skill_authoring" || phase === "skill_testing") {
+        const classification = this._loadBundleClassification();
+        if (classification) {
+          const before = rules.length;
+          rules = rules.filter((r) => this._ruleAppliesToBundle(r, classification));
+          if (rules.length < before) {
+            this.eventLog.append("applicability_prefilter", {
+              phase,
+              classification: {
+                product_type: classification.product_type,
+                report_type: classification.report_type,
+                source: classification.source,
+              },
+              rules_before: before,
+              rules_after: rules.length,
+              skipped: before - rules.length,
+            });
+          }
+        }
       }
+      this.taskManager.createRuleTasks(rules, phase);
     } catch { /* skip if catalog can't be read */ }
+  }
+
+  /**
+   * D6: Load the most recent bundle classification cache, if one exists.
+   * Written by the `document_classify` tool. Returns null if no cache or
+   * unreadable — callers must treat null as "all rules apply."
+   */
+  _loadBundleClassification() {
+    const cacheDir = path.join(this.workspace.cwd, "cache", "bundles");
+    if (!fs.existsSync(cacheDir)) return null;
+    let entries;
+    try { entries = fs.readdirSync(cacheDir); }
+    catch { return null; }
+    const files = entries
+      .filter((n) => n.endsWith(".classification.json"))
+      .map((n) => {
+        const p = path.join(cacheDir, n);
+        try { return { path: p, mtime: fs.statSync(p).mtimeMs }; }
+        catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+    if (files.length === 0) return null;
+    try { return JSON.parse(fs.readFileSync(files[0].path, "utf-8")); }
+    catch { return null; }
+  }
+
+  /**
+   * D6: Rule-applicability check mirroring the AMC app's `applies_to`.
+   * Conservative: returns true when we don't have enough info to
+   * confidently skip (missing fields on rule, or classification with
+   * empty product/report).
+   */
+  _ruleAppliesToBundle(rule, classification) {
+    const docProduct = classification?.product_type || "";
+    const docReport = classification?.report_type || "";
+    const ruleProducts = rule.applicable_product_types || rule.applicable_sections || [];
+    const ruleReports = rule.report_types || [];
+
+    const allProducts = ruleProducts.length === 0 ||
+      ruleProducts.some((x) => x === "全部" || x === "all" || x === "");
+    const allReports = ruleReports.length === 0 ||
+      ruleReports.some((x) => x === "全部" || x === "all" || x === "");
+    if (allProducts && allReports) return true;
+
+    const productOk = allProducts || (
+      docProduct && ruleProducts.some((rp) => rp.includes(docProduct) || docProduct.includes(rp))
+    );
+    const reportOk = allReports || (
+      docReport && ruleReports.some((rr) => rr.includes(docReport) || docReport.includes(rr))
+    );
+
+    // Unknown classification → don't prefilter, let the agent judge.
+    if (!docProduct && !docReport) return true;
+    return productOk && reportOk;
+  }
+
+  /**
+   * D1: Enrich a skill_authoring / skill_testing task prompt with the
+   * rule's source context — reads `source_chunk_ids` back-refs from
+   * catalog.json (populated by extraction) and fetches chunk text from
+   * the most recent BundleTree cache. Falls back to the minimal prompt
+   * when catalog / cache aren't available.
+   *
+   * Previously the task prompt was ONE line — "Continue with next task:
+   * ${title}" — leaving the skill-author agent to re-read the rule and
+   * re-find its evidence per task. Auto-attach saves the LLM turn
+   * needed for document_search on every task, and ensures the author
+   * sees the exact regulation text the extractor used to justify the
+   * rule.
+   *
+   * @param {{id: string, title: string, ruleId?: string, phase: string}} task
+   * @returns {string}
+   */
+  _buildEnrichedTaskPrompt(task) {
+    const fallback = `Continue with next task: ${task.title}` +
+      (task.ruleId ? ` (rule: ${task.ruleId})` : "");
+
+    // Only enrich for rule-anchored phases
+    if (task.phase !== "skill_authoring" && task.phase !== "skill_testing") {
+      return fallback;
+    }
+    if (!task.ruleId) return fallback;
+
+    // Find the rule in catalog.json
+    const catalogPath = path.join(this.workspace.cwd, "rules", "catalog.json");
+    if (!fs.existsSync(catalogPath)) return fallback;
+    let rules;
+    try {
+      rules = normalizeRuleCatalog(JSON.parse(fs.readFileSync(catalogPath, "utf-8")));
+    } catch { return fallback; }
+    const rule = rules.find((r) => r.id === task.ruleId);
+    if (!rule) return fallback;
+
+    // Assemble the enriched brief. Every section is optional — when a
+    // back-ref or cache is missing, just skip that section rather than
+    // failing back to the minimal prompt.
+    const lines = [];
+    lines.push(`# Task: ${task.title}`);
+    lines.push("");
+    lines.push(`## Rule ${rule.id}`);
+    if (rule.source_ref) lines.push(`Source: ${rule.source_ref}`);
+    if (rule.severity) lines.push(`Severity: ${rule.severity}`);
+    if (rule.description) lines.push(`\n${rule.description}`);
+    if (rule.falsifiability_statement) lines.push(`\n**Falsifiability**: ${rule.falsifiability_statement}`);
+    if (rule.test_case_stub) lines.push(`**Test stub**: ${rule.test_case_stub}`);
+
+    // D1: if rule has source_chunk_ids AND a BundleTree cache exists,
+    // pull chunk text inline so the author doesn't need to call
+    // bundle_search manually. Bounded to ~3000 tokens total to avoid
+    // blowing the author's context budget.
+    const chunkIds = Array.isArray(rule.source_chunk_ids) ? rule.source_chunk_ids : [];
+    if (chunkIds.length > 0) {
+      const chunks = this._loadChunksFromBundleCache(chunkIds);
+      if (chunks.length > 0) {
+        lines.push("");
+        lines.push("## Source context");
+        let totalChars = 0;
+        const MAX_CHARS = 7500; // ~3000 CJK tokens
+        for (const ch of chunks) {
+          const header = `### ${ch.title || ch.chunk_id} · ${ch.source_file} p.${(ch.page_range || [1, 1]).join("-")}`;
+          const body = (ch.content || "").trim();
+          const block = `${header}\n${body}\n`;
+          if (totalChars + block.length > MAX_CHARS) {
+            lines.push(`\n[…${chunks.length - chunks.indexOf(ch)} more source chunks truncated; use bundle_search to retrieve them…]`);
+            break;
+          }
+          lines.push("");
+          lines.push(block);
+          totalChars += block.length;
+        }
+      }
+    }
+
+    // Sibling rules (same source_ref prefix) — helps the author see the
+    // surrounding catalog and avoid re-implementing cross-referenced logic.
+    const siblings = this._findSiblingRuleIds(rule, rules);
+    if (siblings.length > 0) {
+      lines.push("");
+      lines.push(`## Sibling rules (same regulation section)`);
+      lines.push(siblings.map((id) => `- ${id}`).join("\n"));
+    }
+
+    lines.push("");
+    lines.push("Write the skill to `rule_skills/<rule_id>/SKILL.md` + detect script. Prefer 1 rule = 1 skill dir (use `check_rNNN_rMMM.py` naming ONLY when rules share evidence and fail together).");
+
+    return lines.join("\n");
+  }
+
+  /** D1: Load chunk text from the most recent BundleTree cache. */
+  _loadChunksFromBundleCache(chunkIds) {
+    const cacheDir = path.join(this.workspace.cwd, "cache", "bundles");
+    if (!fs.existsSync(cacheDir)) return [];
+    let entries;
+    try { entries = fs.readdirSync(cacheDir); }
+    catch { return []; }
+    const candidates = entries
+      .filter((n) => n.endsWith(".json") && !n.endsWith(".classification.json"))
+      .map((n) => {
+        const p = path.join(cacheDir, n);
+        try { return { path: p, mtime: fs.statSync(p).mtimeMs }; }
+        catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+    if (candidates.length === 0) return [];
+    let tree;
+    try { tree = JSON.parse(fs.readFileSync(candidates[0].path, "utf-8")); }
+    catch { return []; }
+    const out = [];
+    for (const cid of chunkIds) {
+      const ch = tree.chunks?.[cid];
+      if (ch) out.push(ch);
+    }
+    return out;
+  }
+
+  /** D1: Rules that share the same regulation article (naive: source_ref prefix). */
+  _findSiblingRuleIds(rule, allRules) {
+    if (!rule.source_ref) return [];
+    const prefix = rule.source_ref.split(/[第条款项]/)[0].trim();
+    if (!prefix) return [];
+    return allRules
+      .filter((r) => r.id !== rule.id && (r.source_ref || "").startsWith(prefix))
+      .slice(0, 8)
+      .map((r) => r.id);
   }
 
   /**
@@ -1215,9 +1433,11 @@ export class AgentEngine {
         },
       });
 
-      // Synthesize a task-focused prompt
-      const taskPrompt = `Continue with next task: ${task.title}` +
-        (task.ruleId ? ` (rule: ${task.ruleId})` : "");
+      // D1: synthesize a task-focused prompt, enriched with rule source
+      // context (rule NL + source_ref + chunk text + sibling ids) when
+      // the catalog + BundleTree cache are available. Falls back to the
+      // minimal "Continue with next task" line otherwise.
+      const taskPrompt = this._buildEnrichedTaskPrompt(task);
 
       yield* this.runTurn(taskPrompt);
 
@@ -1310,14 +1530,17 @@ export class AgentEngine {
         const workerLabel = `pool${[...inFlight.keys()].length}`;
         const subId = `pool_${task.id}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60);
 
+        // D1: build the enriched brief with source context. Parallel workers
+        // are subagents — each with zero conversation history, so the brief
+        // must carry everything they need. Even more important to have
+        // source context inline vs. expecting them to call document_search.
+        const enriched = this._buildEnrichedTaskPrompt(task);
         const brief =
-          `# Task\n${task.title}\n\n` +
-          (task.ruleId ? `Rule ID: ${task.ruleId}\n\n` : "") +
-          `Complete this task per the current phase's requirements. ` +
-          `Write outputs to workspace files via workspace_file or rule_catalog — ` +
-          `do NOT write to shared coordination files (rules/catalog.json, ` +
-          `rules/manifest.json) via sandbox_exec; they're lock-protected and ` +
-          `bypassing the lock will race with other workers.`;
+          enriched +
+          `\n\nNOTE (parallel worker): write outputs via workspace_file or ` +
+          `rule_catalog — do NOT write to shared coordination files ` +
+          `(rules/catalog.json, rules/manifest.json) via sandbox_exec; they're ` +
+          `lock-protected and bypassing the lock will race with other workers.`;
 
         enq(new AgentEvent({
           type: "task_progress",
