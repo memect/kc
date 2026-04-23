@@ -149,7 +149,7 @@ const PROVIDERS = [
     authType: "x-api-key",
     apiFormat: "anthropic",
     modelsEndpoint: null, // Use curated list
-    contextLimit: 200000, // Claude Sonnet 4 / Opus 4 / Haiku 4.5 — 200K
+    contextLimit: 400000, // Claude 4.x family — 400K on current long-context tier
     defaultModel: getTierConfig("anthropic").conductor || "claude-sonnet-4-20250514",
     defaultTiers: getTierConfig("anthropic").llm,
     defaultVlm: getTierConfig("anthropic").vlm,
@@ -186,7 +186,7 @@ const PROVIDERS = [
     authType: "bearer",
     apiFormat: "openai",
     modelsEndpoint: "/models",
-    contextLimit: 131072, // GLM-4.x / GLM-5.x family — 128K
+    contextLimit: 200000, // GLM official (bigmodel.cn) — 200K on GLM-4.x/5.x tiers
     defaultModel: getTierConfig("zhipu").conductor || "glm-4-plus",
     defaultTiers: getTierConfig("zhipu").llm,
     defaultVlm: getTierConfig("zhipu").vlm,
