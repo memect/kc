@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { SkillValidator } from "../skill-validator.js";
 
 export class SkillAuthoringPipeline extends Pipeline {
   /**
@@ -16,6 +17,13 @@ export class SkillAuthoringPipeline extends Pipeline {
     super();
     this._workspace = workspace;
     this._taskManager = taskManager;
+    // v0.6.2 I2: skill validator catches malformed check_r###.py at the
+    // skill_authoring exit boundary instead of silently passing the
+    // phase and breaking in production_qc (E2E #4 unified_qc.py
+    // SyntaxError went undiagnosed for hours).
+    this._validator = new SkillValidator();
+    this._validationFailures = [];
+    this._validationSkipped = false;
     this.totalRules = [];
     this.skillsAuthored = [];
     this.skillsWithScripts = [];
@@ -152,6 +160,18 @@ export class SkillAuthoringPipeline extends Pipeline {
           (failedT > 0 ? ` (+${failedT} failed)` : "");
       }
     }
+    // v0.6.2 I2: validation status (only meaningful after first
+    // exitCriteriaMet call populates _validationFailures)
+    let validationLine = "";
+    if (this._validationSkipped) {
+      validationLine = `\n- Skill validation: SKIPPED (python3 not on PATH — install to enable)`;
+    } else if (this._validationFailures.length > 0) {
+      const f = this._validationFailures.slice(0, 5).map(({ filePath, error }) =>
+        `\n  - ${path.relative(this._workspace.cwd, filePath)}: ${error.split("\n")[0]}`,
+      ).join("");
+      validationLine = `\n- Skills failing validation (${this._validationFailures.length}):${f}` +
+        (this._validationFailures.length > 5 ? `\n  - … and ${this._validationFailures.length - 5} more` : "");
+    }
     parts.push(
       `### Progress (rule-id coverage, D2)\n` +
       `- Total rules in catalog: ${total}\n` +
@@ -159,6 +179,7 @@ export class SkillAuthoringPipeline extends Pipeline {
       `- Skill directories authored: ${this.skillsAuthored.length}\n` +
       `- Skills with scripts/: ${this.skillsWithScripts.length}` +
       taskLine +
+      validationLine +
       (uncovered.length > 0
         ? `\n- Missing coverage (${uncovered.length}): ${uncovered.slice(0, 15).join(", ")}${uncovered.length > 15 ? "…" : ""}`
         : ""),
@@ -204,7 +225,41 @@ export class SkillAuthoringPipeline extends Pipeline {
         if (completed + failed < total) return false;
       }
     }
+    // v0.6.2 I2: skill validator — every check_r###.py must parse and
+    // expose an entry point. Catches the unified_qc.py-style monolith
+    // and other malformed scripts before they break in production_qc.
+    // mtime cache keeps this O(1) in steady state. Failures preserved
+    // in this._validationFailures for describeState rendering.
+    const checkFiles = this._collectCheckScripts();
+    const v = this._validator.validateAll(checkFiles);
+    this._validationFailures = v.failures;
+    this._validationSkipped = v.skipped;
+    if (!v.ok) return false;
     return this.skillsWithScripts.length >= Math.max(1, this.skillsAuthored.length * 0.5);
+  }
+
+  /**
+   * v0.6.2 I2: gather every check_r###.py path under rule_skills/. Used by
+   * the skill validator. Walks one level into each skill directory.
+   */
+  _collectCheckScripts() {
+    const out = [];
+    const dir = path.join(this._workspace.cwd, "rule_skills");
+    if (!fs.existsSync(dir)) return out;
+    const walk = (d) => {
+      let entries;
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name.startsWith(".") || e.name.startsWith("__")) continue;
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) { walk(p); continue; }
+        if (e.isFile() && /^check_r[\d_-]+\.py$/i.test(e.name)) {
+          out.push(p);
+        }
+      }
+    };
+    walk(dir);
+    return out;
   }
 
   exportState() {

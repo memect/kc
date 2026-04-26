@@ -123,6 +123,38 @@
     }
   },
 
+  "deepseek": {
+    "_comment": "DeepSeek v4 family — flagship pro + cheap flash. Native 1M context but KC caps to 200K.",
+    "conductor": "deepseek-v4-pro",
+    "llm": {
+      "tier1": "deepseek-v4-pro",
+      "tier2": "deepseek-v4-pro",
+      "tier3": "deepseek-v4-flash",
+      "tier4": "deepseek-v4-flash"
+    },
+    "vlm": {
+      "tier1": "",
+      "tier2": "",
+      "tier3": ""
+    }
+  },
+
+  "xiaomi": {
+    "_comment": "Xiaomi MiMo coding plan — flagship Pro + standard + multimodal Omni. Native 1M context but KC caps to 200K. TTS variants excluded (no KC use case).",
+    "conductor": "MiMo-V2.5-Pro",
+    "llm": {
+      "tier1": "MiMo-V2.5-Pro",
+      "tier2": "MiMo-V2.5",
+      "tier3": "MiMo-V2-Pro",
+      "tier4": "MiMo-V2-Pro"
+    },
+    "vlm": {
+      "tier1": "MiMo-V2-Omni",
+      "tier2": "MiMo-V2-Omni",
+      "tier3": ""
+    }
+  },
+
   "openrouter": {
     "conductor": "anthropic/claude-sonnet-4-20250514",
     "llm": {

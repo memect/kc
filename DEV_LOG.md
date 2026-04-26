@@ -1,5 +1,157 @@
 # KC Agent CLI — Development Log
 
+## v0.6.2 (2026-04-26)
+
+The "nice-to-haves" follow-up to v0.6.1's phase-gate hardening. Three
+groups of small-to-medium changes that v0.6.1 deferred to keep that
+release tight. Plan: [`docs/update_design_v6.md`](./docs/update_design_v6.md)
+out-of-scope section. Same "hard tracking, soft executing" principle
+still applies — gates and validators are engine authority,
+content/grouping/order remains the agent's call.
+
+### Group I — Output quality
+
+- **I1 — Workflow output normalization.** New
+  `src/agent/tools/_workflow-result-schema.js` module: `parsePyRepr`,
+  `normalizeReprKeys`, `classifyError`, `normalizeWorkflowResult`.
+  `workflow-run.js` runs every result through `normalizeWorkflowResult`
+  before persisting. Effect: Python dataclass `repr()` strings (the
+  `"VerificationResult(rule_id='R049', verdict='NOT_APPLICABLE', ...)"`
+  keys that leaked into E2E #4's verdict_stats) get parsed into
+  structured `{class_name, fields, count}` buckets. ERROR verdicts get
+  classified into `error_type`: `import_error` / `attribute_error` /
+  `keyword_not_found` / `sample_unparseable` / `schema_violation` /
+  `syntax_error` / `timeout` / `permission_error` / `unknown`. Missing
+  rule_id or verdict produces structured `_warnings` array, not a silent
+  fallback to `raw_output`.
+- **I2 — Skill validator (D3c).** New `src/agent/skill-validator.js`:
+  mtime-cached Python `ast.parse` smoke test driver. Every
+  `check_r###.py` in `rule_skills/<rule>/` must (a) be ≥ 100 bytes,
+  (b) parse cleanly under `python3 -c "import ast; ast.parse(...)"`,
+  (c) define a `check_rule` or `verify` entry point. Wired into
+  `skill_authoring.exitCriteriaMet` as a third condition (after D2
+  coverage and v0.6.1 A2 task parity). Steady-state cost ~0 due to
+  mtime cache; first call after a write incurs one ~50ms subprocess.
+  If `python3` is not on PATH the validator silently no-ops with a
+  one-time warning. Failure list surfaced in `describeState` so the
+  agent sees which files broke and the parse-error first line.
+- **I3 — D2 wording revision.** Added a "Granularity: 1 rule = 1 skill
+  directory (default)" section to
+  `template/skills/{en,zh}/meta-meta/skill-authoring/SKILL.md` with
+  explicit ✅/❌ examples and an "Anti-pattern: the unified runner"
+  callout citing E2E #4. Reinforces the soft nudge that D2 already
+  produces in pipeline `describeState`.
+
+### Group J — Phase lifecycle
+
+- **J1 — `stale_subagents` acknowledgement on `phase_advance`.** New
+  `acknowledge_stale_subagents: boolean` field on the tool's input
+  schema. When subagents are still running:
+  - Without ack and without `force: true` → tool refuses, listing the
+    running task_ids and pointing at `agent_tool(operation=list|kill)`.
+  - With ack → advance proceeds, summary acknowledges the running
+    subagents.
+  - With `force: true` → bypasses ack (existing escape-hatch pattern).
+  Auto-advance via `_maybeAutoAdvance` deliberately does NOT enforce
+  ack — that path fires on exit-criteria flips not requested by the
+  agent and trapping it would block legitimate parallel work.
+- **J2 — Phase rollback formalization.** Added `PHASE_ORDER` array
+  (linear, terminal at FINALIZATION). `_advancePhase` detects rollback
+  via index comparison; tags `phase_transition` event with
+  `direction: "forward" | "rollback"`; resets `_lastReady[fromPhase]`
+  on rollback so auto-advance can re-fire correctly when the agent
+  returns to that phase later. Phase summary line gets a `[ROLLBACK]`
+  tag. Existing `/phase <name>` slash command path already worked for
+  backward jumps via `force:true` — this just surfaces the direction
+  and stops the auto-advance bounce-back.
+- **J3 — `session-state.json` sync file lock.** New
+  `Workspace.withSyncFileLock(relPath, fn)` (mirror of
+  `_withGitSyncLock` factored into a shared
+  `_withSyncLockAtPath` helper). `SessionState` accepts an optional
+  `workspace` ref; if provided, `save()` acquires the lock before
+  `fs.writeFileSync`. Subagents (no workspace ref) fall back to the
+  pre-v0.6.2 lock-free path. Closes the race window where parallel
+  ralph-loop workers + main saveState ticks could interleave on a
+  shared `session-state.json`.
+
+### Group K — Diagnostics + providers
+
+- **K1 — Heap component instrumentation.** Each `heap.jsonl` row now
+  carries a `components: { historyMB, eventLogMB, toolResultsMB,
+  subagentsMB, bundleCacheMB }` breakdown so we can attribute leak
+  growth to a specific structure instead of staring at `heapUsed`
+  totals. `scripts/heap-analyze.js` prints a separate per-component
+  slope table when the field is present (backwards-compat: old jsonl
+  files without `components` still parse and report fine — the
+  component table just doesn't appear).
+- **K2 — DeepSeek + Xiaomi MiMo provider entries.** Added to
+  `src/providers.js` and `src/model-tiers.json`:
+  - **DeepSeek** (`https://api.deepseek.com`) — paid API. Models:
+    `deepseek-v4-pro` (TIER1/2), `deepseek-v4-flash` (TIER3/4).
+    Native 1M context, KC-capped to 200K.
+  - **Xiaomi MiMo** (`https://token-plan-cn.xiaomimimo.com/v1`) —
+    coding-plan key. Models: `MiMo-V2.5-Pro` (TIER1), `MiMo-V2.5`
+    (TIER2), `MiMo-V2-Pro` (TIER3/4), `MiMo-V2-Omni` for VLM tiers
+    1-2. TTS variants intentionally excluded — KC has no TTS use case.
+    Native 1M context, KC-capped to 200K.
+  Onboarding wizard reads from `getProviders()` so both appear in the
+  menu automatically. Local `.env` updated with reference key+URL
+  blocks (gitignored, not committed). User can configure via
+  `kc-beta onboard` or by setting `LLM_API_KEY` + `LLM_BASE_URL`
+  in workspace `.env`. Connectivity not verified live — first user
+  call will validate.
+
+### Verified
+
+- I1 normalizer: `parsePyRepr` correctly extracts the E2E #4
+  `VerificationResult(...)` repr; `normalizeReprKeys` collapses
+  duplicate repr-keys into class-name buckets; `classifyError`
+  correctly tags ImportError / AttributeError / SyntaxError / Timeout
+  / UnicodeDecodeError patterns; `normalizeWorkflowResult` end-to-end
+  on ERROR / clean / top-level-repr / nonstandard-verdict / missing-
+  verdict cases.
+- I2 validator: rejects under-100-byte files, catches the actual E2E
+  #4 line-continuation `SyntaxError`, catches missing `check_rule`
+  entry points, mtime cache hits sub-ms, mtime invalidation on
+  rewrite works.
+- K1: existing v0.6.1 heap.jsonl files (no `components` field) parse
+  and print correctly; new format renders the per-component table.
+- K2: `getProviderById('deepseek')` and `getProviderById('xiaomi')`
+  return correct shapes with all expected fields. Both providers
+  appear in `getProviderLabels` output. `getCuratedModels` returns
+  the configured lists.
+- All v0.6.1 gates still fire correctly (no regressions in synthetic
+  workspace test).
+
+### Files changed
+
+| File | Group | Δ |
+|---|---|---|
+| `src/agent/tools/workflow-run.js` | I1 | normalizer integration |
+| `src/agent/tools/_workflow-result-schema.js` | I1 | NEW |
+| `src/agent/skill-validator.js` | I2 | NEW |
+| `src/agent/pipelines/skill-authoring.js` | I2 | exitCriteriaMet validator condition + describeState surface |
+| `template/skills/{en,zh}/meta-meta/skill-authoring/SKILL.md` | I3 | Granularity section |
+| `src/agent/tools/phase-advance.js` | J1 | acknowledge_stale_subagents schema + refusal |
+| `src/agent/engine.js` | J1+J2+K1 | running-subagents callback wired; PHASE_ORDER + rollback direction; component sampler |
+| `src/agent/session-state.js` | J3 | save() acquires sync file lock |
+| `src/agent/workspace.js` | J3 | withSyncFileLock public + factored shared lock helper |
+| `scripts/heap-analyze.js` | K1 | per-component slope table |
+| `src/providers.js` | K2 | DeepSeek + Xiaomi MiMo entries |
+| `src/model-tiers.json` | K2 | DeepSeek + Xiaomi tier defaults |
+
+### Out of scope (deferred to v0.6.3 or later)
+
+- Full skill validator with semantic checks (does `check_rule(sample)`
+  return correct dict shape on real input?) — adds another subprocess
+  layer + sample selection logic; v0.6.2 ships syntax-only.
+- Vector embeddings / reranker for chunker.
+- `rule_catalog` → `workspace_file` deprecation migration doc.
+- Anything from E2E #5 — observations from the next field trial may
+  surface new priorities.
+
+---
+
 ## v0.6.1 (2026-04-26)
 
 Phase-gate hardening release. v0.6.0's E2E #4 trial (session

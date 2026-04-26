@@ -89,6 +89,17 @@ function summarize(rows, label) {
     ["Tasks pending", "tasksPending"],
   ];
 
+  // v0.6.2 K1: component breakdown — only printed if any row has the
+  // components field (post-v0.6.2 sessions).
+  const componentMetrics = [
+    [".historyMB",      (r) => r.components?.historyMB ?? 0],
+    [".eventLogMB",     (r) => r.components?.eventLogMB ?? 0],
+    [".toolResultsMB",  (r) => r.components?.toolResultsMB ?? 0],
+    [".subagentsMB",    (r) => r.components?.subagentsMB ?? 0],
+    [".bundleCacheMB",  (r) => r.components?.bundleCacheMB ?? 0],
+  ];
+  const hasComponents = rows.some((r) => r.components);
+
   console.log(`\n${"=".repeat(70)}`);
   console.log(`${label}`);
   console.log(`  Samples: ${rows.length}  ·  Duration: ${fmt(durationHours)}h  ·  First: ${rows[0].t}  Last: ${rows[rows.length - 1].t}`);
@@ -106,6 +117,21 @@ function summarize(rows, label) {
     console.log(
       `  ${name.padEnd(22)} ${fmt(min).padStart(8)} ${fmt(max).padStart(8)} ${fmt(avg).padStart(8)} ${fmt(delta).padStart(8)} ${fmt(slopeH).padStart(10)}`,
     );
+  }
+
+  if (hasComponents) {
+    console.log(`\n  ${"component (MB)".padEnd(22)} ${"min".padStart(8)} ${"max".padStart(8)} ${"avg".padStart(8)} ${"Δ".padStart(8)} ${"slope/h".padStart(10)}`);
+    for (const [name, getter] of componentMetrics) {
+      const values = rows.map(getter);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const avg = values.reduce((a, b) => a + b, 0) / values.length;
+      const delta = values[values.length - 1] - values[0];
+      const slopeH = durationHours > 0 ? linearSlope(hoursFromStart, values) : 0;
+      console.log(
+        `  ${name.padEnd(22)} ${fmt(min).padStart(8)} ${fmt(max).padStart(8)} ${fmt(avg).padStart(8)} ${fmt(delta).padStart(8)} ${fmt(slopeH).padStart(10)}`,
+      );
+    }
   }
   console.log();
 

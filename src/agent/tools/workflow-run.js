@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { BaseTool, ToolResult } from "./base.js";
+import { normalizeWorkflowResult } from "./_workflow-result-schema.js";
 
 /**
  * Execute a distilled workflow script against a document.
@@ -89,14 +90,18 @@ export class WorkflowRunTool extends BaseTool {
       return new ToolResult(e.message, true);
     }
 
-    // Parse output
-    let resultData;
+    // Parse output (last stdout line as JSON)
+    let parsed;
     try {
       const lines = output.trim().split("\n");
-      resultData = JSON.parse(lines[lines.length - 1]);
+      parsed = JSON.parse(lines[lines.length - 1]);
     } catch {
-      resultData = { raw_output: output.slice(0, 5000) };
+      parsed = { raw_output: output.slice(0, 5000) };
     }
+    // v0.6.2 I1: normalize to canonical dict shape — strips Python
+    // dataclass repr() keys, classifies ERROR results, ensures rule_id
+    // and verdict are present.
+    const resultData = normalizeWorkflowResult(parsed, ruleId, output);
 
     // Attach confidence score
     const extractedValue = String(resultData.extracted_value || resultData.value || "");

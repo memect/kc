@@ -212,6 +212,51 @@ const PROVIDERS = [
     },
   },
   {
+    id: "deepseek",
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    authType: "bearer",
+    apiFormat: "openai",
+    modelsEndpoint: "/models",
+    contextLimit: 200000, // KC cap — DeepSeek v4 is native 1M; we cap to 200K
+    defaultModel: getTierConfig("deepseek").conductor || "deepseek-v4-pro",
+    defaultTiers: getTierConfig("deepseek").llm,
+    defaultVlm: getTierConfig("deepseek").vlm,
+    curatedModels: [
+      { id: "deepseek-v4-pro", ownedBy: "deepseek" },
+      { id: "deepseek-v4-flash", ownedBy: "deepseek" },
+    ],
+    labels: {
+      en: "DeepSeek (v4 family)",
+      zh: "DeepSeek（v4 系列）",
+    },
+  },
+  {
+    id: "xiaomi",
+    name: "Xiaomi MiMo",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    authType: "bearer",
+    apiFormat: "openai",
+    modelsEndpoint: null, // Xiaomi coding-plan endpoint, no /models — use curated list
+    supportsCodingPlanKey: true,
+    contextLimit: 200000, // KC cap — MiMo V2.5 is native 1M
+    defaultModel: getTierConfig("xiaomi").conductor || "MiMo-V2.5-Pro",
+    defaultTiers: getTierConfig("xiaomi").llm,
+    defaultVlm: getTierConfig("xiaomi").vlm,
+    curatedModels: [
+      { id: "MiMo-V2.5-Pro", ownedBy: "xiaomi" },
+      { id: "MiMo-V2.5", ownedBy: "xiaomi" },
+      { id: "MiMo-V2-Pro", ownedBy: "xiaomi" },
+      { id: "MiMo-V2-Omni", ownedBy: "xiaomi" }, // multimodal
+      // TTS variants (MiMo-V2.5-TTS, *-VoiceClone, *-VoiceDesign, MiMo-V2-TTS)
+      // intentionally excluded — KC has no TTS use case.
+    ],
+    labels: {
+      en: "Xiaomi MiMo (V2.5 family, coding plan)",
+      zh: "小米 MiMo（V2.5 系列，编程计划）",
+    },
+  },
+  {
     id: "openrouter",
     name: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",

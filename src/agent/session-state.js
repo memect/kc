@@ -12,9 +12,14 @@ export class SessionState {
    * @param {string} workspacePath - Session workspace directory
    * @param {object} [opts]
    * @param {string} [opts.statePath] - Override absolute path (used for sub-agent isolation, Bug 2)
+   * @param {Workspace} [opts.workspace] - v0.6.2 J3: optional workspace ref so
+   *   save() can acquire a sync file lock on session-state.json. Without it
+   *   (subagents, tests), save() falls back to lock-free writes — same
+   *   behavior as pre-v0.6.2.
    */
   constructor(workspacePath, opts = {}) {
     this._path = opts.statePath || path.join(workspacePath, "session-state.json");
+    this._workspace = opts.workspace || null;
   }
 
   /**
@@ -46,7 +51,18 @@ export class SessionState {
       pipelineMilestones: this._extractMilestones(engine.pipelines),
     };
 
-    fs.writeFileSync(this._path, JSON.stringify(state, null, 2), "utf-8");
+    // v0.6.2 J3: acquire sync file lock if workspace ref available.
+    // session-state.json is in SHARED_COORDINATION_PATHS — concurrent
+    // writers (parallel ralph-loop workers + main saveState ticks)
+    // could otherwise interleave and corrupt the JSON.
+    const write = () => {
+      fs.writeFileSync(this._path, JSON.stringify(state, null, 2), "utf-8");
+    };
+    if (this._workspace?.withSyncFileLock) {
+      this._workspace.withSyncFileLock("session-state.json", write);
+    } else {
+      write();
+    }
   }
 
   /**

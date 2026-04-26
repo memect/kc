@@ -241,12 +241,35 @@ export class Workspace {
   }
 
   /**
+   * v0.6.2 J3: Synchronous lock mirror of `withFileLock`, for callers
+   * that can't go async (SessionState.save). Locks a sibling
+   * `<relPath>.lock` file via O_CREAT|O_EXCL, with 5s timeout and 30s
+   * stale-takeover. On failure to acquire, runs fn anyway — better to
+   * lose serialization than deadlock a save call. Use sparingly; prefer
+   * `withFileLock` (async) for all paths that allow it.
+   */
+  withSyncFileLock(relPath, fn, { timeoutMs = 5_000, staleMs = 30_000 } = {}) {
+    const lockPath = path.join(this.path, `${relPath}.lock`);
+    return this._withSyncLockAtPath(lockPath, fn, { timeoutMs, staleMs });
+  }
+
+  /**
    * B5: Synchronous gitops lock. Mirror of withFileLock but sync to fit
    * autoCommit's existing call signature. Times out and proceeds anyway
    * after 5s — we'd rather lose one commit than deadlock a write.
    */
   _withGitSyncLock(fn, { timeoutMs = 5_000, staleMs = 30_000 } = {}) {
     const lockPath = path.join(this.path, ".git", "kc-commit.lock");
+    return this._withSyncLockAtPath(lockPath, fn, { timeoutMs, staleMs });
+  }
+
+  /**
+   * Shared sync-lock implementation. Used by `_withGitSyncLock` (B5) and
+   * `withSyncFileLock` (J3 / v0.6.2). Same semantics: O_CREAT|O_EXCL on
+   * a sibling `.lock` file, busy-spin retry with stale takeover, run fn
+   * anyway on timeout.
+   */
+  _withSyncLockAtPath(lockPath, fn, { timeoutMs = 5_000, staleMs = 30_000 } = {}) {
     const start = Date.now();
     let acquired = false;
     while (Date.now() - start < timeoutMs) {

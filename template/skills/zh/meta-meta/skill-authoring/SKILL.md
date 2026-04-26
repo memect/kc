@@ -27,6 +27,25 @@ rule-skills/
 
 Not every rule needs all of these. A simple threshold check might only need SKILL.md and a script. A complex semantic rule might need detailed references and many samples. Start minimal, add as needed during testing.
 
+## 颗粒度：默认 1 条规则 = 1 个技能目录
+
+默认**每条规则一个独立技能目录**。仅当同时满足以下两个条件时，才能把多条规则合并到同一个文件：
+
+1. 共享同一证据（同一章节 / 同一表格 / 同一字段）——找到一条就找到了全部。
+2. 一同成败——一条失败，其他几乎必然失败（例如必填字段表中的同辈规则，表本身缺失则全部失败）。
+
+合并时，用显式范围命名文件，让下游消费者（workflow-run、dashboards、finalization）可以从文件名解析规则覆盖范围：
+- ✅ `check_r013_r017.py`（R013、R014、R015、R016、R017——同一披露表格，一同失败）
+- ❌ `check_r001_r050_r078.py`（不同章节，即使主题相关，也应分开）
+
+### 反模式：统一运行器（unified runner）
+
+如果你发现自己在写一个 `unified_qc.py`（或 `batch_runner.py`、`master_check.py`）把全部 110 条规则塞进一个 Python 文件里，**停下来**。这说明你的单条规则技能写错了，不是架构错了。请修复单条技能。
+
+E2E #4 给出了代价：智能体写了一个 `unified_qc.py` 绕过它不信任的 110 个独立技能。结果是 6,930 条生产检查里出了 1,150 个错误（16.6%），相位计数器卡在 `production_qc`，而真实工作还在 skill_authoring 里进行。统一运行器在局部看起来很高效，全局上是个错误。
+
+如果某些独立技能跑不通，正确的应对是定位并修复出问题的那几条，而不是合并所有技能。整个流水线（extraction → skill_testing → distillation → production_qc）的前提就是「一条规则 = 一个可独立验证的产物」。
+
 ## Writing SKILL.md
 
 ### Frontmatter

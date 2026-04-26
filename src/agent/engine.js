@@ -69,6 +69,19 @@ export const NEXT_PHASE = {
   [Phase.PRODUCTION_QC]: Phase.FINALIZATION, // E1: new 7th phase
 };
 
+// v0.6.2 J2: explicit linear order so `_advancePhase` can detect rollback
+// direction (target index < current index → rollback). Mirrors NEXT_PHASE
+// but ordered, plus FINALIZATION at the end as the terminal phase.
+export const PHASE_ORDER = [
+  Phase.BOOTSTRAP,
+  Phase.EXTRACTION,
+  Phase.SKILL_AUTHORING,
+  Phase.SKILL_TESTING,
+  Phase.DISTILLATION,
+  Phase.PRODUCTION_QC,
+  Phase.FINALIZATION,
+];
+
 /**
  * The KC Agent conversation engine.
  *
@@ -150,7 +163,7 @@ export class AgentEngine {
     });
 
     // Session state persistence
-    this.sessionState = new SessionState(this.workspace.cwd, { statePath });
+    this.sessionState = new SessionState(this.workspace.cwd, { statePath, workspace: this.workspace });
 
     // Task manager (ralph-loop) — sub-agents don't queue further sub-tasks,
     // so they don't get a TaskManager.
@@ -223,6 +236,11 @@ export class AgentEngine {
           historyLen: this.history?.messages?.length ?? 0,
           tasksPending: this.taskManager?.progress?.pending ?? 0,
           tasksInProgress: this.taskManager?.progress?.inProgress ?? 0,
+          // v0.6.2 K1: per-component breakdown so heap-analyze.js can
+          // attribute growth (history vs subagents vs event log vs cache).
+          // All values in MB. Failures inside _sampleComponents are caught
+          // and the row gets `componentsErr` instead.
+          components: this._sampleComponents(),
         };
         fs.mkdirSync(logDir, { recursive: true });
         fs.appendFileSync(logPath, JSON.stringify(row) + "\n", "utf-8");
@@ -238,6 +256,89 @@ export class AgentEngine {
         sample(); // one final sample on shutdown
       } catch { /* ignore */ }
     };
+  }
+
+  /**
+   * v0.6.2 K1: per-component heap accounting. Each value is in MB,
+   * rounded. The whole function is wrapped in a single try/catch by the
+   * caller; failures are silently dropped to keep the sampler diagnostic
+   * (never load-bearing).
+   *
+   * Components measured (by source):
+   *  - history: in-memory `this.history.messages` content sizes (sum of
+   *    JSON-stringified content)
+   *  - eventLog: disk size of `logs/events.jsonl`
+   *  - toolResults: disk size of `logs/tool_results/` (offloaded tool
+   *    output, summed top-level files only — the dir is one level deep)
+   *  - subagents: disk size of `sub_agents/` (one level — each subagent
+   *    has its own directory tree but we just want the order of magnitude)
+   *  - bundleCache: disk size of `cache/bundles/`
+   */
+  _sampleComponents() {
+    const out = { historyMB: 0, eventLogMB: 0, toolResultsMB: 0, subagentsMB: 0, bundleCacheMB: 0 };
+    const cwd = this.workspace?.cwd;
+    if (!cwd) return out;
+    // history: walk messages, sum content string lengths (UTF-16 → bytes
+    // approx 2× length; we conservatively count length itself since most
+    // content is ASCII-heavy JSON tool output)
+    try {
+      const msgs = this.history?.messages || [];
+      let bytes = 0;
+      for (const m of msgs) {
+        const c = m?.content;
+        if (typeof c === "string") bytes += c.length;
+        else if (Array.isArray(c)) {
+          for (const part of c) {
+            if (typeof part === "string") bytes += part.length;
+            else if (part?.text) bytes += String(part.text).length;
+            else if (part?.content) bytes += String(part.content).length;
+            else if (part?.input) bytes += JSON.stringify(part.input).length;
+          }
+        } else if (c && typeof c === "object") {
+          bytes += JSON.stringify(c).length;
+        }
+      }
+      out.historyMB = Math.round(bytes / 1024 / 1024);
+    } catch { /* skip */ }
+    // events.jsonl — single file size
+    try {
+      const p = path.join(cwd, "logs", "events.jsonl");
+      out.eventLogMB = Math.round(fs.statSync(p).size / 1024 / 1024);
+    } catch { /* skip */ }
+    // logs/tool_results/ — sum file sizes one level deep (it's flat)
+    try {
+      const dir = path.join(cwd, "logs", "tool_results");
+      let total = 0;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isFile()) {
+          try { total += fs.statSync(path.join(dir, e.name)).size; } catch { /* skip */ }
+        }
+      }
+      out.toolResultsMB = Math.round(total / 1024 / 1024);
+    } catch { /* skip */ }
+    // sub_agents/ — sum top-level entries (each is a dir, statSync returns
+    // dir-block size, not contents — that's fine for an order-of-magnitude
+    // signal; recursive walk would be too expensive for the sampler)
+    try {
+      const dir = path.join(cwd, "sub_agents");
+      let total = 0;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        try { total += fs.statSync(path.join(dir, e.name)).size; } catch { /* skip */ }
+      }
+      out.subagentsMB = Math.round(total / 1024 / 1024);
+    } catch { /* skip */ }
+    // cache/bundles/
+    try {
+      const dir = path.join(cwd, "cache", "bundles");
+      let total = 0;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isFile()) {
+          try { total += fs.statSync(path.join(dir, e.name)).size; } catch { /* skip */ }
+        }
+      }
+      out.bundleCacheMB = Math.round(total / 1024 / 1024);
+    } catch { /* skip */ }
+    return out;
   }
 
   /** Stop background diagnostics. Call on graceful shutdown. */
@@ -280,6 +381,14 @@ export class AgentEngine {
         new PhaseAdvanceTool(
           (to, reason, opts) => this._advancePhase(to, reason, opts),
           () => this.currentPhase, // H1: tool reads phase BEFORE its own call
+          // v0.6.2 J1: surface running subagents so the tool can refuse
+          // advance until the agent explicitly acknowledges them.
+          () => {
+            try {
+              const agentTool = this._buildTools?.core?.find((t) => t?.name === "agent_tool");
+              return agentTool?.getRunningTaskIds?.() || [];
+            } catch { return []; }
+          },
         ),
         new DocumentParseTool(this.workspace, {
           mineruApiUrl: this.config.mineruApiUrl,
@@ -1061,14 +1170,23 @@ export class AgentEngine {
       return false;
     }
 
+    // v0.6.2 J2: detect rollback direction. PHASE_ORDER is a linear array
+    // of all phases; if target index < current index, this is a rollback
+    // (e.g., production_qc → skill_authoring after gates revealed gaps).
+    const fromIdx = PHASE_ORDER.indexOf(this.currentPhase);
+    const toIdx = PHASE_ORDER.indexOf(nextPhase);
+    const direction = (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx)
+      ? "rollback" : "forward";
+
     // v0.6.1 B1: build engine-appended hard-counts block + heuristic mismatch
     // detection so the LLM-narrated reason can be cross-checked against
     // ground-truth telemetry. Phase summaries become diagnostic, not just
     // narrative.
     const engineCounts = this._buildEngineCountsBlock(this.currentPhase);
     const mismatchPrefix = this._detectSummaryMismatch(reason, this.currentPhase) ? "⚠️ POSSIBLE MISMATCH: " : "";
+    const directionTag = direction === "rollback" ? " [ROLLBACK]" : "";
     const phaseSummary =
-      `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${mismatchPrefix}${reason}` +
+      `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]${directionTag}: ${mismatchPrefix}${reason}` +
       (force && nextPhase !== expected ? " (forced)" : "") +
       (engineCounts ? `\n  (engine) ${engineCounts}` : "");
     this._phaseSummaries.push(phaseSummary);
@@ -1076,6 +1194,7 @@ export class AgentEngine {
       from: this.currentPhase,
       to: nextPhase,
       reason,
+      direction,
       engineCounts: engineCounts || null,
       possibleMismatch: !!mismatchPrefix,
       forced: force && nextPhase !== expected,
@@ -1085,6 +1204,17 @@ export class AgentEngine {
     this._registerToolsForPhase(this.currentPhase);
     this.workspace.setPhase(this.currentPhase);
     this._createTasksForPhase(this.currentPhase);
+
+    // v0.6.2 J2: on rollback, reset the rolled-FROM phase's lastReady
+    // edge-trigger so that if the agent revisits it and re-flips
+    // exit-criteria true, _maybeAutoAdvance will fire correctly. Without
+    // this, the auto-advance edge trigger stays latched true and the
+    // moment the agent returns to fromPhase the engine immediately
+    // bounces them back out — defeating the rollback.
+    if (direction === "rollback" && this._lastReady) {
+      this._lastReady[fromPhase] = false;
+    }
+
     this.saveState();
 
     // B8: Soft signal — surface any sub-agents left running from the prior

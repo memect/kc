@@ -27,6 +27,25 @@ rule-skills/
 
 Not every rule needs all of these. A simple threshold check might only need SKILL.md and a script. A complex semantic rule might need detailed references and many samples. Start minimal, add as needed during testing.
 
+## Granularity: 1 rule = 1 skill directory (default)
+
+Default to **one rule per skill directory**. Group rules into the same file ONLY when they meet BOTH:
+
+1. They share the same evidence (same section / same table / same field) — so locating one locates all.
+2. They fail together — when one fails, the others almost always fail too (e.g., siblings in a required-fields list where the table itself is missing).
+
+When grouping, name the file with the explicit range so downstream consumers (workflow-run, dashboards, finalization) can parse rule coverage by filename:
+- ✅ `check_r013_r017.py` (R013, R014, R015, R016, R017 — same disclosure table, fail together)
+- ❌ `check_r001_r050_r078.py` (different chapters, even if topically related — keep separate)
+
+### Anti-pattern: the unified runner
+
+If you find yourself writing a single `unified_qc.py` (or `batch_runner.py`, or `master_check.py`) that handles all 110 rules in one Python file, **stop**. That means your per-rule skills are wrong, not that the architecture is wrong. Fix the skills.
+
+E2E #4 demonstrated the cost: an agent wrote `unified_qc.py` to bypass 110 individual skills it didn't trust. Result was 1,150 errors out of 6,930 production checks (16.6%) and a phase counter stuck in `production_qc` while real work happened in skill_authoring. The unified runner felt productive locally and was a global mistake.
+
+If individual skills aren't running cleanly, the right response is to identify which ones break and fix them, not consolidate. The whole pipeline (extraction → skill_testing → distillation → production_qc) assumes one rule = one verifiable artifact.
+
 ## Writing SKILL.md
 
 ### Frontmatter
