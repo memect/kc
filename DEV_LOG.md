@@ -1,5 +1,108 @@
 # KC Agent CLI — Development Log
 
+## v0.6.1 (2026-04-26)
+
+Phase-gate hardening release. v0.6.0's E2E #4 trial (session
+`资管新规测试004`, ~22h, killed before OOM — observations in
+`archive/e2e_test_20260424_observations.md`) exposed an architectural
+honesty problem: the agent declared all 6 phases complete on
+declarative narration alone while engine telemetry stayed empty.
+`skill_authoring` advanced **17 minutes after entry** because D2's
+filename-regex check fired true on 20 skeleton skill directories;
+phase summaries claimed "8 evolution cycles, 93.2% accuracy" while
+`skillsTested: []` and `batchesProcessed: 0` in milestones.
+
+v0.6.1 fixes only the essential — making the tracking layer ground
+truth — so E2E #5 can validate the architecture before we layer on
+nice-to-haves (workflow output normalization, new providers, heap
+component instrumentation, skill validator, phase rollback).
+
+Locked design principle from the post-mortem (saved as feedback
+memory): **hard tracking, soft executing.** Phase advances must
+validate against engine-emitted counters. The agent stays free to
+choose ordering, grouping, granularity.
+
+Full design: [`docs/update_design_v6.md`](./docs/update_design_v6.md).
+
+### Headline changes
+
+- **Engine-emitted milestones (A6).** `Engine._recordMilestone(phase, key, value)`
+  is a single chokepoint — increment counter, set on dict-by-id, or
+  dedupe-add to array. `WorkflowRunTool` calls it on success so
+  `distillation.workflowsTested[ruleId]` and `workflowsPassing` populate
+  from real tool execution, plus `production_qc.documentsReviewed`
+  bumps when invoked from QC phase. Filesystem rescans now preserve
+  engine-emitted entries instead of clobbering them.
+- **Phase-gate parity checks (A1, A2, A5).** `extraction.exitCriteriaMet`
+  requires every catalog rule to have non-empty `source_chunk_ids`
+  (D1's grounding contract becomes a hard gate, not optional).
+  `skill_authoring.exitCriteriaMet` adds TaskManager parity:
+  `tasksCompleted + tasksFailed === total` per phase, in addition to
+  D2 coverage. `production_qc.exitCriteriaMet` requires
+  `batchesProcessed > 0` — kills the summary-only fiction that
+  E2E #4 demonstrated.
+- **Broadened production_qc scan.** Picks up agent-written batch
+  results in `output/results/qc_*.json` and `*_batch_*.json` (E2E #4
+  `unified_qc.py` path), not just the canonical `output/qc/`. Six
+  unused batch files in the killed E2E #4 workspace are now visible
+  to the gate.
+- **Engine-appended phase summaries (B1).** Every `phase_transition`
+  event now carries an `engineCounts` block computed from pipeline
+  telemetry. The persisted phase summary string includes both the
+  agent's free-form reason AND a deterministic counts line:
+  ```
+  [SKILL_AUTHORING → SKILL_TESTING]: <agent reason>
+    (engine) rulesCovered: 110/110, skillDirsAuthored: 20, tasksCompleted: 110/110
+  ```
+  Heuristic mismatch detection prepends `⚠️ POSSIBLE MISMATCH:` when
+  the agent's reason claims numbers that contradict engine state
+  (e.g., "100% complete" while `batchesProcessed=0`). Informational
+  only — never blocks the transition.
+- **`TaskManager.countByPhase(phase, status)`.** Phase-scoped task
+  counter. Underpins A2.
+
+### Verified
+
+- All gates fire correctly on synthetic 2-rule workspace + the killed
+  E2E #4 workspace (production_qc gate now sees the 6 batch files,
+  extraction rejects the no-chunk-refs catalog).
+- Backwards-compat: existing v0.6.0 `session-state.json` round-trips
+  through `importState` cleanly (new `rulesWithChunkRefs` field
+  defaults to `[]`).
+- Subagent path unchanged: `SkillAuthoringPipeline(workspace, null)`
+  falls back to D2-only (no taskManager in subagent scope).
+- `force: true` escape hatch on `phase_advance` tool unchanged.
+
+### Out of scope (deferred to post-E2E-#5 discussion)
+
+- Workflow output schema enforcement + ERROR bucketing (16.6% ERROR
+  rate observed in E2E #4 — quality issue, not tracking-honesty).
+- DeepSeek v4 + Xiaomi MiMo-2.5-pro provider support (user has
+  tokens; needs endpoint URLs + model IDs).
+- Heap component instrumentation (per-structure size in `heap.jsonl`).
+- Skill validator D3c (Python ast.parse smoke test on every authored
+  skill).
+- D2 wording revision in `template/skills/{zh,en}/meta-meta/skill-authoring/SKILL.md`.
+- `stale_subagents` acknowledgement requirement on phase advance.
+- `/phase rollback` slash command.
+- `session-state.json` locking on `saveState()`.
+
+### Files changed
+
+| File | Δ |
+|---|---|
+| `src/agent/engine.js` | +187 (`_recordMilestone`, `_buildEngineCountsBlock`, `_detectSummaryMismatch`, `_advancePhase` rewrite) |
+| `src/agent/pipelines/extraction.js` | +63 (`rulesWithChunkRefs`, A1 gate) |
+| `src/agent/pipelines/skill-authoring.js` | +37 (taskManager constructor arg, A2 gate) |
+| `src/agent/pipelines/skill-testing.js` | unchanged (existing gate works once telemetry populates) |
+| `src/agent/pipelines/distillation.js` | +15 (preserve engine-emitted entries across rescans) |
+| `src/agent/pipelines/production-qc.js` | +76 (broadened scan, A5 gate) |
+| `src/agent/task-manager.js` | +15 (`countByPhase`) |
+| `src/agent/tools/workflow-run.js` | +35 (milestone emission on success) |
+| `docs/update_design_v6.md` | +new (full v0.6.1 plan with deferred items) |
+
+---
+
 ## v0.6.0 (2026-04-23)
 
 First intentional architectural release. Ships 15 commits worth of work

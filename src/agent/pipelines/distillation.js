@@ -40,6 +40,13 @@ export class DistillationEngine extends Pipeline {
   }
 
   _scanWorkflows() {
+    // v0.6.1 A6: preserve engine-emitted entries across filesystem rescans.
+    // workflow_run hook bumps workflowsTested[ruleId] and adds to
+    // workflowsPassing on success — without this preservation, those entries
+    // get clobbered on the next describeState() / onToolResult() rescan.
+    const engineWfTested = { ...this.workflowsTested };
+    const engineWfPassing = [...this.workflowsPassing];
+
     this.workflowsCreated = {};
     this.workflowsTested = {};
     this.workflowsPassing = [];
@@ -67,6 +74,14 @@ export class DistillationEngine extends Pipeline {
       } else if (e.isFile() && e.name.endsWith(".py")) {
         this.workflowsCreated[path.parse(e.name).name] = 1;
       }
+    }
+
+    // Re-merge engine-emitted entries on top of filesystem-derived state
+    for (const [k, v] of Object.entries(engineWfTested)) {
+      if (!(k in this.workflowsTested)) this.workflowsTested[k] = v;
+    }
+    for (const id of engineWfPassing) {
+      if (!this.workflowsPassing.includes(id)) this.workflowsPassing.push(id);
     }
   }
 

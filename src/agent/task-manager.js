@@ -183,6 +183,21 @@ export class TaskManager {
   }
 
   /**
+   * v0.6.1 A2: Phase-scoped task count. Used by SkillAuthoringPipeline's
+   * exitCriteriaMet to gate phase advance on TaskManager parity, not just
+   * filename-regex coverage. Pass a status to filter; omit for total.
+   *
+   * @param {string} phase - Phase name (e.g., "skill_authoring")
+   * @param {string|null} [status] - Optional status filter ("completed", "pending", etc.)
+   * @returns {number}
+   */
+  countByPhase(phase, status = null) {
+    return this._tasks.filter(
+      (t) => t.phase === phase && (status == null || t.status === status),
+    ).length;
+  }
+
+  /**
    * Format task list for injection into system prompt context.
    * Compact checklist — not conversation history.
    * @returns {string}

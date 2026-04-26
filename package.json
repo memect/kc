@@ -1,6 +1,6 @@
 {
   "name": "kc-beta",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "KC Agent — LLM document verification agent (pure Node.js CLI)",
   "type": "module",
   "bin": {

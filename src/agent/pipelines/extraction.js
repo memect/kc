@@ -11,6 +11,11 @@ export class RuleExtractionPipeline extends Pipeline {
     this.rulesExtracted = [];
     this.rulesWithTests = [];
     this.coverageAudited = false;
+    // v0.6.1 A1: track which rules in catalog.json have non-empty
+    // source_chunk_ids — D1 grounded skill_authoring prompts on these but
+    // exit didn't require them, so a sloppy extraction could leave rules
+    // unmoored.
+    this.rulesWithChunkRefs = [];
     this._scanWorkspace();
   }
 
@@ -28,11 +33,21 @@ export class RuleExtractionPipeline extends Pipeline {
 
   _scanRules() {
     this.rulesExtracted = [];
+    this.rulesWithChunkRefs = [];
     const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
     if (fs.existsSync(catalogPath)) {
       try {
         const data = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
-        if (Array.isArray(data)) this.rulesExtracted = data.map((r, i) => r.id || `rule_${i}`);
+        if (Array.isArray(data)) {
+          this.rulesExtracted = data.map((r, i) => r.id || `rule_${i}`);
+          // A1: collect ids whose entry has non-empty source_chunk_ids
+          for (const r of data) {
+            const ids = r?.source_chunk_ids;
+            if (Array.isArray(ids) && ids.length > 0 && r?.id) {
+              this.rulesWithChunkRefs.push(r.id);
+            }
+          }
+        }
       } catch { /* skip */ }
     }
     const skillsDir = path.join(this._workspace.cwd, "rule_skills");
@@ -67,8 +82,41 @@ export class RuleExtractionPipeline extends Pipeline {
       parts.push("### Exit\nExtraction complete. Proceed to SKILL_AUTHORING.");
     }
 
-    parts.push(`### Exit criteria\n- [${this.regulationsScanned ? "x" : " "}] All regulations read\n- [${this.rulesExtracted.length > 0 ? "x" : " "}] Rules decomposed into atomic units\n- [${this.rulesWithTests.length >= Math.max(this.rulesExtracted.length * 0.8, 1) ? "x" : " "}] >=80% of rules have test stubs\n- [${this.coverageAudited ? "x" : " "}] Coverage audit completed`);
+    const chunkRefsOk = this._chunkRefsCriterionMet();
+    parts.push(
+      `### Exit criteria\n` +
+      `- [${this.regulationsScanned ? "x" : " "}] All regulations read\n` +
+      `- [${this.rulesExtracted.length > 0 ? "x" : " "}] Rules decomposed into atomic units\n` +
+      `- [${this.rulesWithTests.length >= Math.max(this.rulesExtracted.length * 0.8, 1) ? "x" : " "}] >=80% of rules have test stubs\n` +
+      `- [${this.coverageAudited ? "x" : " "}] Coverage audit completed\n` +
+      `- [${chunkRefsOk ? "x" : " "}] Every rule has source_chunk_ids in catalog.json (${this.rulesWithChunkRefs.length}/${this._catalogRuleCount()})`,
+    );
     return parts.join("\n\n");
+  }
+
+  /**
+   * v0.6.1 A1: number of rules currently in catalog.json (not the union with
+   * rule_skills/ dirs that rulesExtracted carries). Used by the chunk-refs
+   * gate so we compare apples to apples.
+   */
+  _catalogRuleCount() {
+    const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
+    if (!fs.existsSync(catalogPath)) return 0;
+    try {
+      const data = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+      return Array.isArray(data) ? data.length : 0;
+    } catch { return 0; }
+  }
+
+  /**
+   * v0.6.1 A1: pass when every rule in catalog.json has a non-empty
+   * source_chunk_ids array. Empty catalog (legacy / pre-D1 sessions) passes
+   * trivially so resume of v0.6.0 sessions doesn't get trapped.
+   */
+  _chunkRefsCriterionMet() {
+    const total = this._catalogRuleCount();
+    if (total === 0) return true; // backwards-compat for sessions pre-D1
+    return this.rulesWithChunkRefs.length >= total;
   }
 
   onToolResult(toolName, toolInput, result) {
@@ -85,7 +133,12 @@ export class RuleExtractionPipeline extends Pipeline {
 
   exitCriteriaMet() {
     return this.regulationsScanned && this.rulesExtracted.length > 0 &&
-      this.rulesWithTests.length >= Math.max(this.rulesExtracted.length * 0.8, 1) && this.coverageAudited;
+      this.rulesWithTests.length >= Math.max(this.rulesExtracted.length * 0.8, 1) &&
+      this.coverageAudited &&
+      // v0.6.1 A1: hard tracking — D1 source-context auto-attach requires
+      // catalog.json entries to carry source_chunk_ids. Without them the
+      // skill_authoring prompts are blind.
+      this._chunkRefsCriterionMet();
   }
 
   exportState() {
@@ -93,6 +146,7 @@ export class RuleExtractionPipeline extends Pipeline {
       regulationsScanned: this.regulationsScanned,
       rulesExtracted: this.rulesExtracted,
       rulesWithTests: this.rulesWithTests,
+      rulesWithChunkRefs: this.rulesWithChunkRefs,
       coverageAudited: this.coverageAudited,
     };
   }
@@ -106,6 +160,9 @@ export class RuleExtractionPipeline extends Pipeline {
     }
     if (Array.isArray(data.rulesWithTests) && data.rulesWithTests.length > this.rulesWithTests.length) {
       this.rulesWithTests = data.rulesWithTests;
+    }
+    if (Array.isArray(data.rulesWithChunkRefs) && data.rulesWithChunkRefs.length > this.rulesWithChunkRefs.length) {
+      this.rulesWithChunkRefs = data.rulesWithChunkRefs;
     }
   }
 }

@@ -165,7 +165,7 @@ export class AgentEngine {
     this.pipelines = {
       [Phase.BOOTSTRAP]: new ProjectInitializer(this.workspace),
       [Phase.EXTRACTION]: new RuleExtractionPipeline(this.workspace),
-      [Phase.SKILL_AUTHORING]: new SkillAuthoringPipeline(this.workspace),
+      [Phase.SKILL_AUTHORING]: new SkillAuthoringPipeline(this.workspace, this.taskManager),
       [Phase.SKILL_TESTING]: new SkillTestingPipeline(this.workspace),
       [Phase.DISTILLATION]: new DistillationPipeline(this.workspace),
       [Phase.PRODUCTION_QC]: new ProductionQCPipeline(this.workspace),
@@ -311,7 +311,11 @@ export class AgentEngine {
       // Distillation+ only (DISTILL mode)
       distill: [
         workerLlm,
-        new WorkflowRunTool(this.workspace, this.versionManager, this.confidence),
+        new WorkflowRunTool(this.workspace, this.versionManager, this.confidence, {
+          // v0.6.1 A6: hook engine-emitted milestones so phase gates see workflow runs
+          recordMilestone: (phase, key, value) => this._recordMilestone(phase, key, value),
+          getCurrentPhase: () => this.currentPhase,
+        }),
         new TierDowngradeTool(this.workspace, workerLlm),
         new QCSampleTool(this.workspace),
       ],
@@ -1057,12 +1061,23 @@ export class AgentEngine {
       return false;
     }
 
-    const phaseSummary = `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${reason}${force && nextPhase !== expected ? " (forced)" : ""}`;
+    // v0.6.1 B1: build engine-appended hard-counts block + heuristic mismatch
+    // detection so the LLM-narrated reason can be cross-checked against
+    // ground-truth telemetry. Phase summaries become diagnostic, not just
+    // narrative.
+    const engineCounts = this._buildEngineCountsBlock(this.currentPhase);
+    const mismatchPrefix = this._detectSummaryMismatch(reason, this.currentPhase) ? "⚠️ POSSIBLE MISMATCH: " : "";
+    const phaseSummary =
+      `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]: ${mismatchPrefix}${reason}` +
+      (force && nextPhase !== expected ? " (forced)" : "") +
+      (engineCounts ? `\n  (engine) ${engineCounts}` : "");
     this._phaseSummaries.push(phaseSummary);
     this.eventLog.append("phase_transition", {
       from: this.currentPhase,
       to: nextPhase,
       reason,
+      engineCounts: engineCounts || null,
+      possibleMismatch: !!mismatchPrefix,
       forced: force && nextPhase !== expected,
     });
     const fromPhase = this.currentPhase;
@@ -1091,6 +1106,172 @@ export class AgentEngine {
     } catch { /* never let signal emission break phase advance */ }
 
     return true;
+  }
+
+  /**
+   * v0.6.1 A6: Single chokepoint for engine-emitted milestone updates.
+   * Tools call this on successful execution to bump pipeline counters that
+   * the phase-gate hardening (A2-A5) depends on. Without engine emission,
+   * gates fall back to filesystem scans which can miss work that didn't
+   * follow canonical output paths (E2E #4: `unified_qc.py` wrote to
+   * `output/results/`, production-qc only scanned `output/qc/`).
+   *
+   * The mutation routes through the pipeline's existing internal state, so
+   * exportState/importState round-trips work unchanged and the gate sees a
+   * unified view of (filesystem-scanned + engine-emitted) signals.
+   *
+   * Three modes inferred from value shape:
+   *  - increment counter: pipeline[key] is number, value is number → add
+   *  - set in dict-by-id:  pipeline[key] is object, value is { id, value? } → assign
+   *  - dedupe-add to array: pipeline[key] is array, value is string → push if absent
+   *
+   * @param {string} phase - Pipeline name (e.g., "distillation")
+   * @param {string} key - Field on the pipeline (e.g., "workflowsTested")
+   * @param {*} value - Shape varies by target type (see modes above)
+   * @returns {boolean} true if a write happened
+   */
+  _recordMilestone(phase, key, value) {
+    const pipeline = this.pipelines?.[phase];
+    if (!pipeline) return false;
+    const target = pipeline[key];
+    // increment counter
+    if (typeof target === "number" && typeof value === "number") {
+      pipeline[key] = target + value;
+      return true;
+    }
+    // set on dict-by-id
+    if (target && typeof target === "object" && !Array.isArray(target)
+        && value && typeof value === "object" && "id" in value) {
+      target[value.id] = "value" in value ? value.value : true;
+      return true;
+    }
+    // dedupe-add to array
+    if (Array.isArray(target) && typeof value === "string") {
+      if (!target.includes(value)) target.push(value);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * v0.6.1 B1: build a one-line "engine counts" block summarizing the
+   * pipeline's ground-truth telemetry at the moment of phase advance.
+   * Different phases surface different metrics; we keep this short so the
+   * appended summary line stays readable.
+   *
+   * @param {string} fromPhase - The phase being LEFT (we summarize its work)
+   * @returns {string} block text, or "" if pipeline has nothing to report
+   */
+  _buildEngineCountsBlock(fromPhase) {
+    const pipeline = this.pipelines?.[fromPhase];
+    if (!pipeline) return "";
+    const parts = [];
+    try {
+      switch (fromPhase) {
+        case "extraction": {
+          const total = pipeline._catalogRuleCount?.() ?? pipeline.rulesExtracted?.length ?? 0;
+          parts.push(`rulesExtracted: ${pipeline.rulesExtracted?.length ?? 0}`);
+          parts.push(`rulesWithChunkRefs: ${pipeline.rulesWithChunkRefs?.length ?? 0}/${total}`);
+          parts.push(`rulesWithTests: ${pipeline.rulesWithTests?.length ?? 0}`);
+          parts.push(`coverageAudited: ${pipeline.coverageAudited ? "yes" : "no"}`);
+          break;
+        }
+        case "skill_authoring": {
+          const totalRules = pipeline.totalRules?.length ?? 0;
+          const covered = pipeline.ruleIdsCovered?.size ?? 0;
+          parts.push(`rulesCovered: ${covered}/${totalRules}`);
+          parts.push(`skillDirsAuthored: ${pipeline.skillsAuthored?.length ?? 0}`);
+          if (this.taskManager) {
+            const t = this.taskManager.countByPhase("skill_authoring");
+            const d = this.taskManager.countByPhase("skill_authoring", "completed");
+            const f = this.taskManager.countByPhase("skill_authoring", "failed");
+            parts.push(`tasksCompleted: ${d}/${t}${f > 0 ? ` (+${f} failed)` : ""}`);
+          }
+          break;
+        }
+        case "skill_testing": {
+          const total = pipeline.skillsToTest?.length ?? 0;
+          const tested = Object.keys(pipeline.skillsTested || {}).length;
+          const passing = pipeline.skillsPassing?.length ?? 0;
+          parts.push(`skillsTested: ${tested}/${total}`);
+          parts.push(`skillsPassing: ${passing}`);
+          parts.push(`iterations: ${pipeline.iterationCount ?? 0}`);
+          break;
+        }
+        case "distillation": {
+          const total = pipeline.skillsToDistill?.length ?? 0;
+          const created = Object.keys(pipeline.workflowsCreated || {}).length;
+          const tested = Object.keys(pipeline.workflowsTested || {}).length;
+          const passing = pipeline.workflowsPassing?.length ?? 0;
+          parts.push(`workflowsCreated: ${created}/${total}`);
+          parts.push(`workflowsTested: ${tested}/${total}`);
+          parts.push(`workflowsPassing: ${passing}/${total}`);
+          break;
+        }
+        case "production_qc": {
+          parts.push(`batchesProcessed: ${pipeline.batchesProcessed ?? 0}`);
+          parts.push(`documentsReviewed: ${pipeline.documentsReviewed ?? 0}`);
+          parts.push(`monitoring: ${pipeline.monitoringPhase ?? "?"}`);
+          break;
+        }
+        // bootstrap / finalization: no specific counters, fall through
+      }
+    } catch { /* never let summary build break phase advance */ }
+    return parts.join(", ");
+  }
+
+  /**
+   * v0.6.1 B1: heuristic mismatch detection. Conservative regex over the
+   * LLM's free-form reason for percentages and counts, compared against
+   * engine truth. INFORMATIONAL only — never blocks the transition. False
+   * positives are acceptable (the warning is a hint to the human reviewer,
+   * not a hard signal). False negatives are also acceptable (this catches
+   * the loud, numerical claims; subtle ones still slip through).
+   *
+   * Returns true if the agent's reason mentions a count or percentage that
+   * doesn't match engine state.
+   */
+  _detectSummaryMismatch(reason, fromPhase) {
+    if (!reason || typeof reason !== "string") return false;
+    const pipeline = this.pipelines?.[fromPhase];
+    if (!pipeline) return false;
+    try {
+      // Match "N/M" fractions and standalone counts
+      const fractionMatches = [...reason.matchAll(/(\d+)\s*\/\s*(\d+)/g)];
+      // Match "N rules / skills / workflows / tasks"
+      const countMatches = [...reason.matchAll(/(\d+)\s*(rules?|skills?|workflows?|tasks?|条规则|个技能)/gi)];
+      // Match accuracy claims like "95%", "0.95"
+      const pctMatches = [...reason.matchAll(/(\d+(?:\.\d+)?)\s*%/g)];
+
+      // Phase-specific cross-checks (cheap conservative comparisons)
+      if (fromPhase === "skill_authoring" && this.taskManager) {
+        const completed = this.taskManager.countByPhase("skill_authoring", "completed");
+        const total = this.taskManager.countByPhase("skill_authoring");
+        for (const m of fractionMatches) {
+          const claimedDone = parseInt(m[1], 10);
+          const claimedTotal = parseInt(m[2], 10);
+          if (claimedTotal === total && claimedDone > completed + 5) return true;
+        }
+      }
+      if (fromPhase === "skill_testing") {
+        const tested = Object.keys(pipeline.skillsTested || {}).length;
+        const passing = pipeline.skillsPassing?.length ?? 0;
+        for (const m of pctMatches) {
+          const claimed = parseFloat(m[1]);
+          // If claimed > 50% but engine sees 0 tested, that's suspicious
+          if (claimed >= 50 && tested === 0 && passing === 0) return true;
+        }
+      }
+      if (fromPhase === "production_qc") {
+        const batches = pipeline.batchesProcessed ?? 0;
+        // Any "complete" or large-count claim while batches==0 is suspicious
+        if (batches === 0) {
+          if (countMatches.some((m) => parseInt(m[1], 10) > 10)) return true;
+          if (pctMatches.some((m) => parseFloat(m[1]) > 50)) return true;
+        }
+      }
+    } catch { /* informational only — never block */ }
+    return false;
   }
 
   /**

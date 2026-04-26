@@ -4,9 +4,18 @@ import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
 
 export class SkillAuthoringPipeline extends Pipeline {
-  constructor(workspace) {
+  /**
+   * @param {Workspace} workspace
+   * @param {TaskManager|null} [taskManager] - v0.6.1 A2: pass the engine's
+   *   TaskManager so exitCriteriaMet can require task-completion parity in
+   *   addition to D2 filename coverage. Subagents pass null (no taskManager
+   *   in subagent scope), in which case the gate falls back to D2-only
+   *   behaviour.
+   */
+  constructor(workspace, taskManager = null) {
     super();
     this._workspace = workspace;
+    this._taskManager = taskManager;
     this.totalRules = [];
     this.skillsAuthored = [];
     this.skillsWithScripts = [];
@@ -132,12 +141,24 @@ export class SkillAuthoringPipeline extends Pipeline {
       "`rule_catalog` tool for any catalog edits — sandbox_exec bypasses the " +
       "workspace file lock and races with parallel workers."
     ];
+    // v0.6.1 A2: surface task-completion parity so the agent sees the gate
+    let taskLine = "";
+    if (this._taskManager) {
+      const totalT = this._taskManager.countByPhase("skill_authoring");
+      const doneT = this._taskManager.countByPhase("skill_authoring", "completed");
+      const failedT = this._taskManager.countByPhase("skill_authoring", "failed");
+      if (totalT > 0) {
+        taskLine = `\n- Per-rule tasks completed: ${doneT}/${totalT}` +
+          (failedT > 0 ? ` (+${failedT} failed)` : "");
+      }
+    }
     parts.push(
       `### Progress (rule-id coverage, D2)\n` +
       `- Total rules in catalog: ${total}\n` +
       `- Rule ids covered by some skill: ${covered}\n` +
       `- Skill directories authored: ${this.skillsAuthored.length}\n` +
       `- Skills with scripts/: ${this.skillsWithScripts.length}` +
+      taskLine +
       (uncovered.length > 0
         ? `\n- Missing coverage (${uncovered.length}): ${uncovered.slice(0, 15).join(", ")}${uncovered.length > 15 ? "…" : ""}`
         : ""),
@@ -169,6 +190,20 @@ export class SkillAuthoringPipeline extends Pipeline {
     // preserved as a secondary gate on skill depth.
     const allCovered = this.totalRules.every((r) => this.ruleIdsCovered.has(r));
     if (!allCovered) return false;
+    // v0.6.1 A2: tasks-parity gate. The 17-minute skill_authoring transition
+    // in E2E #4 happened because D2 fired on 20 skeleton SK01-SK20 dirs
+    // covering all 110 rule_ids by filename, while only ~5 of 110 per-rule
+    // skill_authoring tasks had actually been worked on. Now require every
+    // per-rule task in TaskManager to be in a terminal state (completed or
+    // failed). Subagents (no taskManager) skip this gate.
+    if (this._taskManager) {
+      const total = this._taskManager.countByPhase("skill_authoring");
+      if (total > 0) {
+        const completed = this._taskManager.countByPhase("skill_authoring", "completed");
+        const failed = this._taskManager.countByPhase("skill_authoring", "failed");
+        if (completed + failed < total) return false;
+      }
+    }
     return this.skillsWithScripts.length >= Math.max(1, this.skillsAuthored.length * 0.5);
   }
 

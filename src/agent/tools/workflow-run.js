@@ -9,12 +9,33 @@ import { BaseTool, ToolResult } from "./base.js";
  * result and trace ID automatically. Saves structured result to output/results/.
  */
 export class WorkflowRunTool extends BaseTool {
-  constructor(workspace, versionManager, confidenceScorer, { timeout = 120 } = {}) {
+  /**
+   * @param {Workspace} workspace
+   * @param {VersionManager} versionManager
+   * @param {ConfidenceScorer} confidenceScorer
+   * @param {object} [opts]
+   * @param {number} [opts.timeout=120]
+   * @param {(phase: string, key: string, value: any) => boolean} [opts.recordMilestone]
+   *   v0.6.1 A6: callback for engine-emitted milestone updates. Called on
+   *   successful workflow execution so the distillation/production_qc gates
+   *   see real telemetry, not just filesystem scans of canonical paths.
+   * @param {() => string} [opts.getCurrentPhase]
+   *   v0.6.1 A6: returns the engine's current phase. Used to gate
+   *   production_qc-specific milestone bumps (documentsReviewed) so
+   *   distillation-phase calls don't accidentally credit QC.
+   */
+  constructor(workspace, versionManager, confidenceScorer, {
+    timeout = 120,
+    recordMilestone = null,
+    getCurrentPhase = null,
+  } = {}) {
     super();
     this._workspace = workspace;
     this._versionMgr = versionManager;
     this._confidence = confidenceScorer;
     this._timeout = timeout;
+    this._recordMilestone = recordMilestone;
+    this._getCurrentPhase = getCurrentPhase;
   }
 
   get name() { return "workflow_run"; }
@@ -96,6 +117,18 @@ export class WorkflowRunTool extends BaseTool {
     fs.mkdirSync(resultsDir, { recursive: true });
     const resultFile = path.join(resultsDir, `${ruleId}_${path.parse(docResolved).name}.json`);
     fs.writeFileSync(resultFile, JSON.stringify(resultData, null, 2), "utf-8");
+
+    // v0.6.1 A6: emit milestone signals so phase gates see this run.
+    // Wrapped in try/catch so milestone emission can never break a workflow.
+    try {
+      this._recordMilestone?.("distillation", "workflowsTested",
+        { id: ruleId, value: { confidence, traceId: resultData.trace_id } });
+      this._recordMilestone?.("distillation", "workflowsPassing", ruleId);
+      const phase = this._getCurrentPhase?.();
+      if (phase === "production_qc") {
+        this._recordMilestone?.("production_qc", "documentsReviewed", 1);
+      }
+    } catch { /* never let milestone emission break workflow execution */ }
 
     return new ToolResult(JSON.stringify(resultData, null, 2));
   }
