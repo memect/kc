@@ -202,6 +202,7 @@ export function WelcomeBanner({ projectDir, pendingInputCount = 0 } = {}) {
       "   rules/02 as core; rules/03-10 are supporting context only.\""),
     h(Text, null, ""),
     h(Text, { dimColor: true }, "Product of Memium / kitchen-engineer42"),
+    h(Text, { dimColor: true }, "PolyForm Noncommercial 1.0.0 — commercial use requires a separate license. See LICENSE-COMMERCIAL.md."),
   );
 }
 

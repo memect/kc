@@ -245,9 +245,27 @@ Bug reports and PRs welcome at <https://github.com/kitchen-engineer42/kc-cli>.
 
 ## License
 
-MIT. Bundled meta-skills under `template/skills/` are proprietary —
-distributed via npm but not open-source. See `template/skills/LICENSE` for
-terms.
+KC v0.7.0+ is **dual-licensed** under [PolyForm Noncommercial 1.0.0](./LICENSE)
+plus a separate commercial license available on request.
+
+- **Personal users, students, hobbyists, public-research orgs,
+  charities, and government institutions** — use, modify, and self-host
+  KC for free under [LICENSE](./LICENSE) (PolyForm Noncommercial 1.0.0).
+- **Enterprises in production** (for-profit company workflows, hosting
+  KC as a paid service, distributing KC inside a commercial product) —
+  require a commercial license. See [LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md)
+  for terms and how to contact us.
+- **Redistribution as a competing or independent product** — forbidden
+  under both license tracks. Internal forks for licensee use are fine
+  with the `Required Notice:` preserved; releasing KC under another
+  name as a new offering is not.
+
+KC v0.6.x and earlier remain under MIT for those release versions
+(licenses can't be retroactively changed); the v0.7.0 cutover applies
+to all subsequent commits and releases.
+
+Bundled meta-skills under `template/skills/` follow the same dual
+license as KC itself.
 
 ---
 

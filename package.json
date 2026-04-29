@@ -1,7 +1,7 @@
 {
   "name": "kc-beta",
-  "version": "0.6.2",
-  "description": "KC Agent — LLM document verification agent (pure Node.js CLI)",
+  "version": "0.7.0-pre",
+  "description": "KC Agent — LLM document verification agent (pure Node.js CLI). Dual-licensed: PolyForm Noncommercial 1.0.0 for personal/noncommercial use; commercial license required for enterprise production. See LICENSE and LICENSE-COMMERCIAL.md.",
   "type": "module",
   "bin": {
     "kc-beta": "bin/kc-beta.js"
@@ -9,10 +9,17 @@
   "files": [
     "bin/",
     "src/",
+    "!src/cli/meme.source.js",
     "template/",
     "README.md",
-    "QUICKSTART.md"
+    "QUICKSTART.md",
+    "LICENSE",
+    "LICENSE-COMMERCIAL.md"
   ],
+  "scripts": {
+    "build:meme": "node scripts/build-meme.js",
+    "prepublishOnly": "node scripts/build-meme.js"
+  },
   "homepage": "https://github.com/kitchen-engineer42/kc-cli",
   "repository": {
     "type": "git",
@@ -38,5 +45,5 @@
     "cli"
   ],
   "author": "kitchen-engineer42",
-  "license": "MIT"
+  "license": "SEE LICENSE IN LICENSE"
 }
