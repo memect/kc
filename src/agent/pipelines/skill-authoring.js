@@ -242,6 +242,30 @@ export class SkillAuthoringPipeline extends Pipeline {
    * v0.6.2 I2: gather every check_r###.py path under rule_skills/. Used by
    * the skill validator. Walks one level into each skill directory.
    */
+  /**
+   * v0.6.3 (#74): SKILL_AUTHORING writes per-rule check scripts under
+   * rule_skills/. Workflow runs against production samples or distillation
+   * outputs are later-phase work.
+   */
+  phaseMisfitHint(toolName, toolInput, result) {
+    if (result?.isError) return null;
+    const exitText = this.exitCriteriaMet()
+      ? "Skill-authoring exit criteria are MET — call phase_advance(to=\"skill_testing\") to proceed."
+      : "Skill-authoring not yet complete (see describeState).";
+
+    if (toolName === "workspace_file" && toolInput?.operation === "write") {
+      const p = toolInput.path || "";
+      if (p.startsWith("workflows/")) {
+        return `Writing under workflows/ is DISTILLATION-phase work, but engine is in SKILL_AUTHORING. ${exitText}`;
+      }
+      if (p.startsWith("output/results/")) {
+        return `Writing under output/results/ is PRODUCTION_QC-phase work, but engine is in SKILL_AUTHORING. ${exitText}`;
+      }
+    }
+
+    return null;
+  }
+
   _collectCheckScripts() {
     const out = [];
     const dir = path.join(this._workspace.cwd, "rule_skills");

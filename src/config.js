@@ -51,8 +51,13 @@ export function loadSettings(workspacePath) {
   const gc = loadGlobalConfig();
   const env = workspacePath ? loadEnvFile(path.join(workspacePath, ".env")) : {};
 
+  // Session-scoped overrides (process.env). Internal knob for benchmarking
+  // — lets a single launch swap conductor/workspace/context without touching
+  // ~/.kc_agent/config.json. Not exposed in --help or onboard.
+  const penv = process.env;
+
   // Resolve provider metadata for authType/apiFormat defaults
-  const provider = gc.provider || "siliconflow";
+  const provider = penv.KC_PROVIDER || gc.provider || "siliconflow";
   const providerDef = getProviderById(provider);
 
   const settings = {
@@ -61,10 +66,10 @@ export function loadSettings(workspacePath) {
     authType: gc.auth_type || providerDef?.authType || "bearer",
     apiFormat: gc.api_format || providerDef?.apiFormat || "openai",
 
-    // Conductor LLM (generic keys with legacy fallback)
-    llmApiKey: env.LLM_API_KEY || env.SILICONFLOW_API_KEY || gc.api_key || "",
-    llmBaseUrl: env.LLM_BASE_URL || env.SILICONFLOW_BASE_URL || gc.base_url || "https://api.siliconflow.cn/v1",
-    kcModel: gc.conductor_model || "glm-5",
+    // Conductor LLM (process.env wins → workspace .env → global config)
+    llmApiKey: penv.KC_LLM_API_KEY || env.LLM_API_KEY || env.SILICONFLOW_API_KEY || gc.api_key || "",
+    llmBaseUrl: penv.KC_LLM_BASE_URL || env.LLM_BASE_URL || env.SILICONFLOW_BASE_URL || gc.base_url || "https://api.siliconflow.cn/v1",
+    kcModel: penv.KC_CONDUCTOR_MODEL || gc.conductor_model || "glm-5",
     kcMaxTokens: parseInt(env.KC_MAX_TOKENS || gc.kc_max_tokens?.toString() || "65536", 10),
 
     // Tier models (from .env or global config tiers)
@@ -78,10 +83,10 @@ export function loadSettings(workspacePath) {
     vlmTier2: env.VLM_TIER2 || gc.vlm_tiers?.tier2 || "",
     vlmTier3: env.VLM_TIER3 || gc.vlm_tiers?.tier3 || "",
 
-    // Worker LLM — optional, defaults to conductor config
-    workerProvider: gc.worker_provider || "",
-    workerApiKey: env.WORKER_API_KEY || gc.worker_api_key || "",
-    workerBaseUrl: env.WORKER_BASE_URL || gc.worker_base_url || "",
+    // Worker LLM — optional, defaults to conductor config (process.env wins)
+    workerProvider: penv.KC_WORKER_PROVIDER || gc.worker_provider || "",
+    workerApiKey: penv.KC_WORKER_API_KEY || env.WORKER_API_KEY || gc.worker_api_key || "",
+    workerBaseUrl: penv.KC_WORKER_BASE_URL || env.WORKER_BASE_URL || gc.worker_base_url || "",
     workerAuthType: gc.worker_auth_type || "",
     workerApiFormat: gc.worker_api_format || "",
 
@@ -89,8 +94,8 @@ export function loadSettings(workspacePath) {
     mineruApiUrl: env.MINERU_API_URL || "",
     mineruApiKey: env.MINERU_API_KEY || "",
 
-    // Workspace
-    kcWorkspaceRoot: gc.workspace_root || path.join(os.homedir(), ".kc_agent", "workspaces"),
+    // Workspace (process.env wins — for parallel benchmark runs)
+    kcWorkspaceRoot: penv.KC_WORKSPACE_ROOT || gc.workspace_root || path.join(os.homedir(), ".kc_agent", "workspaces"),
     kcExecTimeout: parseInt(env.KC_EXEC_TIMEOUT || "30", 10),
 
     // Accuracy thresholds
@@ -110,11 +115,13 @@ export function loadSettings(workspacePath) {
     tavilyApiKey: env.TAVILY_API_KEY || gc.tavily_api_key || "",
 
     // Context management — A2: prefer per-provider cap from providers.js
-    // over the generic 200000 default. KC_CONTEXT_LIMIT env still wins.
-    // gc.kc_context_limit (global config) is next. Then provider.contextLimit.
-    // Then a safe 200000 fallback for unknown/custom providers.
+    // over the generic 200000 default. process.env.KC_CONTEXT_LIMIT wins
+    // (session-scoped override for benchmarking long-context models without
+    // editing global config), then workspace .env, then global config, then
+    // provider.contextLimit, then a safe 200000 fallback.
     kcContextLimit: parseInt(
-      env.KC_CONTEXT_LIMIT ||
+      penv.KC_CONTEXT_LIMIT ||
+        env.KC_CONTEXT_LIMIT ||
         gc.kc_context_limit?.toString() ||
         providerDef?.contextLimit?.toString() ||
         "200000",

@@ -88,6 +88,18 @@ export class LLMClient {
     const body = { model, messages, stream };
     if (maxTokens) body.max_tokens = maxTokens;
     if (tools && tools.length > 0) body.tools = tools;
+
+    // Hybrid reasoning models (GLM-5.1, DeepSeek v4, MiMo v2.5, Qwen3, ...)
+    // emit `reasoning_content` by default. KC's history layer doesn't round-
+    // trip that field yet, so DeepSeek's strict API rejects subsequent turns
+    // ("reasoning_content in the thinking mode must be passed back to the
+    // API"). Set KC_DISABLE_THINKING=1 to opt out cleanly — providers that
+    // don't recognize the field ignore it. Proper round-trip support is a
+    // v0.6.3 item.
+    if (process.env.KC_DISABLE_THINKING === "1" || process.env.KC_DISABLE_THINKING === "true") {
+      body.thinking = { type: "disabled" };
+    }
+
     return body;
   }
 

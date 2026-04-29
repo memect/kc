@@ -139,18 +139,34 @@
     }
   },
 
-  "xiaomi": {
-    "_comment": "Xiaomi MiMo coding plan — flagship Pro + standard + multimodal Omni. Native 1M context but KC caps to 200K. TTS variants excluded (no KC use case).",
-    "conductor": "MiMo-V2.5-Pro",
+  "tencent": {
+    "_comment": "Tencent Hunyuan via Lkeap plan endpoint. hy3-preview is the hidden flagship (not in /models listing but accepts requests). hunyuan-t1 is a thinking model — if used as conductor, ensure v0.6.3.1 reasoning_content roundtrip is in place.",
+    "conductor": "hy3-preview",
     "llm": {
-      "tier1": "MiMo-V2.5-Pro",
-      "tier2": "MiMo-V2.5",
-      "tier3": "MiMo-V2-Pro",
-      "tier4": "MiMo-V2-Pro"
+      "tier1": "hy3-preview, hunyuan-t1",
+      "tier2": "hunyuan-turbos, hunyuan-2.0-thinking",
+      "tier3": "hunyuan-2.0-instruct, tc-code-latest",
+      "tier4": "tc-code-latest"
     },
     "vlm": {
-      "tier1": "MiMo-V2-Omni",
-      "tier2": "MiMo-V2-Omni",
+      "tier1": "",
+      "tier2": "",
+      "tier3": ""
+    }
+  },
+
+  "xiaomi": {
+    "_comment": "Xiaomi MiMo coding plan — flagship Pro + standard + multimodal Omni. Native 1M context but KC caps to 200K. TTS variants excluded (no KC use case). Endpoint normalizes IDs to lowercase — must match exactly.",
+    "conductor": "mimo-v2.5-pro",
+    "llm": {
+      "tier1": "mimo-v2.5-pro",
+      "tier2": "mimo-v2.5",
+      "tier3": "mimo-v2-pro",
+      "tier4": "mimo-v2-pro"
+    },
+    "vlm": {
+      "tier1": "mimo-v2-omni",
+      "tier2": "mimo-v2-omni",
       "tier3": ""
     }
   },

@@ -56,7 +56,17 @@ export class RuleCatalogTool extends BaseTool {
   constructor(workspace) {
     super();
     this._workspace = workspace;
-    this._catalogPath = path.join(workspace.cwd, "rules", "catalog.json");
+    // v0.6.3: do NOT cache the absolute path here. engine.renameSession()
+    // moves the workspace dir via fs.renameSync and updates this._workspace.cwd
+    // via Workspace.rename(), but tool instances live in the registry and
+    // never see the cascade — a cached _catalogPath would keep writing to the
+    // pre-rename absolute path, mkdir-recreating the orphaned directory and
+    // stranding all rule_catalog state. Resolve on every call instead.
+  }
+
+  /** Always read workspace.cwd at call time so /rename is followed. */
+  get _catalogPath() {
+    return path.join(this._workspace.cwd, "rules", "catalog.json");
   }
 
   get name() { return "rule_catalog"; }

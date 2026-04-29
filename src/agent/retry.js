@@ -1,9 +1,17 @@
 /**
  * Retry wrapper with exponential backoff and jitter.
  * Designed for LLM API calls — retries transient errors, fails fast on auth/validation errors.
+ *
+ * v0.6.3.1: KC_MAX_RETRIES env override. Default 10 attempts ≈ 5 min of
+ * exponential backoff (1+2+4+8+16+32+60+60+60+60s). E2E #5 surfaced a
+ * Tencent outage that lasted longer than the default; setting
+ * KC_MAX_RETRIES=20 buys ~15 more min before the engine gives up.
  */
-
-const MAX_RETRIES = 10;
+const MAX_RETRIES = (() => {
+  const raw = parseInt(process.env.KC_MAX_RETRIES || "", 10);
+  if (Number.isFinite(raw) && raw >= 0 && raw <= 50) return raw;
+  return 10;
+})();
 const INITIAL_DELAY_MS = 1000;
 const MAX_DELAY_MS = 60000;
 const BACKOFF_MULTIPLIER = 2;

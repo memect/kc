@@ -52,6 +52,43 @@ const LENAT_QUOTE = "Intelligence is ten million rules.";
 // display jumpy. Peak stays at the highest seen this session.
 const CTX_SAMPLE_WINDOW = 30;
 
+// Visual width of a string with CJK chars counted as 2 cells each.
+// Used to truncate session IDs etc. so the status bar fits in a single
+// terminal row regardless of terminal width.
+function visualWidth(s) {
+  let w = 0;
+  for (const ch of s || "") {
+    const cp = ch.codePointAt(0);
+    // CJK + fullwidth + emoji rough heuristic — wide if codepoint ≥ 0x1100.
+    w += cp >= 0x1100 ? 2 : 1;
+  }
+  return w;
+}
+
+function truncateVisual(s, maxCells) {
+  if (!s) return s;
+  if (visualWidth(s) <= maxCells) return s;
+  // Middle-truncate so renamed sessions keep both ends visible
+  // (e.g. "资管新规测试062-GLM" → "资管新规…2-GLM" — model suffix preserved).
+  const headBudget = Math.floor((maxCells - 1) / 2);
+  const tailBudget = maxCells - 1 - headBudget;
+  const chars = [...s];
+  let w = 0; let head = "";
+  for (const ch of chars) {
+    const cw = ch.codePointAt(0) >= 0x1100 ? 2 : 1;
+    if (w + cw > headBudget) break;
+    w += cw; head += ch;
+  }
+  let tw = 0; let tail = "";
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const ch = chars[i];
+    const cw = ch.codePointAt(0) >= 0x1100 ? 2 : 1;
+    if (tw + cw > tailBudget) break;
+    tw += cw; tail = ch + tail;
+  }
+  return head + "…" + tail;
+}
+
 export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
   const samplesRef = useRef([]);
   const peakRef = useRef(0);
@@ -83,15 +120,19 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
                      : pct >= 60 ? "  · 💾 建议 /compact"
                      : "";
 
+  // Truncate session ID to keep the bar single-row even with CJK names.
+  // 14 visual cells covers most short UUIDs and ~6-7 CJK chars.
+  const displaySessionId = sessionId ? truncateVisual(sessionId, 14) : "";
+
   return h(Box, { marginTop: 0 },
-    h(Text, { dimColor: true }, "  ⏵⏵  KC Agent CLI "),
-    h(Text, { dimColor: true }, sessionId ? `[${sessionId}]` : ""),
-    phase ? h(Text, { color: "cyan" }, ` ${phase.toUpperCase()}`) : null,
-    h(Text, { color: "green" }, "  ●  "),
-    h(Text, { color: ctxColor }, `CTX: ${ctxLabel}/${limitLabel} (${pct}%)`),
-    showPeak ? h(Text, { dimColor: true }, ` · peak ${fmt(peak)}`) : null,
-    compactHint ? h(Text, { color: ctxColor }, compactHint) : null,
-    h(Text, { dimColor: true }, `  · ${LENAT_QUOTE}`),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, "  ⏵⏵  KC "),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, displaySessionId ? `[${displaySessionId}]` : ""),
+    phase ? h(Text, { color: "cyan", wrap: "truncate-end" }, ` ${phase.toUpperCase()}`) : null,
+    h(Text, { color: "green", wrap: "truncate-end" }, "  ●  "),
+    h(Text, { color: ctxColor, wrap: "truncate-end" }, `CTX: ${ctxLabel}/${limitLabel} (${pct}%)`),
+    showPeak ? h(Text, { dimColor: true, wrap: "truncate-end" }, ` · peak ${fmt(peak)}`) : null,
+    compactHint ? h(Text, { color: ctxColor, wrap: "truncate-end" }, compactHint) : null,
+    h(Text, { dimColor: true, wrap: "truncate-end" }, `  · ${LENAT_QUOTE}`),
   );
 }
 

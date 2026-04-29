@@ -140,7 +140,7 @@ export class TaskManager {
 
   /**
    * Phases where one-task-per-rule is the natural unit of work.
-   * For BOOTSTRAP / EXTRACTION the unit is a regulation (one PDF → many rules);
+   * For BOOTSTRAP / RULE_EXTRACTION the unit is a regulation (one PDF → many rules);
    * ralph-loop shouldn't drive per-rule there because the rules don't exist yet
    * (or are the *output*, not the input) — see E2E #3 coverage check.
    */

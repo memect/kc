@@ -3,6 +3,7 @@ import path from "node:path";
 import { AgentEvent } from "./events.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
+import { findSafeSplitPoint } from "./message-utils.js";
 import { Workspace } from "./workspace.js";
 import { normalizeRuleCatalog } from "./rule-catalog-normalize.js";
 import { VersionManager } from "./version-manager.js";
@@ -51,6 +52,45 @@ import { estimateTokens, estimateMessagesTokens } from "./token-counter.js";
 // Claude Sonnet 4) handle this comfortably. Override via KC_MAX_TOKENS env
 // or kc_max_tokens in the global config.
 const DEFAULT_KC_MAX_TOKENS = 65536;
+
+/**
+ * v0.6.3.1: Tolerant JSON parse for streamed tool-call arguments. When LLMs
+ * (esp. SiliconFlow GLM-5.1 in E2E #5) hit max_tokens mid-arguments, the
+ * stream returns truncated JSON missing N closing braces or quotes. Strict
+ * parse fails; old code silently dropped to {} which masked the actual issue.
+ *
+ * Strategy:
+ *   1. Try strict JSON.parse (fast path, most calls).
+ *   2. On failure, attempt to balance braces by appending up to BRACE_BUDGET
+ *      `}` characters. Cheap; recovers the common single-brace-truncation case.
+ *   3. If still failing, return error so caller surfaces it to the agent.
+ *
+ * Returns { ok: true, value, recovered? } | { ok: false, error }.
+ */
+const BRACE_RECOVERY_BUDGET = 4;
+function parseToolArgsTolerant(raw) {
+  if (typeof raw !== "string") return { ok: false, error: "arguments not a string" };
+  if (raw === "") return { ok: true, value: {} };
+  // Fast path
+  try { return { ok: true, value: JSON.parse(raw) }; } catch (e0) {
+    // Recovery: balance braces by appending up to BRACE_RECOVERY_BUDGET `}`
+    const opens = (raw.match(/\{/g) || []).length;
+    const closes = (raw.match(/\}/g) || []).length;
+    const needed = opens - closes;
+    if (needed > 0 && needed <= BRACE_RECOVERY_BUDGET) {
+      const padded = raw + "}".repeat(needed);
+      try { return { ok: true, value: JSON.parse(padded), recovered: needed }; } catch (_) { /* fall through */ }
+    }
+    // Last-ditch: try closing an open string then balancing braces.
+    // Truncation can land mid-string-value: ..."description": "abc<EOF>
+    const quotes = (raw.match(/"/g) || []).length;
+    if (quotes % 2 === 1) {
+      const candidate = raw + '"' + "}".repeat(Math.max(1, needed));
+      try { return { ok: true, value: JSON.parse(candidate), recovered: candidate.length - raw.length }; } catch (_) { /* fall through */ }
+    }
+    return { ok: false, error: e0.message || "JSON parse failed" };
+  }
+}
 
 // Phases where worker LLM tools are available (DISTILL mode).
 // E1: FINALIZATION inherits worker-LLM access so one-last-pass validation
@@ -659,8 +699,18 @@ export class AgentEngine {
   async compact({ recentCount = 20 } = {}) {
     if (this.history.messages.length <= recentCount) return null;
 
-    const olderMessages = this.history.messages.slice(0, -recentCount);
-    const recentMessages = this.history.messages.slice(-recentCount);
+    // v0.6.3.1: tool-pair atomicity. Naive slice(-recentCount) can land on
+    // a tool message (whose assistant_with_tool_calls is in the older batch
+    // about to be summarized) OR put the split between an assistant with
+    // tool_calls and its tool results. Either creates an orphan that
+    // DeepSeek's strict API rejects with 400. Walk the split point forward
+    // until BOTH (recent[0] isn't tool) AND (older[-1] isn't
+    // assistant_with_tool_calls).
+    const desiredSplit = this.history.messages.length - recentCount;
+    const splitPoint = findSafeSplitPoint(this.history.messages, desiredSplit);
+    const olderMessages = this.history.messages.slice(0, splitPoint);
+    const recentMessages = this.history.messages.slice(splitPoint);
+    if (olderMessages.length === 0) return null; // nothing safely summarizable
 
     const CHUNK_BUDGET = 30000; // tokens per summarization request
     const chunks = this._chunkMessages(olderMessages, CHUNK_BUDGET);
@@ -792,6 +842,39 @@ export class AgentEngine {
       engine._phaseSummaries = data.phaseSummaries || [];
       engine._registerToolsForPhase(engine.currentPhase);
       engine.workspace.setPhase(engine.currentPhase);
+
+      // v0.6.3.1: detect whether prior turns of this session used reasoning
+      // mode, so the field-consistency invariant continues across resume.
+      // Without this, the first assistant turn after resume might lack
+      // reasoning_content even though earlier turns have it, and DeepSeek's
+      // strict-mode rejects with 400.
+      try {
+        const msgs = engine.history?.messages || [];
+        engine._sessionUsesReasoning = msgs.some(
+          (m) => m?.role === "assistant" && "reasoning_content" in m,
+        );
+        // One-shot migration: backfill empty reasoning_content on assistant
+        // messages that are missing the field. Pre-v0.6.3.1 sessions could
+        // accumulate "holes" (turns where the model skipped reasoning) that
+        // poison the conversation for resume. A single empty string on each
+        // hole is enough to satisfy DeepSeek's field-consistency rule.
+        if (engine._sessionUsesReasoning) {
+          let patched = 0;
+          for (const m of msgs) {
+            if (m?.role === "assistant" && !("reasoning_content" in m)) {
+              m.reasoning_content = "";
+              patched++;
+            }
+          }
+          if (patched > 0) {
+            engine.history._save?.();
+            engine.eventLog.append("reasoning_content_backfilled", {
+              count: patched,
+              reason: "v0.6.3.1 migration on resume",
+            });
+          }
+        }
+      } catch { /* never let resume break on this */ }
 
       // Restore project directory from saved state
       if (data.projectDir) {
@@ -933,6 +1016,14 @@ export class AgentEngine {
 
       try {
         let collectedText = "";
+        // v0.6.3: hybrid reasoning models (GLM-5.1, DeepSeek v4, MiMo v2.5,
+        // Qwen3, ...) stream `delta.reasoning_content` separately from
+        // `delta.content`. DeepSeek's strict API requires this field to be
+        // round-tripped on subsequent assistant messages or it rejects the
+        // request with "reasoning_content in the thinking mode must be passed
+        // back". Even providers that don't enforce this (SiliconFlow) still
+        // benefit from preservation — without it, prior reasoning is wasted.
+        let collectedReasoning = "";
         /** @type {Map<number, {id: string, name: string, arguments: string}>} */
         const toolCallsAcc = new Map();
 
@@ -952,6 +1043,14 @@ export class AgentEngine {
             collectedText += delta.content;
           }
 
+          // v0.6.3: capture reasoning_content from the same delta. Emit a
+          // separate event type so the TUI can optionally render thinking
+          // (today it's silently consumed; round-trip is the priority fix).
+          if (delta.reasoning_content) {
+            yield new AgentEvent({ type: "reasoning_delta", text: delta.reasoning_content });
+            collectedReasoning += delta.reasoning_content;
+          }
+
           if (delta.tool_calls) {
             for (const tcDelta of delta.tool_calls) {
               const idx = tcDelta.index;
@@ -968,6 +1067,25 @@ export class AgentEngine {
 
         // Log the complete assistant message (coalesced, not per-delta)
         const assistantMsg = { role: "assistant", content: collectedText || null };
+        // v0.6.3: persist reasoning_content on the assistant message so it
+        // round-trips on the next request. history.addRaw spreads the input,
+        // preserving unknown fields; OpenAI body builder doesn't strip them.
+        //
+        // v0.6.3.1: DeepSeek's strict-mode rule is FIELD CONSISTENCY, not
+        // field content — once any assistant turn in the conversation has
+        // reasoning_content, every subsequent assistant turn must also have
+        // it (empty string OK; missing the field rejects with 400). Hybrid
+        // reasoning models sometimes skip reasoning on trivial follow-through
+        // tool calls, leaving collectedReasoning="". Track at session level:
+        // once we see ANY reasoning, keep setting the field (possibly empty)
+        // for the rest of the session. Providers that don't use the field
+        // ignore it silently.
+        if (collectedReasoning) {
+          assistantMsg.reasoning_content = collectedReasoning;
+          this._sessionUsesReasoning = true;
+        } else if (this._sessionUsesReasoning) {
+          assistantMsg.reasoning_content = "";
+        }
         if (toolCallsAcc.size > 0) {
           assistantMsg.tool_calls = Array.from(toolCallsAcc.values()).map((tc) => ({
             id: tc.id,
@@ -1024,10 +1142,61 @@ export class AgentEngine {
 
         // Tool execution loop
         for (const tc of toolCallsAcc.values()) {
-          let inputData = {};
-          try {
-            inputData = tc.arguments ? JSON.parse(tc.arguments) : {};
-          } catch { /* ignore */ }
+          // v0.6.3.1: tool-argument JSON parsing used to be `try { parse } catch {}`
+          // — silently falling back to {} on any parse failure. E2E #5 GLM
+          // session showed this firing 100+ times: SiliconFlow streaming
+          // truncates GLM-5.1 tool_call arguments by ~1 closing brace
+          // (likely max_tokens cutoff mid-args), the silent fallback shipped
+          // {} to the tool, and the tool returned generic "(empty)" errors
+          // which the agent kept retrying without understanding why.
+          //
+          // Fix: try strict parse, then attempt brace-balance recovery (cheap
+          // — recovers from the common single-brace-truncation case), and if
+          // that fails, surface a structured error to the agent so it can
+          // see what it sent and self-correct.
+          let inputData = null;
+          let argParseError = null;
+          if (tc.arguments) {
+            const recovery = parseToolArgsTolerant(tc.arguments);
+            if (recovery.ok) {
+              inputData = recovery.value;
+              if (recovery.recovered) {
+                this.eventLog.append("tool_args_recovered", {
+                  name: tc.name,
+                  added_chars: recovery.recovered,
+                  original_len: tc.arguments.length,
+                });
+              }
+            } else {
+              argParseError = recovery.error;
+            }
+          } else {
+            inputData = {};
+          }
+
+          // If arguments were unparseable, skip execution and return a tool
+          // result that tells the agent what went wrong. Engine's tool result
+          // loop continues so the rest of the assistant's tool_calls in this
+          // turn still execute.
+          if (argParseError) {
+            const preview = (tc.arguments || "").slice(0, 200);
+            const errMsg =
+              `Tool arguments were malformed JSON for ${tc.name}. ` +
+              `Likely streaming truncation by the model (provider cut tokens mid-output). ` +
+              `Parser error: ${argParseError}. ` +
+              `First 200 chars of what was received: ${preview}${tc.arguments && tc.arguments.length > 200 ? "..." : ""}. ` +
+              `Retry the call with shorter / simpler arguments — the model may have hit max_tokens partway through encoding.`;
+            this.eventLog.append("tool_args_parse_failed", {
+              name: tc.name,
+              error: argParseError,
+              raw_args_len: (tc.arguments || "").length,
+              raw_preview: preview,
+            });
+            yield new AgentEvent({ type: "tool_start", name: tc.name, input: { _parse_error: argParseError } });
+            yield new AgentEvent({ type: "tool_result", name: tc.name, output: errMsg, isError: true });
+            this.history.addRaw({ role: "tool", tool_call_id: tc.id, content: errMsg });
+            continue;
+          }
 
           this.eventLog.append("tool_start", { name: tc.name, input: inputData });
           yield new AgentEvent({ type: "tool_start", name: tc.name, input: inputData });
@@ -1082,10 +1251,31 @@ export class AgentEngine {
             isError: result.isError,
           });
 
+          // v0.6.3 (#74): phase-misfit nudge. Ask the current pipeline whether
+          // this tool call looks like work that belongs to a different phase.
+          // If so, append a `<system-reminder>` tag to the tool result content
+          // (same convention as task-tools and auto-memory reminders). The
+          // agent sees this on its next turn and can self-check whether to
+          // call phase_advance. Only fires for non-error results — failed
+          // tool calls have their own error message and don't need the nudge.
+          let nudgedContent = historyContent;
+          try {
+            const pipelineForPhase = this.pipelines?.[beforePhase];
+            const hint = pipelineForPhase?.phaseMisfitHint?.(tc.name, inputData, result);
+            if (hint && !result.isError) {
+              nudgedContent = `${historyContent}\n\n<system-reminder>\nPhase-misfit detected: ${hint}\n</system-reminder>`;
+              this.eventLog.append("phase_misfit_hint", {
+                phase: beforePhase,
+                tool: tc.name,
+                hint,
+              });
+            }
+          } catch { /* never let the nudge logic break the tool loop */ }
+
           this.history.addRaw({
             role: "tool",
             tool_call_id: tc.id,
-            content: historyContent,
+            content: nudgedContent,
           });
 
           // Post-tool-result safety net: check for context pressure RIGHT NOW
@@ -1168,6 +1358,39 @@ export class AgentEngine {
                        : `${this.currentPhase} is the terminal phase`,
       });
       return false;
+    }
+
+    // v0.6.3: HARD-TRACKING GATE — refuse forward advance unless the source
+    // phase's exit criteria are met by engine telemetry. v0.6.1 added the
+    // engineCounts block to phase summaries (observation) but never wired
+    // exitCriteriaMet() into the gate (enforcement). E2E #5 surfaced the
+    // gap: MiMo advanced rule_extraction → skill_authoring with
+    // rulesExtracted=0 in engine telemetry because rule_catalog had been
+    // writing to a stranded post-rename path AND nothing checked the gate.
+    //
+    // Forward-only enforcement: rollbacks (_advancePhase from a later phase
+    // to an earlier one with force:true) are an explicit escape, not a
+    // criteria check — the rolled-from phase doesn't need to be "complete".
+    // force:true also bypasses (matches existing escape pattern: user/agent
+    // explicitly chose to skip).
+    if (!force) {
+      const fromIdx = PHASE_ORDER.indexOf(this.currentPhase);
+      const toIdx = PHASE_ORDER.indexOf(nextPhase);
+      const isForward = fromIdx >= 0 && toIdx >= 0 && toIdx > fromIdx;
+      if (isForward) {
+        const fromPipeline = this.pipelines?.[this.currentPhase];
+        let criteriaMet = true;
+        try { criteriaMet = !!fromPipeline?.exitCriteriaMet?.(); } catch { criteriaMet = true; }
+        if (!criteriaMet) {
+          const counts = this._buildEngineCountsBlock(this.currentPhase);
+          this.eventLog.append("phase_advance_refused", {
+            from: this.currentPhase, to: nextPhase, reason,
+            hint: "exit criteria not met by engine telemetry",
+            engineCounts: counts || null,
+          });
+          return false;
+        }
+      }
     }
 
     // v0.6.2 J2: detect rollback direction. PHASE_ORDER is a linear array
@@ -1298,7 +1521,7 @@ export class AgentEngine {
     const parts = [];
     try {
       switch (fromPhase) {
-        case "extraction": {
+        case "rule_extraction": {
           const total = pipeline._catalogRuleCount?.() ?? pipeline.rulesExtracted?.length ?? 0;
           parts.push(`rulesExtracted: ${pipeline.rulesExtracted?.length ?? 0}`);
           parts.push(`rulesWithChunkRefs: ${pipeline.rulesWithChunkRefs?.length ?? 0}/${total}`);

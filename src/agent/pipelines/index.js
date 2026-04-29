@@ -10,7 +10,12 @@
  */
 export const Phase = Object.freeze({
   BOOTSTRAP: "bootstrap",
-  EXTRACTION: "extraction",
+  // v0.6.3: phase value renamed from "extraction" → "rule_extraction" to
+  // disambiguate from the data/entity extraction that skills/workflows do
+  // internally. The JS const name (Phase.EXTRACTION) is unchanged so call
+  // sites don't shift; only the string value persisted to session-state.json
+  // and shown in /status changes.
+  EXTRACTION: "rule_extraction",
   SKILL_AUTHORING: "skill_authoring",
   SKILL_TESTING: "skill_testing",
   DISTILLATION: "distillation",

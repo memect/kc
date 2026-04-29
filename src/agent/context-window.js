@@ -1,4 +1,5 @@
 import { estimateTokens, estimateMessagesTokens } from "./token-counter.js";
+import { findSafeSplitPoint } from "./message-utils.js";
 
 /**
  * Automatic context windowing for long conversations.
@@ -38,18 +39,14 @@ export class ContextWindow {
       return { messages, wasWindowed: false, removedCount: 0 };
     }
 
-    // Split into older and recent. The recent slice is fed directly to the
-    // LLM, so it must not begin with an orphan "tool" message — those carry a
-    // tool_call_id that references an assistant `tool_calls` entry, and if
-    // that assistant message ended up in the compressed older slice the
-    // provider rejects the request (OpenAI: "tool messages must follow an
-    // assistant with tool_calls"; Anthropic: unpaired tool_use/tool_result).
-    // Walk the split point forward past any leading tool rows so the recent
-    // window always starts on a turn boundary.
-    let splitPoint = Math.max(0, messages.length - this.recentWindowSize);
-    while (splitPoint < messages.length && messages[splitPoint]?.role === "tool") {
-      splitPoint++;
-    }
+    // Split into older and recent. v0.6.3.1: tool-pair atomicity is a
+    // bidirectional invariant — recent[0] must not be a `tool` (orphan,
+    // its assistant_with_tool_calls got summarized away) AND older[-1]
+    // must not be `assistant_with_tool_calls` (its tool results sit at
+    // the start of recent and the older summary corrupts that pairing).
+    // Use the shared `findSafeSplitPoint` helper from engine.js.
+    const desiredSplit = Math.max(0, messages.length - this.recentWindowSize);
+    const splitPoint = findSafeSplitPoint(messages, desiredSplit);
     const recentMessages = messages.slice(splitPoint);
     const olderMessages = messages.slice(0, splitPoint);
 

@@ -385,7 +385,16 @@ function App({ engine, config }) {
         const sched = new Scheduler(engineRef.current.workspace);
         const jobs = sched.list();
         if (jobs.length === 0) {
-          addMessage({ role: "system", content: "No scheduled ingestion jobs. Ask KC to set one up via the schedule_fetch tool." });
+          // v0.6.3.1: also surface pending input files. The welcome banner
+          // tells the user "run /schedule for details" when input/ has
+          // unseen files, but the no-jobs branch used to ignore those —
+          // user got a dead-end "no jobs" reply with the files invisible.
+          const pending = sched.pendingInputCount();
+          const tail = sched.tailLog(8);
+          let body = "No scheduled ingestion jobs. Ask KC to set one up via the schedule_fetch tool.";
+          if (pending > 0) body += `\n\nPending in input/: ${pending} file(s) (drop into workspace input/ to be picked up).`;
+          if (tail) body += `\n\nlogs/ingest.log (last 8):\n${tail}`;
+          addMessage({ role: "system", content: body });
         } else {
           const lines = jobs.map((j) => {
             const status = j.enabled ? "✓ enabled" : "· disabled";
@@ -562,6 +571,13 @@ function App({ engine, config }) {
         try { engineRef.current.saveState(); } catch { /* ignore */ }
         try { engineRef.current.stop(); } catch { /* ignore */ }
         exit();
+        // v0.6.3.1: force-exit after a brief grace window. Ink's exit()
+        // unmounts the TUI but in-flight LLM streams / subagent fetches
+        // / unflushed appendFileSync handles can keep the Node event loop
+        // alive indefinitely on long sessions. The 500ms gives saveState
+        // and any synchronous flushes time to complete; after that we
+        // hard-exit so the user's terminal returns to the shell promptly.
+        setTimeout(() => process.exit(0), 500).unref();
         return true;
 
       default:
@@ -756,9 +772,24 @@ export async function main({ languageOverride } = {}) {
 
   // Save state on process exit + stop background diagnostics (B0.1 heap
   // sampler). saveState is idempotent; stop() is safe to call twice.
+  //
+  // v0.6.3.1: handler must terminate. Pre-fix it only saved + returned, which
+  // overrides Node's default SIGINT behavior — the process kept running with
+  // active LLM streams / subagent fetches keeping the event loop alive, and
+  // mashing ^C did nothing visible. Now: first ^C saves and tries clean exit
+  // after 500ms; second ^C hard-kills with no further saves.
+  let interruptCount = 0;
   const saveOnExit = () => {
+    interruptCount++;
+    if (interruptCount >= 2) {
+      // Second interrupt — user wants out NOW
+      process.stderr.write("\nForce-exiting (second interrupt).\n");
+      process.exit(130); // 128 + SIGINT
+    }
     try { engine.saveState(); } catch { /* ignore */ }
     try { engine.stop(); } catch { /* ignore */ }
+    process.stderr.write("\nReceived interrupt — saving state, then exiting in 500ms (press again to force).\n");
+    setTimeout(() => process.exit(130), 500).unref();
   };
   process.on("SIGINT", saveOnExit);
   process.on("SIGTERM", saveOnExit);

@@ -70,7 +70,24 @@ export class SessionState {
    * @returns {object} The persisted state
    */
   load() {
-    return this._loadRaw() || {};
+    const raw = this._loadRaw() || {};
+    // v0.6.3: phase value renamed "extraction" → "rule_extraction" to
+    // disambiguate from data/entity extraction inside skills. Migrate old
+    // session-state on read so resumed workspaces don't end up in a phase
+    // the engine doesn't recognize. Idempotent — already-renamed values
+    // pass through unchanged.
+    if (raw.currentPhase === "extraction") raw.currentPhase = "rule_extraction";
+    if (raw.pipelineMilestones?.extraction && !raw.pipelineMilestones.rule_extraction) {
+      raw.pipelineMilestones.rule_extraction = raw.pipelineMilestones.extraction;
+      delete raw.pipelineMilestones.extraction;
+    }
+    if (Array.isArray(raw.phaseSummaries)) {
+      for (const s of raw.phaseSummaries) {
+        if (s?.fromPhase === "extraction") s.fromPhase = "rule_extraction";
+        if (s?.toPhase === "extraction") s.toPhase = "rule_extraction";
+      }
+    }
+    return raw;
   }
 
   /**

@@ -199,7 +199,7 @@ export class ProjectInitializer extends Pipeline {
     }
 
     if (this.exitCriteriaMet()) {
-      parts.push("### Exit\nBootstrap requirements met. Proceed to EXTRACTION.");
+      parts.push("### Exit\nBootstrap requirements met. Proceed to RULE_EXTRACTION.");
     }
     return parts.join("\n\n");
   }
@@ -228,13 +228,76 @@ export class ProjectInitializer extends Pipeline {
     }
 
     if (!wasReady && this.exitCriteriaMet()) {
-      return new PipelineEvent({ type: "phase_ready", message: "Bootstrap complete. Ready for EXTRACTION.", nextPhase: Phase.EXTRACTION });
+      return new PipelineEvent({ type: "phase_ready", message: "Bootstrap complete. Ready for RULE_EXTRACTION.", nextPhase: Phase.EXTRACTION });
     }
     return null;
   }
 
   exitCriteriaMet() {
     return this.workspaceCreated && this.configReady && this.hasRegulations && this.hasSamples;
+  }
+
+  /**
+   * v0.6.3 (#74): nudge the agent when it does work that belongs to a later
+   * phase. Bootstrap is setup — reading rules/samples, configuring keys,
+   * orienting. Writing skill code, running workflows, or spawning extraction
+   * subagents from BOOTSTRAP means the milestones get tagged "bootstrap"
+   * instead of the right phase, breaking later exit-criteria checks.
+   */
+  phaseMisfitHint(toolName, toolInput, result) {
+    if (result?.isError) return null;
+    const exitText = this.exitCriteriaMet()
+      ? "Bootstrap exit criteria are MET — call phase_advance(to=\"rule_extraction\") now to record this work under the right phase."
+      : "Bootstrap exit criteria NOT yet met (see describeState). Either complete bootstrap setup first, or use force:true on phase_advance if you've decided to skip ahead.";
+
+    if (toolName === "workspace_file" && toolInput?.operation === "write") {
+      const p = toolInput.path || "";
+      if (p.startsWith("rule_skills/")) {
+        return `Writing under rule_skills/ is SKILL_AUTHORING-phase work, but engine is in BOOTSTRAP. ${exitText}`;
+      }
+      if (p.startsWith("workflows/")) {
+        return `Writing under workflows/ is DISTILLATION-phase work, but engine is in BOOTSTRAP. ${exitText}`;
+      }
+      if (p.startsWith("output/results/")) {
+        return `Writing under output/results/ is PRODUCTION_QC-phase work, but engine is in BOOTSTRAP. ${exitText}`;
+      }
+    }
+
+    if (toolName === "workflow_run") {
+      return `workflow_run is SKILL_TESTING/PRODUCTION_QC-phase work, but engine is in BOOTSTRAP. Workflow results recorded now will be milestone-tagged "bootstrap" and won't count toward later exit criteria. ${exitText}`;
+    }
+
+    // v0.6.3.1 patch: rule_catalog is the most direct signature of
+    // RULE_EXTRACTION work. Creating/updating rules from BOOTSTRAP means the
+    // rule_extraction pipeline's milestone tracker stays at zero (its
+    // onToolResult only fires when engine.currentPhase matches), so the
+    // exit gate will refuse later. Caught Tencent hy3-preview after it
+    // created 22 rules silently in the wrong phase. Same risk for any
+    // model that skips sample-inventory and jumps to rule decomposition.
+    if (toolName === "rule_catalog" &&
+        ["create", "update", "delete"].includes(toolInput?.operation)) {
+      return `rule_catalog ${toolInput.operation} is RULE_EXTRACTION-phase work, but engine is in BOOTSTRAP. Rules created now WILL be persisted in rules/catalog.json (the tool writes regardless of phase), but the rule_extraction pipeline's milestone tracker won't pick them up until you're in that phase, and the v0.6.3 exit gate will refuse to advance from BOOTSTRAP unless its own criteria are met. ${exitText}`;
+    }
+
+    if (toolName === "agent_tool" && toolInput?.operation === "spawn") {
+      const taskId = (toolInput.task_id || "").toLowerCase();
+      // Heuristic: task_ids hinting at extraction/skill/workflow work are
+      // out-of-phase from bootstrap. Doc-parsing or setup-shaped task names
+      // are fine.
+      if (/extract|rule|skill|workflow|verify|qc|distill/.test(taskId)) {
+        return `Spawning subagent "${toolInput.task_id}" looks like ${this._guessSubagentPhase(taskId).toUpperCase()}-phase work, but engine is in BOOTSTRAP. Milestones the subagent emits will be tagged "bootstrap", causing the target phase's exit criteria to start at zero later. ${exitText}`;
+      }
+    }
+
+    return null;
+  }
+
+  _guessSubagentPhase(taskId) {
+    if (/extract|rule/.test(taskId)) return "rule_extraction";
+    if (/skill/.test(taskId)) return "skill_authoring";
+    if (/workflow|distill/.test(taskId)) return "distillation";
+    if (/verify|qc/.test(taskId)) return "production_qc";
+    return "later";
   }
 
   exportState() {

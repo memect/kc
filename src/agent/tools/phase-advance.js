@@ -104,10 +104,17 @@ export class PhaseAdvanceTool extends BaseTool {
       return new ToolResult(`Advanced${beforePhase ? ` from ${beforePhase}` : ""} to ${to}${input.force ? " (forced)" : ""}`);
     }
 
-    // Truly refused — non-adjacent transition without force, or terminal-phase
-    // forward attempt. Give the actionable hint.
+    // Truly refused — possible reasons: non-adjacent transition without force,
+    // terminal-phase forward attempt, or v0.6.3 hard-tracking gate (engine
+    // telemetry shows source phase's exit criteria not met). Surface both
+    // possibilities so the agent gets actionable guidance without us having
+    // to round-trip the engine's internal reason.
     return new ToolResult(
-      `Did not advance to ${to}. Transition is non-adjacent${beforePhase ? ` (currently in ${beforePhase})` : ""} — set force:true to override, or advance to the immediate-next phase first.`,
+      `Did not advance to ${to} (currently in ${beforePhase || "?"}). Possible causes: ` +
+      `(a) non-adjacent transition — try the immediate-next phase first, or pass force:true; ` +
+      `(b) source-phase exit criteria not met by engine telemetry — check /status and the phase ` +
+      `describeState block to see which milestones are missing, then complete the work or pass force:true ` +
+      `to override the gate. The engine logged the precise reason in events.jsonl as 'phase_advance_refused'.`,
       false,
     );
   }

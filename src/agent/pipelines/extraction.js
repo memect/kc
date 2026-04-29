@@ -75,7 +75,7 @@ export class RuleExtractionPipeline extends Pipeline {
 
   describeState() {
     this._scanWorkspace();
-    const parts = ["## Phase: EXTRACTION\nRead and decompose regulation documents into atomic, testable verification rules. This is BUILD mode — do the analysis directly."];
+    const parts = ["## Phase: RULE_EXTRACTION\nRead and decompose regulation documents into atomic, testable verification rules. This is BUILD mode — do the analysis directly. (Distinct from data/entity extraction work that skills perform internally.)"];
     parts.push(`### Progress\n- Regulations scanned: ${this.regulationsScanned ? "yes" : "no"}\n- Rules extracted: ${this.rulesExtracted.length}\n- Rules with test stubs: ${this.rulesWithTests.length}\n- Coverage audit: ${this.coverageAudited ? "done" : "pending"}`);
 
     if (this.exitCriteriaMet()) {
@@ -139,6 +139,37 @@ export class RuleExtractionPipeline extends Pipeline {
       // catalog.json entries to carry source_chunk_ids. Without them the
       // skill_authoring prompts are blind.
       this._chunkRefsCriterionMet();
+  }
+
+  /**
+   * v0.6.3 (#74): RULE_EXTRACTION should produce rules/catalog.json + per-rule
+   * markdown extraction notes, not python check scripts or workflows.
+   */
+  phaseMisfitHint(toolName, toolInput, result) {
+    if (result?.isError) return null;
+    const exitText = this.exitCriteriaMet()
+      ? "Extraction exit criteria are MET — call phase_advance(to=\"skill_authoring\") to switch phases before continuing."
+      : "Extraction exit criteria NOT yet met. Either finish extraction first, or use force:true on phase_advance.";
+
+    if (toolName === "workspace_file" && toolInput?.operation === "write") {
+      const p = toolInput.path || "";
+      // Writing the actual python check is unambiguous skill-authoring work.
+      if (/^rule_skills\/[^/]+\/check_r\d+\.py$/.test(p) || p.endsWith("/SKILL.md") && p.startsWith("rule_skills/")) {
+        return `Writing "${p}" is SKILL_AUTHORING-phase work, but engine is in RULE_EXTRACTION. ${exitText}`;
+      }
+      if (p.startsWith("workflows/")) {
+        return `Writing under workflows/ is DISTILLATION-phase work, but engine is in RULE_EXTRACTION. ${exitText}`;
+      }
+      if (p.startsWith("output/results/")) {
+        return `Writing under output/results/ is PRODUCTION_QC-phase work, but engine is in RULE_EXTRACTION. ${exitText}`;
+      }
+    }
+
+    if (toolName === "workflow_run") {
+      return `workflow_run is SKILL_TESTING/PRODUCTION_QC-phase work, but engine is in RULE_EXTRACTION. ${exitText}`;
+    }
+
+    return null;
   }
 
   exportState() {

@@ -257,6 +257,40 @@ const PROVIDERS = [
     },
   },
   {
+    // Tencent Hunyuan via the Lkeap "plan" coding-token endpoint. The /models
+    // endpoint exposes a multi-vendor menu (glm-5.x, kimi-k2.5, minimax,
+    // hunyuan-*, tc-code-latest); hy3-preview is a hidden flagship that
+    // accepts requests but doesn't appear in /models. Curated list reflects
+    // what was advertised + the preview model the user has access to.
+    id: "tencent",
+    name: "Tencent Hunyuan",
+    baseUrl: "https://api.lkeap.cloud.tencent.com/plan/v3",
+    authType: "bearer",
+    apiFormat: "openai",
+    modelsEndpoint: "/models",
+    supportsCodingPlanKey: true,
+    contextLimit: 200000, // hy3-preview is officially 256K; keep below cap with margin
+    defaultModel: getTierConfig("tencent").conductor || "hy3-preview",
+    defaultTiers: getTierConfig("tencent").llm,
+    defaultVlm: getTierConfig("tencent").vlm,
+    curatedModels: [
+      { id: "hy3-preview", ownedBy: "tencent" }, // hidden flagship
+      { id: "hunyuan-t1", ownedBy: "tencent" }, // thinking model
+      { id: "hunyuan-turbos", ownedBy: "tencent" },
+      { id: "hunyuan-2.0-thinking", ownedBy: "tencent" },
+      { id: "hunyuan-2.0-instruct", ownedBy: "tencent" },
+      { id: "tc-code-latest", ownedBy: "tencent" },
+      // Multi-vendor pass-throughs on the same plan key:
+      { id: "glm-5.1", ownedBy: "system" },
+      { id: "kimi-k2.5", ownedBy: "system" },
+      { id: "minimax-m2.7", ownedBy: "system" },
+    ],
+    labels: {
+      en: "Tencent Hunyuan (Lkeap plan)",
+      zh: "腾讯混元（Lkeap 编程计划）",
+    },
+  },
+  {
     id: "openrouter",
     name: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",

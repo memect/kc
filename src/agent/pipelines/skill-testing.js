@@ -107,6 +107,29 @@ export class SkillTestingPipeline extends Pipeline {
     return Object.keys(this.skillsTested).length >= total && this.skillsPassing.length >= total * this._accuracyThreshold;
   }
 
+  /**
+   * v0.6.3 (#74): SKILL_TESTING runs check scripts against test samples and
+   * measures accuracy. Writing distillation outputs or production results
+   * here means phase boundaries got skipped.
+   */
+  phaseMisfitHint(toolName, toolInput, result) {
+    if (result?.isError) return null;
+    const exitText = this.exitCriteriaMet()
+      ? "Skill-testing exit criteria are MET — call phase_advance(to=\"distillation\")."
+      : "Skill-testing not yet complete.";
+
+    if (toolName === "workspace_file" && toolInput?.operation === "write") {
+      const p = toolInput.path || "";
+      if (p.startsWith("workflows/")) {
+        return `Writing under workflows/ is DISTILLATION-phase work, but engine is in SKILL_TESTING. ${exitText}`;
+      }
+      if (p.startsWith("output/results/")) {
+        return `Writing under output/results/ is PRODUCTION_QC-phase work, but engine is in SKILL_TESTING. ${exitText}`;
+      }
+    }
+    return null;
+  }
+
   exportState() {
     return {
       skillsToTest: this.skillsToTest,
