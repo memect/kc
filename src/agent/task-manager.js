@@ -198,6 +198,51 @@ export class TaskManager {
   }
 
   /**
+   * v0.7.0 A5: Reconcile per-rule tasks against disk artifacts.
+   *
+   * Background: E2E #5 DS audit found tasks.json showing 70/70 completed
+   * while only ~56 dirs / 36 with check_*.py existed on disk. The agent
+   * called markDone() optimistically but the artifacts didn't materialize
+   * (or were deleted later). The engine's phase gate trusted the count.
+   *
+   * Reconcile walks every "completed" task in PER_RULE_PHASES and checks
+   * whether the expected disk artifacts exist via a caller-supplied
+   * `expectsFn(task) -> boolean` predicate. Tasks whose artifacts are
+   * missing are flipped back to `pending` with a `reconcile_failed`
+   * note so the agent can re-do the work, and the gate can refuse
+   * advance if the per-rule artifact set is incomplete.
+   *
+   * Called from engine `_advancePhase` before `exitCriteriaMet()`.
+   *
+   * @param {(task: object) => boolean} expectsFn
+   * @returns {{ reconciled: number, flippedBack: string[] }}
+   *   Number of tasks inspected, plus the IDs of tasks flipped back to
+   *   pending. Caller logs to events.jsonl.
+   */
+  reconcileAgainstDisk(expectsFn) {
+    let reconciled = 0;
+    const flippedBack = [];
+    if (typeof expectsFn !== "function") return { reconciled, flippedBack };
+    for (const task of this._tasks) {
+      if (task.status !== "completed") continue;
+      if (!TaskManager.PER_RULE_PHASES.has(task.phase)) continue;
+      reconciled++;
+      let ok = false;
+      try { ok = !!expectsFn(task); }
+      catch { ok = false; }
+      if (!ok) {
+        task.status = "pending";
+        task.reconcile_failed = true;
+        task.summary = (task.summary ? task.summary + " | " : "") +
+          "v0.7.0 A5: artifacts missing on disk → flipped back to pending";
+        flippedBack.push(task.id);
+      }
+    }
+    if (flippedBack.length > 0) this.save();
+    return { reconciled, flippedBack };
+  }
+
+  /**
    * Format task list for injection into system prompt context.
    * Compact checklist — not conversation history.
    * @returns {string}

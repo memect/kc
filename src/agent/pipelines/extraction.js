@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { deriveRuleExtractionMilestones, deriveSkillAuthoringMilestones } from "./_milestone-derive.js";
 
 export class RuleExtractionPipeline extends Pipeline {
   constructor(workspace) {
@@ -20,56 +21,85 @@ export class RuleExtractionPipeline extends Pipeline {
   }
 
   _scanWorkspace() {
+    // v0.7.0 A1: route through filesystem-derived milestone helper.
+    // Existing instance state (rulesExtracted, rulesWithChunkRefs,
+    // coverageAudited) becomes a cache of disk facts rather than a
+    // running record of which tools fired. Tool-wrapper recorders can
+    // still bump these via engine._recordMilestone but disk wins on
+    // any rescan.
+    const m = deriveRuleExtractionMilestones(this._workspace);
+    this.rulesExtracted = [...m.rulesExtracted];
+    this.rulesWithChunkRefs = [...m.rulesWithChunkRefs];
+    this.coverageAudited = m.coverageAudited;
+
+    // regulationsScanned: presence of any non-JSON file in rules/. Kept
+    // local to this pipeline (not in the helper) because "did the agent
+    // copy regs into the workspace" is a cheap heuristic specific to
+    // this phase.
     const rulesDir = path.join(this._workspace.cwd, "rules");
     if (fs.existsSync(rulesDir)) {
-      const regFiles = fs.readdirSync(rulesDir).filter((f) => !f.endsWith(".json") && fs.statSync(path.join(rulesDir, f)).isFile());
-      this.regulationsScanned = regFiles.length > 0;
-    }
-    this._scanRules();
-    this._scanTests();
-    this.coverageAudited = fs.existsSync(path.join(this._workspace.cwd, "rules", "coverage_audit.md")) ||
-                           fs.existsSync(path.join(this._workspace.cwd, "rules", "coverage_audit.json"));
-  }
-
-  _scanRules() {
-    this.rulesExtracted = [];
-    this.rulesWithChunkRefs = [];
-    const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
-    if (fs.existsSync(catalogPath)) {
       try {
-        const data = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
-        if (Array.isArray(data)) {
-          this.rulesExtracted = data.map((r, i) => r.id || `rule_${i}`);
-          // A1: collect ids whose entry has non-empty source_chunk_ids
-          for (const r of data) {
-            const ids = r?.source_chunk_ids;
-            if (Array.isArray(ids) && ids.length > 0 && r?.id) {
-              this.rulesWithChunkRefs.push(r.id);
-            }
-          }
-        }
+        const regFiles = fs.readdirSync(rulesDir).filter(
+          (f) => !f.endsWith(".json") && fs.statSync(path.join(rulesDir, f)).isFile(),
+        );
+        this.regulationsScanned = regFiles.length > 0;
       } catch { /* skip */ }
     }
-    const skillsDir = path.join(this._workspace.cwd, "rule_skills");
-    if (fs.existsSync(skillsDir)) {
-      for (const e of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-        if (e.isDirectory() && !e.name.startsWith("__") && !this.rulesExtracted.includes(e.name)) {
-          this.rulesExtracted.push(e.name);
-        }
+
+    // Union with rule_skills/ dirs — sometimes agents create skill dirs
+    // before adding to catalog.json (XM E2E #5 stranded-catalog case).
+    // Pulled from the skill-authoring helper so we share the canonical
+    // skill dir scan.
+    const sa = deriveSkillAuthoringMilestones(this._workspace);
+    for (const dirName of sa.skillsAuthored) {
+      if (!this.rulesExtracted.includes(dirName)) {
+        this.rulesExtracted.push(dirName);
       }
     }
+
+    this._scanTests();
   }
 
   _scanTests() {
+    // v0.7.0 A1: rulesWithTests now accepts multiple test shapes (was
+    // form-prescriptive on test_cases/ only — none of E2E #5's three
+    // alive contestants used that exact path; the gate refused all).
+    // Now: a rule is "tested" iff it has ANY of:
+    //   rule_skills/<id>/test_cases/   (canonical, original)
+    //   rule_skills/<id>/tests/        (alt spelling)
+    //   rule_skills/<id>/check*.py     (check IS the test for many rules)
+    //   rule_skills/<id>/scripts/check*.py (XM-style nested scripts)
+    //   rule_skills/<id>/assets/test_cases.json
+    // Spirit of the gate is "did the agent leave test artifacts behind"
+    // not "did they use this exact directory name."
     this.rulesWithTests = [];
     const skillsDir = path.join(this._workspace.cwd, "rule_skills");
     if (!fs.existsSync(skillsDir)) return;
     for (const e of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (!e.isDirectory()) continue;
-      const testDir = path.join(skillsDir, e.name, "test_cases");
-      if (fs.existsSync(testDir) && fs.readdirSync(testDir).length > 0) {
-        this.rulesWithTests.push(e.name);
+      const skillPath = path.join(skillsDir, e.name);
+      const testDirA = path.join(skillPath, "test_cases");
+      const testDirB = path.join(skillPath, "tests");
+      const assetsTests = path.join(skillPath, "assets", "test_cases.json");
+
+      let hasTest = false;
+      if (fs.existsSync(testDirA) && fs.readdirSync(testDirA).length > 0) hasTest = true;
+      if (!hasTest && fs.existsSync(testDirB) && fs.readdirSync(testDirB).length > 0) hasTest = true;
+      if (!hasTest && fs.existsSync(assetsTests)) hasTest = true;
+      // Check files: any check*.py at root or under scripts/
+      if (!hasTest) {
+        try {
+          const files = fs.readdirSync(skillPath);
+          if (files.some((f) => /^check.*\.py$/i.test(f))) hasTest = true;
+          else if (files.includes("scripts")) {
+            const scriptsDir = path.join(skillPath, "scripts");
+            try {
+              if (fs.readdirSync(scriptsDir).some((f) => /^check.*\.py$/i.test(f))) hasTest = true;
+            } catch { /* skip */ }
+          }
+        } catch { /* skip */ }
       }
+      if (hasTest) this.rulesWithTests.push(e.name);
     }
   }
 
@@ -132,7 +162,13 @@ export class RuleExtractionPipeline extends Pipeline {
   }
 
   exitCriteriaMet() {
-    return this.regulationsScanned && this.rulesExtracted.length > 0 &&
+    // v0.7.0 A1: dropped explicit `regulationsScanned` gate — rulesExtracted
+    // > 0 already implies the agent read regulations from somewhere
+    // (catalog.json wouldn't exist otherwise). The old criterion measured
+    // "did the agent copy regs into workspace/rules/" — ceremonial work
+    // none of E2E #5's three contestants did because they read directly
+    // from projectDir/rules/.
+    return this.rulesExtracted.length > 0 &&
       this.rulesWithTests.length >= Math.max(this.rulesExtracted.length * 0.8, 1) &&
       this.coverageAudited &&
       // v0.6.1 A1: hard tracking — D1 source-context auto-attach requires

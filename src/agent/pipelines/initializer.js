@@ -4,6 +4,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { deriveBootstrapMilestones } from "./_milestone-derive.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_MD_TEMPLATE = path.resolve(__dirname, "../../../template/AGENT.md");
@@ -107,12 +108,14 @@ export class ProjectInitializer extends Pipeline {
   }
 
   _checkSamples() {
-    // Check workspace samples/
-    const dir = path.join(this._workspace.cwd, "samples");
-    if (fs.existsSync(dir) && fs.readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile())) {
-      this.hasSamples = true; return;
-    }
-    // Check project dir samples/ (case-insensitive)
+    // v0.7.0 A1: route workspace check through filesystem-derived helper.
+    // Helper walks recursively (catches E2E #5 GLM's samples/samples/
+    // nested layout that the previous top-level-only check missed) and
+    // counts files at any depth. Project-dir fallback kept for the
+    // "user has samples but hasn't ingested them yet" path.
+    const m = deriveBootstrapMilestones(this._workspace);
+    if (m.hasSamples) { this.hasSamples = true; return; }
+
     if (this._workspace.projectDir) {
       for (const name of ["samples", "Samples", "SAMPLES", "sample", "Sample"]) {
         const pdir = path.join(this._workspace.projectDir, name);

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { deriveProductionQcMilestones } from "./_milestone-derive.js";
 
 const FREQUENCY_MAP = { high: 1.0, mid: 0.5, low: 0.2 };
 
@@ -36,27 +37,31 @@ export class ProductionQCPipeline extends Pipeline {
   }
 
   _scanQcResults() {
-    // v0.6.1 A5/A6: don't reset documentsReviewed if engine emission has
-    // bumped it since last scan — workflow_run hooks call _recordMilestone
-    // and the increment lives in this same field. Other counters (batches,
-    // accuracy, issues) come solely from filesystem scan and reset cleanly.
+    // v0.7.0 A1: route through filesystem-derived helper. The helper
+    // recognizes both DS-style results (object with `results` keyed by
+    // rule_id, doc-paths in nested keys) AND GLM-style array-of-verdicts
+    // (one entry per doc with .verdict/.file/.path) — neither matched
+    // the v0.6.1 A5 heuristic alone, so E2E #5 saw batchesProcessed=0
+    // even with 1,951 verdicts on disk.
     const engineDocsReviewed = this.documentsReviewed;
-    this.batchesProcessed = 0;
+    const m = deriveProductionQcMilestones(this._workspace);
+    this.batchesProcessed = m.batchesProcessed;
+    this.documentsReviewed = m.documentsReviewed;
+
+    // Layered: still extract accuracyByRule / confidence / issues from
+    // canonical output/qc/*.json batches when present. The helper
+    // doesn't try to reconstruct accuracy semantics (too schema-specific),
+    // but if the agent followed canonical schema, we surface it.
     this.totalDocuments = 0;
-    this.documentsReviewed = 0;
     this.accuracyByRule = {};
     this.confidenceDistribution = { low: 0, medium: 0, high: 0 };
     this.issuesFound = [];
-
-    // Existing canonical path: output/qc/*.json (formal QC batch reports)
     const qcDir = path.join(this._workspace.cwd, "output", "qc");
     if (fs.existsSync(qcDir)) {
       for (const f of fs.readdirSync(qcDir).filter((f) => f.endsWith(".json")).sort()) {
         try {
           const data = JSON.parse(fs.readFileSync(path.join(qcDir, f), "utf-8"));
-          this.batchesProcessed++;
           this.totalDocuments += typeof data.documents === "number" ? data.documents : (data.total || 0);
-          this.documentsReviewed += data.reviewed || 0;
           if (data.accuracy_by_rule) Object.assign(this.accuracyByRule, data.accuracy_by_rule);
           if (data.confidence) {
             for (const band of ["low", "medium", "high"]) this.confidenceDistribution[band] += data.confidence[band] || 0;
@@ -66,44 +71,26 @@ export class ProductionQCPipeline extends Pipeline {
       }
     }
 
-    // v0.6.1 A5: also pick up batch-style results in output/results/. E2E #4
-    // showed agents writing batch QC outputs to output/results/qc_*.json
-    // (e.g. unified_qc.py) instead of output/qc/, so the formal scanner
-    // missed them. Heuristic match: filename starts with "qc_" or contains
-    // "_batch_". Each match counts as one batch; total_checks → totalDocuments.
-    const resultsDir = path.join(this._workspace.cwd, "output", "results");
-    if (fs.existsSync(resultsDir)) {
-      const seen = new Set();
-      for (const f of fs.readdirSync(resultsDir).filter((f) => f.endsWith(".json"))) {
-        const lower = f.toLowerCase();
-        if (!(lower.startsWith("qc_") || lower.includes("_batch_"))) continue;
-        // Dedupe near-duplicate filenames that differ only by timestamp
-        // suffix (qc_full_batch_20260424_141642.json vs _141921.json
-        // — both are real batches, keep both. But qc_pt_x.json and
-        // qc_pt_x_<ts>.json are usually the same batch saved twice; key
-        // on the prefix before any 8-digit date.)
-        const key = f.replace(/_\d{8}_\d{6}/g, "").replace(/\.json$/, "");
-        if (seen.has(key)) continue;
-        seen.add(key);
-        this.batchesProcessed++;
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(resultsDir, f), "utf-8"));
-          // Best-effort metric extraction; tolerate missing keys
-          this.totalDocuments += typeof data.sample_count === "number" ? data.sample_count
-            : typeof data.documents === "number" ? data.documents
-            : typeof data.total === "number" ? data.total : 0;
-        } catch { /* skip */ }
-      }
-    }
-
-    // Restore engine-emitted documentsReviewed if filesystem reported less
+    // Restore engine-emitted documentsReviewed if disk-derived is lower
+    // (engine increment may know about reviews not yet flushed to disk)
     if (engineDocsReviewed > this.documentsReviewed) this.documentsReviewed = engineDocsReviewed;
 
-    // Determine monitoring phase
+    // Determine monitoring phase. v0.7.0 H5 fix: empty accuracyByRule
+    // no longer flips to "stable" via vacuous truth — require at least
+    // one rule with an accuracy reading before claiming stability.
     if (this.batchesProcessed < 3) this.monitoringPhase = "initial";
     else if (this.issuesFound.length > 0) this.monitoringPhase = "active";
-    else if (Object.values(this.accuracyByRule).every((a) => a >= this._accuracyThreshold)) this.monitoringPhase = "stable";
-    else this.monitoringPhase = "active";
+    else {
+      const accuracies = Object.values(this.accuracyByRule);
+      if (accuracies.length > 0 && accuracies.every((a) => a >= this._accuracyThreshold)) {
+        this.monitoringPhase = "stable";
+      } else {
+        // Helper-derived batches with no accuracy data: agent ran QC but
+        // didn't surface accuracy schema. Treat as `active` (work
+        // happened, but engine can't auto-bless stability).
+        this.monitoringPhase = "active";
+      }
+    }
   }
 
   describeState() {

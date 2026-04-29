@@ -3,6 +3,7 @@ import path from "node:path";
 import { PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
 import { normalizeRuleCatalog } from "../rule-catalog-normalize.js";
+import { deriveFinalizationMilestones } from "./_milestone-derive.js";
 
 /**
  * E1: FINALIZATION — the 7th phase. Runs after PRODUCTION_QC has shown
@@ -41,17 +42,21 @@ export class FinalizationPipeline extends Pipeline {
   }
 
   _scanWorkspace() {
-    const cwd = this._workspace.cwd;
-    this.readmeWritten = fs.existsSync(path.join(cwd, "rule_skills", "README.md"));
-    this.coverageReportWritten = fs.existsSync(path.join(cwd, "rule_skills", "coverage_report.md"));
-    this.finalDashboardWritten = fs.existsSync(path.join(cwd, "output", "final_dashboard.html"));
+    // v0.7.0 A1: route through filesystem-derived helper. The helper
+    // accepts multiple shipping locations (output/releases/v#/README.md,
+    // rule_skills/README.md, workspace-root README.md) and enforces a
+    // ≥500-byte threshold to defeat empty stub files. Dashboard check
+    // requires sha256-distinct HTMLs in dashboards/ (Group C dedup).
+    const m = deriveFinalizationMilestones(this._workspace);
+    this.readmeWritten = m.readmeWritten;
+    this.coverageReportWritten = m.coverageReportWritten;
+    this.finalDashboardWritten = m.finalDashboardWritten;
+    this._dashboardDuplicatesDetected = m.dashboardDuplicatesDetected;
+
     // Canonical layout: every rule_id in the catalog has a dedicated
-    // directory OR a thin-link stub under rule_skills/<rule_id>/. When
-    // skills are already per-rule (every rule has its own dir) this is
-    // trivially true. When skills are grouped, the agent creates
-    // per-rule stub dirs that reference the grouped file. We approximate
-    // "canonical" by checking: does every catalog rule_id have a
-    // matching directory under rule_skills/?
+    // directory OR a thin-link stub under rule_skills/<rule_id>/. Kept
+    // here (not in helper) because it requires reading catalog.json
+    // and matching against existing dirs — pipeline-specific logic.
     this.canonicalLayoutDone = this._checkCanonicalLayout();
   }
 

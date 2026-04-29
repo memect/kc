@@ -3,6 +3,7 @@ import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
 import { SkillValidator } from "../skill-validator.js";
+import { deriveSkillAuthoringMilestones } from "./_milestone-derive.js";
 
 export class SkillAuthoringPipeline extends Pipeline {
   /**
@@ -49,83 +50,22 @@ export class SkillAuthoringPipeline extends Pipeline {
   }
 
   _scanSkills() {
-    this.skillsAuthored = [];
-    this.skillsWithScripts = [];
-    // D2: rule_ids that are covered by some authored skill — whether that
-    // skill is single-rule (rule_skills/R014/) or grouped
-    // (rule_skills/SK02/check_r002_r007.py). Populated by _walkForRuleIds
-    // below so the exit criterion counts DISTINCT rule coverage rather
-    // than skill-directory count, which over-counts when skills are
-    // grouped (session 6304673afaa0's rule_skills/ had 289 rules packed
-    // into 23 skill files).
-    this.ruleIdsCovered = new Set();
-    const dir = path.join(this._workspace.cwd, "rule_skills");
-    if (!fs.existsSync(dir)) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory() || e.name.startsWith("__")) continue;
-      const skillPath = path.join(dir, e.name);
-      if (fs.existsSync(path.join(skillPath, "SKILL.md")) || fs.readdirSync(skillPath).some((f) => f.endsWith(".py"))) {
-        this.skillsAuthored.push(e.name);
-      }
-      const scriptsDir = path.join(skillPath, "scripts");
-      if (fs.existsSync(scriptsDir) && fs.readdirSync(scriptsDir).length > 0) {
-        this.skillsWithScripts.push(e.name);
-      }
-      this._walkForRuleIds(skillPath);
-    }
+    // v0.7.0 A1: route through filesystem-derived milestone helper. The
+    // helper centralizes the ruleId extraction patterns (R### dirs,
+    // check_r###.py, range dirs R078_R128, grouped check_r###_r###.py)
+    // and recognizes both root-level check_*.py AND scripts/check*.py
+    // (per A6 — XM E2E #5 used scripts/ subdir).
+    const m = deriveSkillAuthoringMilestones(this._workspace);
+    this.skillsAuthored = [...m.skillsAuthored];
+    this.skillsWithScripts = [...m.skillsWithScripts];
+    this.ruleIdsCovered = new Set(m.ruleIdsCovered);
   }
 
-  /**
-   * D2: Find rule_ids referenced by any file under the skill directory.
-   * Recognizes three naming patterns from actual sessions:
-   *   - Directory name matches a rule: rule_skills/R014/
-   *   - Single-rule script: check_r014.py
-   *   - Grouped script: check_r002_r007.py → covers R002 through R007
-   */
-  _walkForRuleIds(skillDir) {
-    const dirName = path.basename(skillDir);
-    const dirMatch = dirName.match(/^R0*(\d+)$/i);
-    if (dirMatch) this.ruleIdsCovered.add(`R${String(parseInt(dirMatch[1], 10)).padStart(3, "0")}`);
-
-    const walk = (d) => {
-      let entries;
-      try { entries = fs.readdirSync(d, { withFileTypes: true }); }
-      catch { return; }
-      for (const e of entries) {
-        if (e.name.startsWith(".")) continue;
-        const p = path.join(d, e.name);
-        if (e.isDirectory()) { walk(p); continue; }
-        // Per-rule: check_r014.py
-        const single = e.name.match(/check_r0*(\d+)\.py$/i);
-        if (single) {
-          this.ruleIdsCovered.add(`R${String(parseInt(single[1], 10)).padStart(3, "0")}`);
-          continue;
-        }
-        // Grouped: check_r002_r007.py, check_r002-r007.py, check_r59_r77.py
-        const grouped = e.name.match(/check_r0*(\d+)[_-]+r0*(\d+)\.py$/i);
-        if (grouped) {
-          const lo = parseInt(grouped[1], 10);
-          const hi = parseInt(grouped[2], 10);
-          for (let n = lo; n <= hi; n++) {
-            this.ruleIdsCovered.add(`R${String(n).padStart(3, "0")}`);
-          }
-          continue;
-        }
-        // Directory names that encode ranges: R078_R128/
-        // handled by caller passing skillDir
-      }
-    };
-    // Also handle dirs named like R078_R128/
-    const rangeDir = dirName.match(/^R0*(\d+)[_-]R0*(\d+)$/i);
-    if (rangeDir) {
-      const lo = parseInt(rangeDir[1], 10);
-      const hi = parseInt(rangeDir[2], 10);
-      for (let n = lo; n <= hi; n++) {
-        this.ruleIdsCovered.add(`R${String(n).padStart(3, "0")}`);
-      }
-    }
-    walk(skillDir);
-  }
+  // v0.7.0 A1: ruleId extraction moved to _milestone-derive.js
+  // (deriveSkillAuthoringMilestones). Pattern recognition is identical
+  // — single rule (R014, check_r014.py), grouped scripts
+  // (check_r002_r007.py), range dirs (R078_R128). Kept as a single
+  // canonical implementation rather than duplicating across pipelines.
 
   describeState() {
     this._scanWorkspace();
@@ -194,7 +134,38 @@ export class SkillAuthoringPipeline extends Pipeline {
   onToolResult(toolName, toolInput, result) {
     if (result.isError) return null;
     const wasReady = this.exitCriteriaMet();
-    if (toolName === "workspace_file" && (toolInput.path || "").includes("rule_skills/")) this._scanSkills();
+    const writeToSkill = toolName === "workspace_file" &&
+      toolInput?.operation === "write" &&
+      (toolInput.path || "").includes("rule_skills/");
+    if (writeToSkill) {
+      this._scanSkills();
+      // v0.7.0 A4: validate this specific file immediately if it looks
+      // like a check.py. Surfaces syntax/entry-point issues in the next
+      // describeState rather than waiting for the phase boundary —
+      // E2E #5 had skill_authoring force-bypassed before exitCriteriaMet
+      // ever fired, so the v0.6.2 boundary-only validator never ran in
+      // practice.
+      const p = toolInput.path || "";
+      if (/\/check[_a-zA-Z0-9-]*\.py$/i.test(p) && /^rule_skills\//.test(p)) {
+        const abs = path.join(this._workspace.cwd, p);
+        // Invalidate any stale mtime cache entry for this path then
+        // re-validate. Folds the result into _validationFailures so
+        // describeState picks it up.
+        this._validator.invalidate(abs);
+        const r = this._validator.validateFile(abs);
+        if (!r.ok) {
+          // Replace any prior failure record for this path
+          this._validationFailures = this._validationFailures.filter(
+            (f) => f.filePath !== abs,
+          );
+          this._validationFailures.push({ filePath: abs, error: r.error || "unknown" });
+        } else {
+          this._validationFailures = this._validationFailures.filter(
+            (f) => f.filePath !== abs,
+          );
+        }
+      }
+    }
     if (!wasReady && this.exitCriteriaMet()) {
       return new PipelineEvent({ type: "phase_ready", message: "Skill authoring complete. Ready for SKILL_TESTING.", nextPhase: Phase.SKILL_TESTING });
     }

@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AgentEvent } from "./events.js";
+import {
+  deriveSkillAuthoringMilestones,
+  deriveSkillTestingMilestones,
+} from "./pipelines/_milestone-derive.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { findSafeSplitPoint } from "./message-utils.js";
@@ -1352,12 +1356,46 @@ export class AgentEngine {
 
     const expected = NEXT_PHASE[this.currentPhase];
     if (!force && nextPhase !== expected) {
+      // v0.7.0 A3: event-log hint stays factual (records what the gate
+      // saw) — the LLM-facing refusal text in phase-advance.js no longer
+      // advertises force:true. Hint kept here for post-mortem audit.
       this.eventLog.append("phase_advance_refused", {
         from: this.currentPhase, to: nextPhase, reason,
-        hint: expected ? `expected next phase is '${expected}' — pass force:true to override`
+        hint: expected ? `non-adjacent transition; immediate next phase is '${expected}'`
                        : `${this.currentPhase} is the terminal phase`,
       });
       return false;
+    }
+
+    // v0.7.0 A5: reconcile per-rule tasks against disk artifacts before
+    // checking exit criteria. Catches the E2E #5 DS pattern (tasks.json
+    // showed 70/70 done while only 56 dirs / 36 with check_*.py existed):
+    // markDone() is fire-and-forget today, so the agent can claim
+    // completion that didn't materialize. Reconcile flips back to
+    // pending if the helper-derived ruleIdsCovered set doesn't include
+    // the task's ruleId. A "force"d advance bypasses reconcile too —
+    // the gate already gives the agent / user that escape.
+    if (!force && this.taskManager && this.workspace) {
+      try {
+        const sa = deriveSkillAuthoringMilestones(this.workspace);
+        const covered = new Set(sa.ruleIdsCovered);
+        const tm = deriveSkillTestingMilestones(this.workspace);
+        const tested = new Set(tm.skillsTested);
+        const r = this.taskManager.reconcileAgainstDisk((task) => {
+          if (task.phase === "skill_authoring") return covered.has(task.ruleId);
+          if (task.phase === "skill_testing") return tested.has(task.ruleId);
+          return true; // unknown phase — leave alone
+        });
+        if (r.flippedBack.length > 0) {
+          this.eventLog.append("tasks_reconciled", {
+            from_phase: this.currentPhase,
+            target_phase: nextPhase,
+            flipped_back: r.flippedBack,
+            count: r.flippedBack.length,
+            inspected: r.reconciled,
+          });
+        }
+      } catch { /* never let reconcile break advance */ }
     }
 
     // v0.6.3: HARD-TRACKING GATE — refuse forward advance unless the source
@@ -1408,9 +1446,15 @@ export class AgentEngine {
     const engineCounts = this._buildEngineCountsBlock(this.currentPhase);
     const mismatchPrefix = this._detectSummaryMismatch(reason, this.currentPhase) ? "⚠️ POSSIBLE MISMATCH: " : "";
     const directionTag = direction === "rollback" ? " [ROLLBACK]" : "";
+    // v0.7.0 A2: forced is now `!!force` (honest), not the old
+    // `force && nextPhase !== expected` which masked every adjacent-forward
+    // force in the audit log. E2E #5 had 12/12 force-bypasses but the event
+    // log read 0 forced because every transition was to the immediate next
+    // phase. Truth in audit logs first; refinement (forward-vs-non-adjacent
+    // distinction) lives in the `direction` field.
     const phaseSummary =
       `[${this.currentPhase.toUpperCase()} → ${nextPhase.toUpperCase()}]${directionTag}: ${mismatchPrefix}${reason}` +
-      (force && nextPhase !== expected ? " (forced)" : "") +
+      (force ? " (forced)" : "") +
       (engineCounts ? `\n  (engine) ${engineCounts}` : "");
     this._phaseSummaries.push(phaseSummary);
     this.eventLog.append("phase_transition", {
@@ -1420,7 +1464,7 @@ export class AgentEngine {
       direction,
       engineCounts: engineCounts || null,
       possibleMismatch: !!mismatchPrefix,
-      forced: force && nextPhase !== expected,
+      forced: !!force,
     });
     const fromPhase = this.currentPhase;
     this.currentPhase = nextPhase;

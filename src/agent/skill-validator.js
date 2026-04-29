@@ -16,12 +16,15 @@
  *    still bypasses. The validator's job is to refuse the auto-advance,
  *    not to trap the agent.
  *
- * Validation rules per `check_r###.py`:
+ * Validation rules per `check_*.py`:
  *  1. File ≥ 100 bytes (smoke test for empty stubs).
  *  2. Passes `python3 -c "import ast; ast.parse(open(F).read())"` (no
  *     syntax errors).
- *  3. Defines a function reachable by name `check_rule` or `verify`
- *     (regex match on file content).
+ *  3. Defines a function reachable by one of the names: `check_rule`,
+ *     `verify`, OR `check_r<digits>` (e.g. `check_r014`, `check_r013_r017`).
+ *     v0.7.0 A6 broadened the third pattern after E2E #5 audit found
+ *     three sessions independently chose `def check_r###` over the
+ *     canonical names — the validator was too strict.
  *
  * Disable mechanism: if `python3` is not on PATH, validator silently
  * passes everything and emits a one-time warning — we don't want the
@@ -32,7 +35,18 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const ENTRY_POINT_REGEX = /^\s*(?:async\s+)?def\s+(check_rule|verify)\b/m;
+// v0.7.0 A6: entry-point check is a sanity probe, not a style enforcer.
+// The validator's real signal comes from `≥ 100 bytes` + `ast.parse
+// passes`. Restricting to specific verb names rejected 27/28 GLM
+// scripts in E2E #5 — the cost outweighed the catch (every contestant
+// converged on a different naming convention).
+//
+// New rule: any top-level `def \w+(...)` counts. Rejects pure-imports
+// or comment-only stubs (which is what we actually wanted to catch),
+// accepts anything with real logic. The check_*.py *filename* (matched
+// by the path regex in `findCheckScripts`) carries the rule-id signal;
+// the function name doesn't need to.
+const ENTRY_POINT_REGEX = /^(?:async\s+)?def\s+\w+\s*\(/m;
 const MIN_BYTES = 100;
 
 export class SkillValidator {
@@ -141,7 +155,7 @@ export class SkillValidator {
     try { content = fs.readFileSync(filePath, "utf-8"); }
     catch { return { ok: false, error: "read failed after parse OK" }; }
     if (!ENTRY_POINT_REGEX.test(content)) {
-      return { ok: false, error: "no entry point: expected `def check_rule(...)` or `def verify(...)`" };
+      return { ok: false, error: "no callable defined: file has imports/comments only, no top-level `def`" };
     }
 
     return { ok: true };

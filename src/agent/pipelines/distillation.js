@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { deriveDistillationMilestones } from "./_milestone-derive.js";
 
 export class DistillationEngine extends Pipeline {
   constructor(workspace) {
@@ -40,26 +41,35 @@ export class DistillationEngine extends Pipeline {
   }
 
   _scanWorkflows() {
-    // v0.6.1 A6: preserve engine-emitted entries across filesystem rescans.
-    // workflow_run hook bumps workflowsTested[ruleId] and adds to
-    // workflowsPassing on success — without this preservation, those entries
-    // get clobbered on the next describeState() / onToolResult() rescan.
+    // v0.7.0 A1: route through filesystem-derived helper. The helper
+    // recognizes all three workflow layouts seen in E2E #5:
+    //   workflows/<id>/workflow_v#.py  (canonical, release.js's expectation)
+    //   workflows/<id>_workflow.py     (DS + GLM flat layout)
+    //   workflows/<id>.json            (DS regex_skill manifest)
+    // Engine-emitted entries (v0.6.1 A6) are still preserved as a soft
+    // overlay — disk wins on counter membership, but accuracy /
+    // tier-assignment data set by tool wrappers is kept.
     const engineWfTested = { ...this.workflowsTested };
     const engineWfPassing = [...this.workflowsPassing];
 
+    const m = deriveDistillationMilestones(this._workspace);
+    // workflowsCreated becomes a {ruleId: 1} dict for backwards-compat
+    // with downstream code that uses Object.keys() / `id in workflows`.
     this.workflowsCreated = {};
+    for (const id of m.workflowsCreated) this.workflowsCreated[id] = 1;
+
     this.workflowsTested = {};
     this.workflowsPassing = [];
     this.tierAssignments = {};
-    const wfDir = path.join(this._workspace.cwd, "workflows");
-    if (!fs.existsSync(wfDir)) return;
 
-    for (const e of fs.readdirSync(wfDir, { withFileTypes: true })) {
-      if (e.isDirectory()) {
-        const ruleDir = path.join(wfDir, e.name);
-        const pyFiles = fs.readdirSync(ruleDir).filter((f) => f.endsWith(".py"));
-        if (pyFiles.length > 0) this.workflowsCreated[e.name] = pyFiles.length;
-        const cfgPath = path.join(ruleDir, "config.json");
+    // Layered: also read per-rule config.json for tier + accuracy
+    // metadata — this is auxiliary signal not represented on the
+    // filesystem at the workflow-existence level.
+    const wfDir = path.join(this._workspace.cwd, "workflows");
+    if (fs.existsSync(wfDir)) {
+      for (const e of fs.readdirSync(wfDir, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const cfgPath = path.join(wfDir, e.name, "config.json");
         if (fs.existsSync(cfgPath)) {
           try {
             const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
@@ -71,12 +81,15 @@ export class DistillationEngine extends Pipeline {
             }
           } catch { /* skip */ }
         }
-      } else if (e.isFile() && e.name.endsWith(".py")) {
-        this.workflowsCreated[path.parse(e.name).name] = 1;
       }
     }
+    // Helper-derived workflowsTested too (per-workflow test_results/ etc.)
+    for (const id of m.workflowsTested) {
+      if (!(id in this.workflowsTested)) this.workflowsTested[id] = 1.0;
+      if (!this.workflowsPassing.includes(id)) this.workflowsPassing.push(id);
+    }
 
-    // Re-merge engine-emitted entries on top of filesystem-derived state
+    // Re-merge engine-emitted entries (v0.6.1 A6 carry-forward)
     for (const [k, v] of Object.entries(engineWfTested)) {
       if (!(k in this.workflowsTested)) this.workflowsTested[k] = v;
     }

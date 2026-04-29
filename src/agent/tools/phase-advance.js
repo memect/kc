@@ -104,17 +104,25 @@ export class PhaseAdvanceTool extends BaseTool {
       return new ToolResult(`Advanced${beforePhase ? ` from ${beforePhase}` : ""} to ${to}${input.force ? " (forced)" : ""}`);
     }
 
-    // Truly refused — possible reasons: non-adjacent transition without force,
-    // terminal-phase forward attempt, or v0.6.3 hard-tracking gate (engine
-    // telemetry shows source phase's exit criteria not met). Surface both
-    // possibilities so the agent gets actionable guidance without us having
-    // to round-trip the engine's internal reason.
+    // Truly refused — possible reasons: non-adjacent transition,
+    // terminal-phase forward attempt, or hard-tracking gate (source phase's
+    // exit criteria not met by engine telemetry).
+    //
+    // v0.7.0 A3: refusal text no longer advertises `force:true`. E2E #5
+    // showed every conductor reading the old refusal hint and force-bypassing
+    // immediately (12/12 transitions). The escape valve remains in the input
+    // schema (discoverable) but isn't hand-fed to the LLM here. Instead,
+    // direct the agent at the missing milestones it can satisfy.
     return new ToolResult(
-      `Did not advance to ${to} (currently in ${beforePhase || "?"}). Possible causes: ` +
-      `(a) non-adjacent transition — try the immediate-next phase first, or pass force:true; ` +
-      `(b) source-phase exit criteria not met by engine telemetry — check /status and the phase ` +
-      `describeState block to see which milestones are missing, then complete the work or pass force:true ` +
-      `to override the gate. The engine logged the precise reason in events.jsonl as 'phase_advance_refused'.`,
+      `Did not advance to ${to} (currently in ${beforePhase || "?"}). ` +
+      `Likely cause: source-phase exit criteria not met. ` +
+      `Run /status (or read the phase describeState block in this turn's system reminder) ` +
+      `to see which milestones are missing, then produce the disk artifacts that satisfy them — ` +
+      `the engine derives milestones from filesystem facts (rule_skills/<id>/SKILL.md, check.py, ` +
+      `workflows/<id>/*.py, output/results/*.json, etc.). ` +
+      `If the transition is non-adjacent or this phase truly is done despite the gate, ` +
+      `re-call with the documented schema flag. The engine logged the precise reason in ` +
+      `events.jsonl as 'phase_advance_refused'.`,
       false,
     );
   }

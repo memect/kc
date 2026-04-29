@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
+import { deriveSkillAuthoringMilestones, deriveSkillTestingMilestones } from "./_milestone-derive.js";
 
 export class SkillTestingPipeline extends Pipeline {
   constructor(workspace) {
@@ -33,35 +34,48 @@ export class SkillTestingPipeline extends Pipeline {
   }
 
   _loadSkills() {
-    this.skillsToTest = [];
-    const dir = path.join(this._workspace.cwd, "rule_skills");
-    if (!fs.existsSync(dir)) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory() && !e.name.startsWith("__")) {
-        const p = path.join(dir, e.name);
-        if (fs.existsSync(path.join(p, "SKILL.md")) || fs.readdirSync(p).some((f) => f.endsWith(".py"))) {
-          this.skillsToTest.push(e.name);
-        }
-      }
-    }
+    // v0.7.0 A1: route through filesystem-derived helper (skill_authoring's
+    // skillsAuthored is the canonical "what skills exist" view).
+    const m = deriveSkillAuthoringMilestones(this._workspace);
+    this.skillsToTest = [...m.skillsAuthored];
   }
 
   _loadTestResults() {
     this.skillsTested = {};
     this.skillsPassing = [];
+
+    // Layer 1 (canonical schema): output/<rule_id>.json with `accuracy` field.
+    // Carries the actual numeric threshold check.
     const outDir = path.join(this._workspace.cwd, "output");
-    if (!fs.existsSync(outDir)) return;
-    for (const f of fs.readdirSync(outDir).filter((f) => f.endsWith(".json"))) {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(outDir, f), "utf-8"));
-        if (data.accuracy != null) {
-          const ruleId = data.rule_id || path.parse(f).name;
-          const acc = parseFloat(data.accuracy);
-          this.skillsTested[ruleId] = Math.max(this.skillsTested[ruleId] || 0, acc);
-        }
-      } catch { /* skip */ }
+    if (fs.existsSync(outDir)) {
+      for (const f of fs.readdirSync(outDir).filter((f) => f.endsWith(".json"))) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(outDir, f), "utf-8"));
+          if (data.accuracy != null) {
+            const ruleId = data.rule_id || path.parse(f).name;
+            const acc = parseFloat(data.accuracy);
+            this.skillsTested[ruleId] = Math.max(this.skillsTested[ruleId] || 0, acc);
+          }
+        } catch { /* skip */ }
+      }
     }
-    this.skillsPassing = Object.entries(this.skillsTested).filter(([, acc]) => acc >= this._accuracyThreshold).map(([id]) => id);
+
+    // Layer 2 (helper-derived floor): per-skill test_results/, tests/, or
+    // assets/test_cases.json count as "tested" even without an accuracy
+    // reading. Without this floor, agents who tested via sandbox_exec
+    // (no accuracy JSON written) showed skillsTested={} despite real
+    // testing — exactly the E2E #5 GLM case.
+    const m = deriveSkillTestingMilestones(this._workspace);
+    for (const id of m.skillsTested) {
+      // Test artifact present but no numeric accuracy → record as tested
+      // at threshold value (just-passing). The agent can revise via
+      // canonical-schema JSON if needed.
+      if (!(id in this.skillsTested)) this.skillsTested[id] = this._accuracyThreshold;
+    }
+
+    this.skillsPassing = Object.entries(this.skillsTested)
+      .filter(([, acc]) => acc >= this._accuracyThreshold)
+      .map(([id]) => id);
   }
 
   _loadEvolutionLog() {
@@ -104,7 +118,14 @@ export class SkillTestingPipeline extends Pipeline {
   exitCriteriaMet() {
     const total = this.skillsToTest.length;
     if (!total) return false;
-    return Object.keys(this.skillsTested).length >= total && this.skillsPassing.length >= total * this._accuracyThreshold;
+    // v0.7.0 H/C2 fix: previous gate `skillsPassing.length >= total * threshold`
+    // was multiplying *count* by accuracy threshold (default 0.9), so 9/10
+    // failing skills could still pass the gate. The intent is "every
+    // skill passes its per-skill threshold" — count parity, not weighted.
+    // (Fraction-of-skills fallbacks belong in optional config, not the
+    // default exit criterion.)
+    return Object.keys(this.skillsTested).length >= total &&
+      this.skillsPassing.length >= total;
   }
 
   /**
