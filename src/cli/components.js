@@ -93,15 +93,23 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
   const samplesRef = useRef([]);
   const peakRef = useRef(0);
 
-  // Push current sample + cap the ring
+  // v0.7.0 C3: ref mutations live inside useEffect, not in the render
+  // body. React may invoke renders multiple times (StrictMode, concurrent
+  // rendering, suspense replay); mutating refs inline duplicated the
+  // pushed sample on every replay and let peak drift higher than the
+  // real history. Effect runs once per commit.
+  useEffect(() => {
+    const samples = samplesRef.current;
+    samples.push(contextTokens || 0);
+    if (samples.length > CTX_SAMPLE_WINDOW) samples.shift();
+    if ((contextTokens || 0) > peakRef.current) peakRef.current = contextTokens || 0;
+  }, [contextTokens]);
+
   const samples = samplesRef.current;
-  samples.push(contextTokens || 0);
-  if (samples.length > CTX_SAMPLE_WINDOW) samples.shift();
   const smoothed = samples.length > 0
     ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
-    : 0;
-  if ((contextTokens || 0) > peakRef.current) peakRef.current = contextTokens || 0;
-  const peak = peakRef.current;
+    : (contextTokens || 0);
+  const peak = Math.max(peakRef.current, contextTokens || 0);
 
   const pct = contextLimit ? Math.round((smoothed / contextLimit) * 100) : 0;
   const ctxColor = pct > 80 ? "red" : pct > 60 ? "yellow" : "green";

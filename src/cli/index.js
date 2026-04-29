@@ -76,6 +76,13 @@ function App({ engine, config }) {
   }, []);
 
   const addMessage = useCallback((msg) => {
+    // v0.7.0 H6: dismiss welcome banner once any real message lands.
+    // The banner state was initialized true and never set false — the
+    // banner stayed on every frame for the entire session, eating
+    // permanent screen real estate. Conditionally clear on first
+    // user/agent/tool-result message; system-only messages don't
+    // dismiss (they're often just the banner-side info itself).
+    if (msg && msg.role !== "system") setShowWelcome(false);
     setMessages((prev) => {
       if (prev.length < MAX_RETAINED_MESSAGES) return [...prev, msg];
       // Cap hit: drop the oldest non-system entry. If everything is system
@@ -432,6 +439,11 @@ function App({ engine, config }) {
         streamingRef.current = true;
         setStreaming(true);
         setSpinnerStatus("Compacting...");
+        // v0.7.0 H7: top-level .catch on the IIFE — the inner try/catch
+        // handles the compact() failure path; this tail .catch silences
+        // any secondary rejection from the catch handler or finally
+        // block (e.g., addMessage throw). Without it, those would be
+        // UnhandledPromiseRejection in strict-mode Node.
         (async () => {
           try {
             const result = await engineRef.current.compact();
@@ -478,7 +490,7 @@ function App({ engine, config }) {
               runTurn(next);
             }
           }
-        })();
+        })().catch(() => { /* H7 defensive tail */ });
         return true;
       }
 
@@ -537,6 +549,10 @@ function App({ engine, config }) {
           }
         } else {
           // Resume a previous session
+          // v0.7.0 H8: top-level .catch on the IIFE so a throw inside
+          // addMessage()/setMessages() (e.g., during the catch handler
+          // itself, or in Ink reconciler) doesn't surface as an
+          // UnhandledPromiseRejection that crashes Node strict-mode.
           (async () => {
             try {
               const client = new LLMClient({
@@ -561,7 +577,8 @@ function App({ engine, config }) {
             } catch (err) {
               addMessage({ role: "system", content: `Resume failed: ${err.message}` });
             }
-          })();
+          })().catch(() => { /* defended above; tail catch silences any
+            secondary rejection from the catch handler itself */ });
         }
         return true;
 

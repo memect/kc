@@ -249,7 +249,13 @@ export class Workspace {
    * `withFileLock` (async) for all paths that allow it.
    */
   withSyncFileLock(relPath, fn, { timeoutMs = 5_000, staleMs = 30_000 } = {}) {
-    const lockPath = path.join(this.path, `${relPath}.lock`);
+    // v0.7.0 H3: route through resolvePath() so a caller passing
+    // "../../shared.json" can't write a lockfile outside the workspace
+    // root (the async sibling withFileLock already does this — sync
+    // version was the asymmetric weak spot). Cross-session lock-file
+    // contamination shut down.
+    const resolved = this.resolvePath(relPath);
+    const lockPath = `${resolved}.lock`;
     return this._withSyncLockAtPath(lockPath, fn, { timeoutMs, staleMs });
   }
 

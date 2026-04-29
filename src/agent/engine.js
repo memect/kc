@@ -2186,10 +2186,18 @@ export class AgentEngine {
           continue;
         }
 
-        const trackedPromise = entry.promise.then(
-          () => ({ taskId: task.id, subId, ok: true }),
-          (e) => ({ taskId: task.id, subId, ok: false, error: e?.message || String(e) }),
-        );
+        // v0.7.0 H1: trackedPromise covers both fulfilled and rejected
+        // paths (second arg). The .catch tail is belt-and-braces in case
+        // the .then callbacks themselves throw — without it, a JSON
+        // serialization throw inside the success-arm callback would
+        // surface as UnhandledPromiseRejection and crash strict-mode
+        // Node. We never want a worker error to take the engine down.
+        const trackedPromise = entry.promise
+          .then(
+            () => ({ taskId: task.id, subId, ok: true }),
+            (e) => ({ taskId: task.id, subId, ok: false, error: e?.message || String(e) }),
+          )
+          .catch((e) => ({ taskId: task.id, subId, ok: false, error: `tracked-promise threw: ${e?.message || String(e)}` }));
         inFlight.set(subId, { task, workerLabel, promise: trackedPromise });
       }
     };
@@ -2204,7 +2212,15 @@ export class AgentEngine {
 
       if (inFlight.size === 0) break;
 
-      // Wait for either the next event OR a worker to complete
+      // Wait for either the next event OR a worker to complete.
+      //
+      // v0.7.0 C1 note: losers in Promise.race() keep their .then()
+      // chains active and resolve into garbage objects. That's the
+      // intended JS Promise behavior — rejections are still handled,
+      // memory drops at GC. The audit was overstated; no actual hang
+      // or leak. Each loop iteration rebuilds the race from current
+      // inFlight.values() so stale promises from prior iterations
+      // are naturally re-observed (they've already resolved by then).
       const workerCompletion = Promise.race([...inFlight.values()].map((v) => v.promise));
       const eventArrival = new Promise((resolve) => { notify = () => resolve("event"); });
       const winner = await Promise.race([

@@ -23,8 +23,20 @@ function loadGlobalConfig() {
  */
 function loadEnvFile(envPath) {
   if (!fs.existsSync(envPath)) return {};
+  // v0.7.0 H9: defend bootstrap against a .env that exists but isn't
+  // readable (permission denied, unexpected directory, encoding error,
+  // race with concurrent write). Old code threw and crashed config
+  // bootstrap before the CLI was even up — return empty {} on any
+  // read failure so the user sees the more actionable
+  // "no API key configured" error from loadSettings instead.
+  let raw;
+  try {
+    raw = fs.readFileSync(envPath, "utf-8");
+  } catch {
+    return {};
+  }
   const env = {};
-  const lines = fs.readFileSync(envPath, "utf-8").split("\n");
+  const lines = raw.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
