@@ -62,6 +62,38 @@ export class Workspace {
     this._gitAutoCommitEnabled = opts.gitAutoCommit !== false;
     this._gitAvailable = this._gitAutoCommitEnabled && Workspace.isGitInstalled();
     if (this._gitAvailable) this._initGitRepo();
+
+    // v0.7.0 F1: detect filesystem case-sensitivity once at construction.
+    // macOS HFS+/APFS default + Windows NTFS default are case-insensitive
+    // — `SKILL.md` and `skill.md` resolve to the same inode. E2E #5 GLM
+    // hit this exactly: wrote skill.md, then SKILL.md (overwrote it),
+    // then archive_file moved skill.md (moved both since same inode),
+    // then agent saw "SKILL.md disappeared". Surfacing the FS property
+    // here lets tools warn on case-collision attempts.
+    this.fsCaseSensitive = Workspace._probeCaseSensitivity(this.path);
+  }
+
+  /**
+   * v0.7.0 F1: cheap probe — write a known-case marker, stat its
+   * lowercased twin. If the stat succeeds, the FS folded the case →
+   * case-insensitive. Probe runs once per session at construction.
+   * Marker is deleted regardless. Returns true on case-sensitive (Linux
+   * default), false on case-insensitive (macOS/Windows defaults).
+   */
+  static _probeCaseSensitivity(dir) {
+    const probe = path.join(dir, ".kc-case-probe-MIXED");
+    const twin = path.join(dir, ".kc-case-probe-mixed");
+    try {
+      fs.writeFileSync(probe, "");
+      const sensitive = !fs.existsSync(twin);
+      try { fs.unlinkSync(probe); } catch { /* ignore */ }
+      return sensitive;
+    } catch {
+      // Couldn't probe (permission?); assume sensitive (Linux default)
+      // since false-positive on macOS doesn't break correctness, just
+      // misses the warning opportunity.
+      return true;
+    }
   }
 
   /** @returns {string} Current workspace directory */

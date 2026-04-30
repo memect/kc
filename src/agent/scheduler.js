@@ -222,14 +222,26 @@ export class Scheduler {
   }
 
   /**
-   * Count of files directly under input/ (excluding subdirs like archived/).
+   * Count of files directly under input/ (excluding subdirs like archived/
+   * and v0.7.0 F3 agent-scratch marker .kc-scratch/).
+   *
+   * Background: E2E #5 DS surfaced "📥 4 new file(s) pending in input/"
+   * when the agent's sandbox_exec had dropped 4 test fixtures into
+   * input/ during smoke-testing. The user assumed external arrivals.
+   * The scheduler never had a way to disambiguate.
+   *
+   * v0.7.0 F3: agent-side scratch writes go under input/.kc-scratch/
+   * (a sidecar dir, hidden by the standard "starts with ." filter).
+   * The banner counts only top-level non-hidden files, which is what
+   * external arrivals actually look like (schedule_fetch drops files
+   * directly into input/ root).
    */
   pendingInputCount() {
     const dir = path.join(this._workspace.cwd, "input");
     if (!fs.existsSync(dir)) return 0;
     try {
       return fs.readdirSync(dir, { withFileTypes: true })
-        .filter((e) => e.isFile())
+        .filter((e) => e.isFile() && !e.name.startsWith("."))
         .length;
     } catch {
       return 0;

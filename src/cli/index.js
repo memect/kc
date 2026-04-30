@@ -566,6 +566,17 @@ function App({ engine, config }) {
               setSessionId(resumed.workspace.sessionId);
               setPhase(resumed.currentPhase);
               setMessages([]);
+              // v0.7.0 F2: re-populate TaskBoard state from the resumed
+              // engine's TaskManager. Without this, the TUI showed an
+              // empty task list after /resume even when tasks.json on
+              // disk had pending work. The setTaskList path mirrors what
+              // the per-event tasks_progress handler does for live
+              // sessions.
+              try {
+                const tasks = resumed.taskManager.getAllTasks();
+                setTaskList(tasks);
+                setTaskProgress(resumed.taskManager.progress);
+              } catch { /* taskManager unavailable on very old session-state */ }
               addMessage({
                 role: "system",
                 content:
