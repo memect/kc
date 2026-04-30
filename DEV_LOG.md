@@ -193,24 +193,159 @@ tokens with KC_CONTEXT_LIMIT=400000.
 - `docs/update_design_v7.md`.
 - Tag `v0.7.0`. Push deferred to user.
 
-### Deferred to v0.7.1
+### Expansion (2026-04-30) — folding the v0.7.1 deferrals back into v0.7.0
 
-- **#90** event-atomic context refactor (Group E1) — too heavy for
-  v0.7.0; ~700 LOC.
-- **#91** parser/chunker rebuild (Group G) — LibreOffice → JS-native
-  parsers; ~600 LOC + npm dep additions.
-- **#76** Anthropic SSE thinking_delta (Group I) — bundles cleanly
-  with E1 in v0.7.1.
-- **#94** finalization template files (Group C remainder) — release-
-  tool side closed in v0.7.0; agent-side template (run.py +
-  manifest.json.tmpl + README.md.tmpl + kc_runtime/) is v0.7.1.
-- **#84** workspace_file case-collision warning (F1 remainder) —
-  detection landed in v0.7.0; warning emission deferred.
+User decision the day after the initial tag (which was never pushed):
+roll the five deferred items into v0.7.0 itself. Tag deleted locally,
+re-applied at HEAD after these five groups landed. The expanded
+v0.7.0 is the architectural overhaul in full.
 
-E2E #6 verification on `test_data_3_lite/` should land before v0.7.1
-implementation. Watch for: force-bypass count drop, milestone-vs-disk
-parity, capability-sensitivity of agent-owned tasking, GLM heap
-behavior under v0.7.0's partial mitigations.
+#### Group L — Anthropic SSE thinking_delta + signature_delta (#76)
+
+llm-client.js Anthropic SSE branch now recognizes Anthropic's
+distinct content block type (`type: "thinking"`) and the two delta
+types it emits — `thinking_delta` (carries reasoning text) +
+`signature_delta` (carries an opaque proof blob the next-turn body
+must include alongside the thinking text for strict-mode multi-turn
+to validate).
+
+Both normalized to the same `reasoning_content` field shape OpenAI-
+compatible providers use, so engine.js's v0.6.3 round-trip path
+handles them without an Anthropic-specific branch. signature_delta
+carries an additional `reasoning_signature` field.
+_buildAnthropicBody re-attaches both as a `{type: "thinking",
+thinking, signature}` block at the top of the assistant content
+array on the next turn. OpenAI-format providers never emit
+signature_delta; the new code paths are no-ops for them.
+
+#### Group M — workspace_file case-collision warning (#84 remainder)
+
+v0.7.0 F1 landed `Workspace.fsCaseSensitive` detection. This group
+hooks the warning into workspace_file `_write`. On case-insensitive
+filesystems, if a sibling of the target shares the lowercase
+basename but with different case, the tool result text gets a
+`⚠ case-collision:` note pointing at the offending sibling. Write
+proceeds (warning, not refusal). E2E #5 GLM hit this exactly with
+SKILL.md/skill.md collapsing into one inode then disappearing
+under archive_file; the warning now fires at the moment the
+collision is created.
+
+#### Group E1m — minimal event-atomic context (#90)
+
+Yibo's E2E #5 framing ("a cut in the middle of an event shouldn't
+happen") implemented as a derived view on top of the existing flat
+messages array. New `src/agent/history/event-history.js`:
+
+- `EventType` enum: USER_TURN / ASSISTANT_TURN / TOOL_CALL_PAIR /
+  SYSTEM_REMINDER.
+- `messagesToEvents(messages)` derives events with startIdx/endIdx
+  ranges. Recognizes assistant+tool_calls + matching tool results
+  as one tool_call_pair event. Orphan tool messages tagged.
+- `eventsToMessages(events)` is the inverse.
+- `findEventBoundary(messages, desiredSplit)` returns the next event
+  boundary at or after desiredSplit. Backwards-compat drop-in for
+  findSafeSplitPoint.
+- `countEvents(messages)` diagnostic helper for the heap analyzer.
+
+`message-utils.js` `findSafeSplitPoint` delegates to
+`findEventBoundary` as the primary cut chooser. Legacy heuristic
+walk kept as belt-and-braces against externally-edited messages.json.
+engine.js compact() and context-window.js window() unchanged —
+they already routed through findSafeSplitPoint, get event-aware
+cuts for free.
+
+Future v0.8.x can invert this and make events the canonical store;
+the reversible helpers make that migration cheap.
+
+#### Group N — finalization release template (#94 remainder)
+
+v0.7.0 C/E partial closed the release-tool side (#98 layout
+fallback). This group closes the agent-side: KC ships
+`template/release/v1/` with a runnable skeleton.
+
+New tree (~600 LOC of Python + JS wiring):
+
+- `run.py` (~190 LOC) — entry point. Loads manifest, iterates rules
+  × docs, dispatches via subprocess to each rule's workflow,
+  writes per-doc verdict JSONs to `output/results/`. CLI: positional
+  `input_dir` or `--doc <single>`. `--rules` filter.
+- `kc_runtime/{__init__.py, doc_parser.py (~95 LOC), confidence.py
+  (~45 LOC)}` — minimal release runtime helpers.
+- `render_dashboard.py` (~85 LOC) — single-file HTML dashboard.
+- `serve.sh` — http.server shim on :8765.
+- `manifest.json.tmpl`, `catalog.json.tmpl`, `README.md.tmpl` —
+  populated at finalization phase entry.
+
+Engine wiring:
+- New `Pipeline.onPhaseEnter()` hook (base.js); engine._advancePhase
+  calls it after the phase transitions. Other pipelines inherit no-op.
+- `finalization.onPhaseEnter()` copies template recursively into
+  `output/releases/v1/`, preserves +x bit on .py/.sh, runs the
+  populator (catalog.json copied from `rules/catalog.json`,
+  manifest.json built from a workflows/ scan that recognizes all
+  three layouts from #98, README.md substituted with
+  kc_version + session_id + counts).
+- Skips entirely if `output/releases/v1/` already exists (resume +
+  preserves agent edits).
+- `exitCriteriaMet()` requires `_releaseBundlePreflightOk()` —
+  every required file (run.py, manifest.json, README.md,
+  kc_runtime/doc_parser.py + confidence.py) must exist. Without
+  this gate the agent could declare canonicalLayoutDone with a
+  half-populated bundle that bombs at runtime.
+
+Bundle ships under PolyForm Noncommercial 1.0.0 (same as KC).
+
+#### Group G — parser/chunker rebuild (#91)
+
+New `src/agent/document-parser.js` dispatcher with native parsers +
+graceful fallback:
+- `.pdf` → pdfjs-dist (already a hard dep)
+- `.docx` → `mammoth` (new dep, dynamic-imported)
+- `.doc` → `word-extractor` (new dep, dynamic-imported)
+- `.txt`/`.md`/`.csv`/`.json` → fs read with UTF-8 + GBK fallback
+  (CJK corpora)
+- Unknown formats → plaintext best-effort, then LibreOffice CLI
+  fallback if `soffice`/`libreoffice` is on PATH.
+
+mammoth and word-extractor dynamic-imported via `await import()` so
+the module degrades gracefully when not installed — sessions that
+don't touch DOCX/DOC content can defer `npm install` after upgrade.
+Returns `{text, via, ok, error?}` so callers can record which
+strategy produced the text.
+
+`tools/document-chunk.js` "// For other formats" stub replaced
+with a call to extractText. Chunked output now includes a
+`parse_via` annotation when successful; structured `parse_error`
+when no parser worked.
+
+`package.json` adds mammoth ^1.6.0 + word-extractor ^1.0.4. Run
+`npm install` after pulling to enable native DOCX/DOC parsing.
+
+#### Group J2 — retag + docs
+
+- `git tag -d v0.7.0` (was at d2cd75f, never pushed).
+- This DEV_LOG addendum.
+- `docs/update_design_v7.md` "What deferred" replaced with
+  "Expansion (2026-04-30)" pointing here.
+- Re-tag v0.7.0 at HEAD.
+
+E2E #6 verification on `test_data_3_lite/` is the next gate for
+post-v0.7.0 behavior:
+
+1. Force-bypass count ≤ 3/12 (was 12/12 in E2E #5; offline replay
+   with v0.7.0-as-shipped showed ~8/12).
+2. Engine milestones match disk reality at every phase boundary.
+3. Release bundles run — finalization produces
+   `output/releases/v1/` that exits 0 on smoke input.
+4. GLM heap stays bounded — < 2 GB peak on 24h-equivalent run
+   (vs 3.8 GB in E2E #5). E1m + budget-aware compact + per-provider
+   contextLimit all contribute.
+5. Parser native rate ≥ 95% on samples/, LibreOffice fallback ≤ 5%.
+6. Anthropic conductor multi-turn passes (validates L).
+7. Capability-sensitivity visible — agent-owned TaskBoard with
+   work-decomposition skill should produce well-grouped tasks +
+   lean PATTERNS.md on strong conductors; flatter task lists on
+   weaker ones; both still satisfy Group A gates.
 
 ---
 

@@ -237,38 +237,89 @@ E2E #5 GLM at 203,363 tokens.
 
 ---
 
-## What deferred to v0.7.1
+## Expansion (2026-04-30) — folded the v0.7.1 deferrals back in
 
-Items from the original v0.7.0 plan that did not ship:
+User decision the day after the initial v0.7.0 tag (which was never
+pushed): roll the five deferred items into v0.7.0 itself. Tag deleted
+locally + re-applied at HEAD after the expansion landed. The expanded
+v0.7.0 is the architectural overhaul in full.
 
-- **#90 / Group E1** — event-atomic context refactor. Treats history
-  as a sequence of events (user_turn, assistant_turn, tool_call_pair,
-  system_reminder) where each event encapsulates 1+ messages that must
-  travel together. compact() and windowing operate on event boundaries.
-  Deferred because it's the largest single change (~700 LOC) and
-  risk-prone without a dedicated test cycle. `findSafeSplitPoint`
-  (v0.6.3.1) keeps the orphan-tool failure mode at bay until v0.7.1.
-- **#91 / Group G** — parser/chunker rebuild (LibreOffice → JS-native).
-  ~600 LOC + npm dep additions (mammoth, pdfjs-dist, word-extractor).
-  Worthwhile but not load-bearing for the v0.7.0 architectural payload.
-- **#76 / Group I** — Anthropic SSE thinking_delta + signature_delta.
-  Anthropic conductor is rarely used today; small win, but waits for
-  v0.7.1 to land alongside the event-atomic refactor (cleaner unification).
-- **#94 / Group C remainder** — finalization template files
-  (`template/release/v1/run.py` + manifest.json.tmpl + README.md.tmpl
-  + kc_runtime/). C3's release-tool fallback closes the
-  release-tool-side gap; the template skeleton is the
-  agent-side improvement that lets agents fill blanks instead of
-  inventing. v0.7.1.
-- **#84 / Group F1 (partial)** — case-collision warning in
-  workspace_file. Detection landed in v0.7.0 (workspace.fsCaseSensitive);
-  the actual warning emission on collision attempts in workspace_file
-  write path is deferred.
+Five additional commits on top of `d2cd75f`:
 
-E2E #6 verification on `test_data_3_lite/` should land before v0.7.1
-implementation — observed force-bypass count, milestone-vs-disk parity,
-and capability-sensitivity of agent-owned tasking are the key
-regressions to watch.
+```
+2be19c7  N — finalization release template (#94 remainder)
+9e12da7  G — parser/chunker rebuild (#91)
+28ff6de  E1m — minimal event-atomic context (#90)
+418b6ae  M — case-collision warning in workspace_file write (#84 remainder)
+e792a7f  L — Anthropic SSE thinking_delta + signature_delta (#76)
+```
+
+Plus J2 (this commit + retag).
+
+**Group L — Anthropic SSE thinking_delta**: llm-client.js Anthropic
+SSE branch normalizes `thinking_delta` to OpenAI-shape `reasoning_content`
++ stashes `signature_delta` as a custom `reasoning_signature` field;
+_buildAnthropicBody re-attaches both as a `{type: "thinking",
+thinking, signature}` block at the top of the assistant content array
+on the next turn. OpenAI-format providers never emit signature_delta;
+the new code paths are no-ops for them. Engine.js's v0.6.3
+reasoning_content round-trip handles it without an Anthropic-specific
+branch.
+
+**Group M — case-collision warning hookup**: workspace_file `_write`
+on case-insensitive filesystems checks for siblings sharing the
+target's lowercase basename, surfaces a `⚠ case-collision:` note in
+the tool result text. Write proceeds (warning, not refusal). E2E #5
+GLM hit this exactly with SKILL.md/skill.md collapsing into one
+inode then disappearing under archive_file.
+
+**Group E1m — minimal event-atomic context**: derived view on top of
+the existing flat messages array. New `src/agent/history/event-history.js`
+exports EventType enum + messagesToEvents + eventsToMessages +
+findEventBoundary + countEvents. message-utils.js findSafeSplitPoint
+delegates to findEventBoundary as primary cut chooser; legacy
+heuristic walk kept as belt-and-braces. compact() and windowing
+unchanged — they already routed through findSafeSplitPoint, get
+event-aware cuts for free. v0.8.x can invert the storage direction
+(events as canonical, messages as derived view) cheaply via the
+reversible helpers.
+
+**Group N — finalization release template**: `template/release/v1/`
+ships a runnable skeleton — `run.py` (190 LOC dispatcher),
+`kc_runtime/` (doc_parser + confidence helpers), `render_dashboard.py`
+(single-file HTML), `serve.sh`. Engine wiring: new `Pipeline.onPhaseEnter()`
+hook (base.js); finalization implements it to copy the template
+into `output/releases/v1/` + run a populator that fills the .tmpl
+files from session-state. New `_releaseBundlePreflightOk()` exit
+criterion blocks `canonicalLayoutDone=True` until every required
+file (run.py, manifest.json, README.md, kc_runtime/doc_parser.py +
+confidence.py) exists.
+
+**Group G — parser/chunker rebuild**: new
+`src/agent/document-parser.js` extractText() dispatches by extension
+— pdfjs-dist (PDF), mammoth (DOCX, dynamic-imported new dep),
+word-extractor (DOC, dynamic-imported new dep), native fs (TXT/MD)
+with UTF-8/GBK fallback for CJK, LibreOffice CLI as final fallback.
+tools/document-chunk.js's "// For other formats" stub replaced with
+a call to extractText. Returns `{text, via, ok, error?}` so callers
+can record which strategy produced the text. Dynamic imports mean
+existing setups can defer `npm install` after upgrade until they
+actually touch DOCX/DOC content.
+
+---
+
+## Out of scope (truly v0.7.1+)
+
+After the expansion, the only items genuinely out of v0.7.0 scope are:
+
+- **Static-audit revisits for C1/H1/H2** — defensive comments left in
+  place during v0.7.0 Group H; these were judged overstated. No change
+  planned.
+- **Full event-atomic refactor** (events as primary store, messages
+  derived view) — E1m landed the minimal version. Escalate only if
+  E2E #6 shows the minimal is insufficient.
+- **AMCS-mirrored full agent harness** for finalization template — N
+  landed the minimal runnable. Escalate if E2E #6 surfaces gaps.
 
 ---
 
