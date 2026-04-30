@@ -423,7 +423,21 @@ export class AgentEngine {
         new ScheduleFetchTool(this.workspace),
         new ReleaseTool(this.workspace, { kcVersion: "0.5.2" }),
         new PhaseAdvanceTool(
-          (to, reason, opts) => this._advancePhase(to, reason, opts),
+          // v0.7.1 2c: advanceFn returns rich `{advanced, engineCounts?}`
+          // so the tool's refusal text can surface the engine telemetry
+          // that motivated the refusal. Internal callers of
+          // `_advancePhase` continue to use the bool return value
+          // directly; only this lambda wraps for the LLM-facing tool.
+          (to, reason, opts) => {
+            const advanced = this._advancePhase(to, reason, opts);
+            if (!advanced) {
+              let engineCounts = null;
+              try { engineCounts = this._buildEngineCountsBlock(this.currentPhase); }
+              catch { /* defensive */ }
+              return { advanced: false, engineCounts };
+            }
+            return { advanced: true };
+          },
           () => this.currentPhase, // H1: tool reads phase BEFORE its own call
           // v0.6.2 J1: surface running subagents so the tool can refuse
           // advance until the agent explicitly acknowledges them.

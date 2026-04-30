@@ -205,6 +205,33 @@ export class RuleExtractionPipeline extends Pipeline {
       return `workflow_run is SKILL_TESTING/PRODUCTION_QC-phase work, but engine is in RULE_EXTRACTION. ${exitText}`;
     }
 
+    // v0.7.1 2a/2b: when agent attempts phase_advance from rule_extraction,
+    // surface advisories for the two soft-but-load-bearing artifacts the
+    // gate criteria require (chunk_refs and coverage_audit). v0.7.0 GLM
+    // session forced through with both missing — gate refused for the
+    // right reason but the refusal text was generic. Name them inline.
+    if (toolName === "phase_advance" && toolInput?.to === "skill_authoring") {
+      const advisories = [];
+      if (this.rulesExtracted.length > 0 && this.rulesWithChunkRefs.length === 0) {
+        advisories.push(
+          `Advancing rule_extraction with rulesWithChunkRefs=0/${this.rulesExtracted.length}. ` +
+          `The skill_authoring phase's prompts use source_chunk_ids to ground ` +
+          `skill explanations against regulation text. Without them, skill authoring ` +
+          `runs blind. Either populate chunk refs via the rule_catalog tool, or ` +
+          `accept that skill_authoring's generated content won't cite source regulation.`,
+        );
+      }
+      if (this.rulesExtracted.length > 0 && !this.coverageAudited) {
+        advisories.push(
+          `Advancing rule_extraction without rules/coverage_audit.md (or .json). ` +
+          `Coverage audit identifies regulation articles you didn't extract a rule ` +
+          `for — without it, gaps go silent through to production. If your ` +
+          `extraction is genuinely complete, write a one-paragraph audit confirming so.`,
+        );
+      }
+      if (advisories.length > 0) return advisories.join("\n\n");
+    }
+
     return null;
   }
 

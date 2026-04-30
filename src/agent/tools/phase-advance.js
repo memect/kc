@@ -15,7 +15,11 @@ const VALID_PHASES = new Set(Object.values(Phase));
  */
 export class PhaseAdvanceTool extends BaseTool {
   /**
-   * @param {(to: string, reason: string, opts: {force?: boolean}) => boolean} advanceFn
+   * @param {(to: string, reason: string, opts: {force?: boolean}) => {advanced: boolean, engineCounts?: string}} advanceFn
+   *   v0.7.1 2c: returns the rich object so the tool can surface engine
+   *   telemetry in the refusal text. Internal engine callers of
+   *   `_advancePhase` still get the bool; only this LLM-facing tool
+   *   uses the wrapped form.
    * @param {() => string} getCurrentPhaseFn - H1: lets the tool read the
    *   engine's phase BEFORE the call, so it can distinguish "already there"
    *   (silent no-op, informational) from "non-adjacent refusal" (actionable).
@@ -91,7 +95,11 @@ export class PhaseAdvanceTool extends BaseTool {
       );
     }
 
-    const advanced = this._advance(to, input.reason || "agent request", { force: !!input.force });
+    // v0.7.1 2c: advanceFn returns {advanced, engineCounts?} so we can
+    // surface telemetry in the refusal text below. Internal callers of
+    // _advancePhase still get bool; only this LLM-facing tool unwraps.
+    const advanceResult = this._advance(to, input.reason || "agent request", { force: !!input.force });
+    const advanced = !!advanceResult?.advanced;
     if (advanced) {
       // Log the ack so post-mortems can find phase advances that proceeded
       // with live subagents
@@ -113,9 +121,18 @@ export class PhaseAdvanceTool extends BaseTool {
     // immediately (12/12 transitions). The escape valve remains in the input
     // schema (discoverable) but isn't hand-fed to the LLM here. Instead,
     // direct the agent at the missing milestones it can satisfy.
+    //
+    // v0.7.1 2c: include engineCounts when available so the agent sees
+    // exactly which milestones the gate is reading and can satisfy them.
+    // E2E #6 v070 showed the generic "check /status" hint wasn't concrete
+    // enough — agents forced through. Naming the gap inline reduces that.
+    const engineCountsLine = advanceResult?.engineCounts
+      ? `\nEngine telemetry: ${advanceResult.engineCounts}`
+      : "";
+
     return new ToolResult(
       `Did not advance to ${to} (currently in ${beforePhase || "?"}). ` +
-      `Likely cause: source-phase exit criteria not met. ` +
+      `Likely cause: source-phase exit criteria not met.${engineCountsLine}\n\n` +
       `Run /status (or read the phase describeState block in this turn's system reminder) ` +
       `to see which milestones are missing, then produce the disk artifacts that satisfy them — ` +
       `the engine derives milestones from filesystem facts (rule_skills/<id>/SKILL.md, check.py, ` +
