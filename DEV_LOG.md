@@ -1,5 +1,97 @@
 # KC Agent CLI — Development Log
 
+## v0.7.1 (2026-04-30) — patch after E2E #6 v070 verification
+
+Four commits closing the narrow gaps surfaced by the v0.7.0
+verification run on `test_data_3_lite/`. Audits:
+
+- `archive/e2e_test_20260430_v070_observations.md` — architectural diagnosis
+- `archive/e2e_test_20260430_v070_session_audit.md` — substance audit
+
+The v0.7.0 architecture stood; gates fire honestly, agent-owned
+TaskBoard produced two defensibly-different decompositions, release
+template was used. **Three narrow gaps** drove this patch:
+
+1. **skillsTested derivation path mismatch** — agents ran tests via
+   sandbox_exec with verdicts read from stdout (ephemeral, no
+   per-skill artifacts). Engine saw skillsTested=0 and gate refused;
+   agents force-bypassed.
+2. **Skill teaching gap on stub check.py** — DS bundled-skill
+   check.py files all returned `{"pass": null, "method": "stub"}`
+   deferring to workflows/. Backwards from KC's intent.
+3. **chunk_refs / coverage_audit forced bypass without engagement**
+   — GLM advanced rule_extraction with rulesWithChunkRefs=0/35
+   and coverageAudited=no. Generic refusal text didn't name the
+   gap inline.
+
+User decisions: engine + skill teaching scope; keep gate strict +
+add write-time nudge; tag first + verify in E2E #7 after.
+
+### Group 1 — engine fixes (71d8265)
+
+- `_milestone-derive.js` `deriveSkillTestingMilestones` walks
+  `output/`, `output/results/`, `output/distillation/`, `output/qc/`,
+  plus `output/results/<rule_id>/` one level deep. Credits any
+  rule_id appearing as top-level `rule_id` field, element of an
+  array of `{rule_id}` objects, or key of `data.results`. Also reads
+  three top-level test_results.json locations seen in the wild
+  (rules/, rule_skills/, workspace root).
+  - Offline replay against E2E #6 v070 saved sessions: GLM 0/35 →
+    39 (passed); DS 0/16 → 26 (passed).
+- `skill-testing.js` `phaseMisfitHint` fires when sandbox_exec runs
+  a test-like command (regex matches python.*check.*\\.py.*\\.txt
+  or pytest etc.) AND skillsTested < total. Rate-limited to 3
+  nudges per phase entry via `_misfit_nudge_count` instance counter.
+  Names the three accepted output paths inline.
+
+### Group 2 — gate nudges (1a10942)
+
+- `extraction.js` `phaseMisfitHint` extension: when agent calls
+  phase_advance(to=skill_authoring) from rule_extraction with
+  rulesWithChunkRefs=0 OR !coverageAudited, surface advisories
+  naming the implications + paths. Both are advisories, not
+  refusals.
+- `engine.js` advanceFn lambda passed to PhaseAdvanceTool wraps
+  bool return into `{advanced, engineCounts?}`. Internal
+  `_advancePhase` callers (5 of them) keep bool semantics; only
+  the LLM-facing tool unwraps.
+- `phase-advance.js` refusal text now includes the engineCounts
+  string verbatim when present (e.g. "Engine telemetry:
+  rulesExtracted=35, rulesWithChunkRefs=0/35, ..."). Names the gap
+  inline so agents see the concrete gate state, not a generic
+  "check /status" pointer. The "or pass force:true" bit stays
+  scrubbed (v0.7.0 A3) — naming the gap doesn't re-advertise the
+  bypass.
+
+### Group 3 — work-decomposition skill clarifications (fbc4f53)
+
+- ✗ "stub check.py + real workflow.py" anti-pattern explicit in
+  both zh + en SKILL.md, under "Grouping rules" with code examples
+  for both ✗ DON'T and ✓ DO shapes.
+- "Why PATTERNS.md FIRST" subsection reinforces the opening-step-2
+  ordering with concrete cost framing (write skills before
+  PATTERNS.md → re-derives per rule → 4× longer) and ✗/✓ examples.
+
+### Out of scope (intentional, no overcorrection)
+
+Per user feedback "KC must work autonomously for hrs even days; harness
+compensates for non-expert users; we will swing until we nail the
+balance":
+
+- ❌ Restrict `force` from phase_advance schema (v0.7.0 A3 scrub
+  is enough deterrent; force is a needed escape valve)
+- ❌ Restore PER_RULE_PHASES auto-tasks (loses Group B freedom)
+- ❌ Tighten any criterion (criteria are honest signals; nudge,
+  don't refuse harder)
+- ❌ Pacing nudge ("you advanced through N phases in M minutes,
+  consider...") — patronizing; depth-of-work is the metric, not
+  pacing-as-discipline
+
+E2E #7 verification with these patches lands after tag + push +
+npm publish.
+
+---
+
 ## v0.7.0 (2026-04-29)
 
 Architectural overhaul after E2E #5. Eight commits across ten groups.

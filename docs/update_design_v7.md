@@ -323,6 +323,40 @@ After the expansion, the only items genuinely out of v0.7.0 scope are:
 
 ---
 
+## v0.7.1 patches (2026-04-30)
+
+E2E #6 v070 verification ran on test_data_3_lite/ with GLM-5.1 +
+DeepSeek-v4-pro. Audits in
+`archive/e2e_test_20260430_v070_observations.md` +
+`e2e_test_20260430_v070_session_audit.md`. Architecture sound;
+three narrow gaps closed by v0.7.1 (commits `71d8265`, `1a10942`,
+`fbc4f53`, plus this release commit):
+
+- **Group 1 — engine fixes** (skillsTested derivation broadens to
+  read `output/*.json` with `rule_id` field + skill_testing
+  phaseMisfitHint for ephemeral sandbox tests). Addresses the
+  load-bearing path mismatch where agents wrote test verdicts to
+  `output/` but the engine looked only inside `rule_skills/<id>/`.
+- **Group 2 — gate nudges** (chunk_refs / coverage_audit advisories
+  in extraction.js phaseMisfitHint + engineCounts surfaced in
+  phase-advance.js refusal text). Names the gap inline so agents
+  see concrete gate state.
+- **Group 3 — work-decomposition skill clarifications** (explicit
+  ✗ "stub check.py + real workflow.py" anti-pattern + reinforced
+  PATTERNS.md FIRST ordering). Addresses DS's stub pattern + DS's
+  post-rollback-only PATTERNS.md timing.
+
+What v0.7.1 did NOT do (per user feedback "we will swing until we
+nail the balance"):
+- Did NOT restrict `force` from phase_advance schema
+- Did NOT restore PER_RULE_PHASES auto-tasks
+- Did NOT tighten any criterion
+- Did NOT add a pacing nudge
+
+E2E #7 verification scheduled after tag + push + npm publish.
+
+---
+
 ## Verification
 
 ### Per-group verification done
