@@ -101,6 +101,52 @@ The v0.6.2 D2 anti-pattern wording captures the failure case clearly:
 
 That came from E2E #4 where one conductor wrote a 2,400-line `unified_qc.py` that ran all rules at once. It produced 1,150 ERROR verdicts (16.6%) because every rule's failure cascaded into every other rule's verdict. Per-rule skills are KC's unit of granularity for a reason.
 
+### Anti-pattern: stub check.py + real workflow.py
+
+Do NOT make `rule_skills/<id>/check.py` a stub that defers to
+`workflows/<id>/workflow.py`. KC's intent: SKILL.md + check.py is the
+**canonical** verification. workflow.py is the **distilled, cheaper**
+form (regex baseline + LLM fallback). The relationship is
+skill → workflow, not workflow → skill.
+
+❌ DON'T:
+```python
+# rule_skills/R001/check.py — STUB, real logic elsewhere
+def check(text):
+    rule_ids = re.findall(r"R\d{3}", load_skill())
+    return {rid: {"pass": None, "method": "stub",
+                  "note": "to be implemented later"} for rid in rule_ids}
+# real verification logic only in workflows/R001/workflow_v1.py
+```
+
+✅ DO:
+```python
+# rule_skills/R001/check.py — canonical verification
+def check(text):
+    matches = re.findall(r"...", text)  # actual rule logic
+    return {"rule_id": "R001", "passed": bool(matches),
+            "evidence": matches[:3], "method": "regex"}
+
+# workflows/R001/workflow_v1.py — distilled, cheaper form
+def run(text, llm_fn=None):
+    result = check(text)             # baseline from skill
+    if not result["passed"] and llm_fn:
+        result = llm_verify(text, llm_fn)  # escalate on fail
+    return result
+```
+
+Why it matters: distillation phase consumers (release tool, run.py
+harness) load workflow.py. If check.py is a stub, the skill's
+methodology (SKILL.md) becomes documentation-only and the
+verification logic is scattered across N workflow files. Future
+iterations of the skill (changes to regulation interpretation, edge
+cases discovered in production) need a single canonical place to
+update — the skill — not N workflows that have drifted independently.
+
+E2E #6 v070 surfaced this pattern (DS bundled-skill check.py files
+all returned `{"pass": null, "method": "stub"}` deferring to
+workflows/). v0.7.1 added this anti-pattern explicitly.
+
 ### Naming convention for grouped checks
 
 When you do bundle, name the file with the explicit range:
@@ -262,5 +308,19 @@ When entering skill_authoring with an empty TaskBoard:
 4. **If `rules/difficulty.json` doesn't exist:** decide whether to spend the worker LLM calls to triage (almost always yes for a corpus of >20 rules). Run the triage step (one tier3 call per rule, batched in groups of 10 if you want), write `rules/difficulty.json`, then proceed to step 3.
 5. **Pick the first task.** Work it to completion (skill + check + at least one local test). Update PATTERNS.md with whatever you learned. Move to the next task.
 6. **At task ~5 and task ~10:** stop and re-read PATTERNS.md. If patterns suggest a refactor of earlier work, do it now (cheap) rather than later (expensive).
+
+### Why PATTERNS.md FIRST, before any skill code
+
+If you start writing skill code (rule_skills/<id>/check.py) before PATTERNS.md exists, **stop**. Even a 200-byte initial PATTERNS.md ("decided Shannon-Huffman; first hard rule R028 will dictate verdict shape; sample corpus has bilingual table headings") sets the framework. You'll save 4× the time later not re-deriving the same shapes per rule.
+
+❌ "I'll write the skills first, then PATTERNS.md when I have insights."
+
+By the time you have N skills, you've made N implicit decisions about verdict shape, chunker boundaries, worker tier — each rule re-derives from scratch. Refactoring requires touching N files instead of one.
+
+✅ "Write PATTERNS.md, even tentatively, then re-read it before each new rule. Update it when discoveries change the framework."
+
+PATTERNS.md is your project's index card. Build it before the work, update it during the work, harvest it after.
+
+E2E #6 v070 surfaced this: DS only wrote PATTERNS.md after a rollback intervention; the per-skill design decisions before that point were already locked in and had to be re-touched. v0.7.1 reinforced this guidance.
 
 The engine's filesystem-derived milestones (Group A v0.7.0) verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract.
