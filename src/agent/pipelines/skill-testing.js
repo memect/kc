@@ -14,6 +14,11 @@ export class SkillTestingPipeline extends Pipeline {
     this.iterationCount = 0;
     this._accuracyThreshold = 0.9;
     this._maxIterations = 20;
+    // v0.7.1 1b: rate-limit phaseMisfitHint firing for ephemeral
+    // sandbox tests. Caps at ~3 nudges per phase entry so the agent
+    // sees the path expectation but doesn't get spammed during a
+    // batch run.
+    this._misfit_nudge_count = 0;
     this._scanWorkspace();
   }
 
@@ -132,6 +137,12 @@ export class SkillTestingPipeline extends Pipeline {
    * v0.6.3 (#74): SKILL_TESTING runs check scripts against test samples and
    * measures accuracy. Writing distillation outputs or production results
    * here means phase boundaries got skipped.
+   *
+   * v0.7.1 1b: also nudges agents who run check scripts via sandbox_exec
+   * but don't persist verdicts. E2E #6 v070 surfaced this — both
+   * conductors batched tests in one sandbox_exec call, read pass/fail
+   * from stdout, then declared "testing done" while engine saw
+   * skillsTested=0 because nothing landed in a recognized path.
    */
   phaseMisfitHint(toolName, toolInput, result) {
     if (result?.isError) return null;
@@ -147,6 +158,34 @@ export class SkillTestingPipeline extends Pipeline {
       if (p.startsWith("output/results/")) {
         return `Writing under output/results/ is PRODUCTION_QC-phase work, but engine is in SKILL_TESTING. ${exitText}`;
       }
+    }
+
+    // v0.7.1 1b: sandbox_exec test-command nudge
+    if (toolName === "sandbox_exec") {
+      const cmd = String(toolInput?.command || "");
+      const looksLikeTest =
+        /python.*check.*\.py.*\.(txt|pdf|md|docx)/i.test(cmd) ||
+        /pytest|unittest|run_tests/i.test(cmd) ||
+        /python.*workflow.*\.py.*samples/i.test(cmd);
+      if (!looksLikeTest) return null;
+
+      const tested = Object.keys(this.skillsTested).length;
+      const total = this.skillsToTest.length;
+      // Already satisfied? Don't nudge.
+      if (total === 0 || tested >= total) return null;
+
+      // Rate-limit: ~3 per phase. Counter resets on phase entry
+      // (constructor) and on importState if available.
+      this._misfit_nudge_count = (this._misfit_nudge_count || 0) + 1;
+      if (this._misfit_nudge_count > 3) return null;
+
+      return (
+        `Engine derives skillsTested from rule_skills/<id>/test_results.json, ` +
+        `rule_skills/<id>/tests/, OR output/*.json with rule_id field. ` +
+        `Sandbox runs are ephemeral — record per-rule verdicts to one of ` +
+        `those paths before phase_advance. Currently engine sees ` +
+        `${tested}/${total} skills tested.`
+      );
     }
     return null;
   }
