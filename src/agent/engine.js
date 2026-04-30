@@ -507,6 +507,27 @@ export class AgentEngine {
   }
 
   /**
+   * v0.7.0 B3: Read rules/PATTERNS.md (project memory) for surfacing in
+   * the system prompt. Only loaded for phases where the agent owns
+   * decomposition decisions (skill_authoring + skill_testing — the two
+   * phases the work-decomposition skill operates in). Capped at ~5 KB
+   * so it stays trivial token-wise; if the file is larger, we truncate
+   * to the first 5 KB and append a "...truncated" marker so the agent
+   * knows to prune.
+   */
+  _readProjectMemory() {
+    if (!["skill_authoring", "skill_testing"].includes(this.currentPhase)) return null;
+    const p = path.join(this.workspace.cwd, "rules", "PATTERNS.md");
+    try {
+      if (!fs.existsSync(p)) return null;
+      const raw = fs.readFileSync(p, "utf-8");
+      const CAP = 5 * 1024;
+      if (raw.length <= CAP) return raw;
+      return raw.slice(0, CAP) + "\n\n…truncated at 5 KB — prune the least-actionable entries (work-decomposition skill: Sizing).";
+    } catch { return null; }
+  }
+
+  /**
    * Build the workspace/project directory state string for the system prompt.
    */
   _buildWorkspaceState() {
@@ -545,6 +566,7 @@ export class AgentEngine {
       skillIndex: this._skillLoader.formatForContext(this.currentPhase),
       pipelineState: this.pipelines[this.currentPhase]?.describeState?.() || null,
       workspaceState: this._buildWorkspaceState(),
+      projectMemory: this._readProjectMemory(),
     });
     const systemTokens = estimateTokens(systemPrompt);
     const messageTokens = estimateMessagesTokens(this.history.messages);
@@ -992,6 +1014,7 @@ export class AgentEngine {
       skillIndex: this._skillLoader.formatForContext(this.currentPhase),
       pipelineState,
       workspaceState: this._buildWorkspaceState(),
+      projectMemory: this._readProjectMemory(),
     });
     const tools = this.toolRegistry.schemasOpenai();
 

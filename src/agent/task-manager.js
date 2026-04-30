@@ -139,12 +139,23 @@ export class TaskManager {
   // --- Bulk creation from rule catalog ---
 
   /**
-   * Phases where one-task-per-rule is the natural unit of work.
-   * For BOOTSTRAP / RULE_EXTRACTION the unit is a regulation (one PDF → many rules);
-   * ralph-loop shouldn't drive per-rule there because the rules don't exist yet
-   * (or are the *output*, not the input) — see E2E #3 coverage check.
+   * Phases where the engine auto-creates one-task-per-rule on phase entry.
+   *
+   * v0.7.0 B2: empty by default. Agent owns TaskBoard decisions per the
+   * work-decomposition meta-meta skill — engine no longer assumes per-rule
+   * granularity is right. The agent reads the rule list from describeState
+   * and calls TaskCreate with whatever shape (single, grouped, range,
+   * non-rule) makes sense for the corpus.
+   *
+   * Override `KC_AGENT_OWNS_TASKBOARD=0` to restore v0.6.x behavior
+   * (engine auto-populates per-rule for skill_authoring + skill_testing).
+   * The override is a staged-rollout safety valve, not a long-lived
+   * config — slated for removal in v0.8.0 after E2E #6 validates the
+   * agent-owned default.
    */
-  static PER_RULE_PHASES = new Set(["skill_authoring", "skill_testing"]);
+  static PER_RULE_PHASES = (process.env.KC_AGENT_OWNS_TASKBOARD === "0")
+    ? new Set(["skill_authoring", "skill_testing"])
+    : new Set();
 
   /**
    * Create one task per rule for a given phase — but only if the phase's unit

@@ -20,6 +20,12 @@ const PHASE_RELEVANT_SKILLS = {
   "rule-extraction":     ["bootstrap", "rule_extraction"],
   "rule-graph":          ["rule_extraction", "skill_authoring"],
   "task-decomposition":  ["rule_extraction", "skill_authoring", "distillation"],
+  // v0.7.0 B1: work-decomposition teaches the system-level decomposition
+  // discipline (ordering, grouping, difficulty triage, PATTERNS.md memory).
+  // Distinct from task-decomposition (per-rule sub-tasks). Loaded on
+  // rule_extraction → skill_authoring transition where the agent owns
+  // the TaskBoard.
+  "work-decomposition":  ["rule_extraction", "skill_authoring"],
   "skill-authoring":     ["skill_authoring", "skill_testing"],
   "skill-to-workflow":   ["distillation"],
   "evolution-loop":      ["skill_testing", "distillation", "production_qc"],

@@ -149,12 +149,25 @@ export class ContextAssembler {
    * @param {string} [opts.pipelineState]
    * @param {string} [opts.workspaceState]
    * @param {string} [opts.skillIndex] - Brief index of available meta skills
+   * @param {string} [opts.projectMemory] - v0.7.0 B3: rules/PATTERNS.md
+   *   content. Capped at ~5 KB by the caller. Surfaced for phases the
+   *   work-decomposition skill operates in (skill_authoring + skill_testing).
    * @returns {string}
    */
-  build({ agentMd, pipelineState, workspaceState, skillIndex } = {}) {
+  build({ agentMd, pipelineState, workspaceState, skillIndex, projectMemory } = {}) {
     const parts = [AGENT_IDENTITY];
     if (agentMd) parts.push(agentMd);
     if (skillIndex) parts.push(skillIndex);
+    if (projectMemory) {
+      parts.push(
+        "## Project memory (rules/PATTERNS.md)\n\n" +
+        "Patterns + decisions you've accumulated this session. Treat as " +
+        "your prior decisions on this corpus — apply them; update the file " +
+        "when you discover something better. The work-decomposition skill " +
+        "covers what to write here vs. NOT to write.\n\n" +
+        "```markdown\n" + projectMemory.trim() + "\n```",
+      );
+    }
     if (pipelineState) parts.push(pipelineState);
     if (workspaceState) parts.push(workspaceState);
     return parts.join("\n\n");
