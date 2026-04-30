@@ -113,6 +113,37 @@ export class WorkspaceFileTool extends BaseTool {
     }
     const resolved = this._resolveForScope(filePath, scope);
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
+
+    // v0.7.0 Group M (#84 remainder): on case-insensitive filesystems
+    // (macOS/Windows defaults), warn when the target's basename collides
+    // with an existing sibling differing only in case. Write proceeds
+    // — agents may legitimately overwrite — but the agent gets visible
+    // signal so it doesn't end up confused like E2E #5 GLM ("SKILL.md
+    // disappeared" when the inode was shared with skill.md). Workspace-
+    // scope only; project-dir scope is the user's territory.
+    let collisionNote = "";
+    if (
+      scope === "workspace" &&
+      this._workspace.fsCaseSensitive === false
+    ) {
+      try {
+        const parent = path.dirname(resolved);
+        const targetBase = path.basename(resolved);
+        const targetLower = targetBase.toLowerCase();
+        const siblings = fs.readdirSync(parent);
+        const collision = siblings.find(
+          (s) => s !== targetBase && s.toLowerCase() === targetLower,
+        );
+        if (collision) {
+          collisionNote =
+            ` ⚠ case-collision: case-insensitive filesystem already has '${collision}'` +
+            ` at this path; both names resolve to the same inode. Pick one canonical case` +
+            ` (lowercase preferred for skill files) and use it consistently — otherwise` +
+            ` archive_file / Read on either name affects the other.`;
+        }
+      } catch { /* readdirSync may fail on a fresh dir; that's fine, no collision possible */ }
+    }
+
     fs.writeFileSync(resolved, content, "utf-8");
 
     // Auto-commit to git for workspace writes (silently no-ops if gitignored or git unavailable)
@@ -124,6 +155,7 @@ export class WorkspaceFileTool extends BaseTool {
     const label = scope === "project" ? `[project] ${filePath}` : filePath;
     let msg = `Wrote ${content.length} chars to ${label}`;
     if (traceId) msg += ` [trace: ${traceId}]`;
+    if (collisionNote) msg += collisionNote;
     return new ToolResult(msg);
   }
 
