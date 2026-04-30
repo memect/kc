@@ -194,20 +194,32 @@ export class DocumentChunkTool extends BaseTool {
       };
     }
 
-    // For other formats (.docx, .xlsx, etc): read as UTF-8 best-effort.
-    // Upstream agent should call document_parse first and then document_chunk
-    // on the parsed output directly — current MVP keeps the tool surface small.
+    // v0.7.0 G (#91): route .docx / .doc / others through native parser
+    // dispatcher (mammoth / word-extractor / LibreOffice fallback).
+    // Replaces the prior "read as UTF-8" stub which produced binary
+    // garbage on .docx and forced agents to call document_parse + chunk
+    // separately. extractText() returns clean text or a structured
+    // failure that downstream can surface to the agent.
     try {
-      const txt = fs.readFileSync(absPath, "utf-8");
-      return {
-        source_file: baseName,
-        total_pages: 1,
-        blocks: [{ page: 1, markdown: txt }],
-      };
-    } catch {
+      const { extractText } = await import("../document-parser.js");
+      const result = await extractText(absPath);
+      if (result.ok && result.text) {
+        return {
+          source_file: baseName,
+          total_pages: 1,
+          blocks: [{ page: 1, markdown: result.text }],
+          parse_via: result.via,
+        };
+      }
       return {
         source_file: baseName, total_pages: 0, blocks: [],
-        parse_error: `Unsupported format '${suffix}'. Run document_parse first and use its output, or stick to .pdf / .md / .txt.`,
+        parse_error: result.error ||
+          `Unsupported format '${suffix}'. Install mammoth / word-extractor or rely on LibreOffice fallback.`,
+      };
+    } catch (e) {
+      return {
+        source_file: baseName, total_pages: 0, blocks: [],
+        parse_error: `parse exception: ${e?.message || String(e)}`,
       };
     }
   }
