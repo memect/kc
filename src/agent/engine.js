@@ -1043,6 +1043,11 @@ export class AgentEngine {
 
       try {
         let collectedText = "";
+        // v0.7.0 L (#76): Anthropic-only — accumulator for the
+        // signature_delta blob that proves the thinking content came
+        // from Anthropic's model. Required alongside thinking text on
+        // multi-turn replay.
+        let collectedReasoningSignature = "";
         // v0.6.3: hybrid reasoning models (GLM-5.1, DeepSeek v4, MiMo v2.5,
         // Qwen3, ...) stream `delta.reasoning_content` separately from
         // `delta.content`. DeepSeek's strict API requires this field to be
@@ -1076,6 +1081,14 @@ export class AgentEngine {
           if (delta.reasoning_content) {
             yield new AgentEvent({ type: "reasoning_delta", text: delta.reasoning_content });
             collectedReasoning += delta.reasoning_content;
+          }
+
+          // v0.7.0 L (#76): Anthropic-only signature_delta. Carries the
+          // opaque proof-of-thinking blob that strict-mode multi-turn
+          // requires alongside the thinking text. OpenAI-shape providers
+          // never emit this delta; it's a no-op for them.
+          if (delta.reasoning_signature) {
+            collectedReasoningSignature += delta.reasoning_signature;
           }
 
           if (delta.tool_calls) {
@@ -1112,6 +1125,12 @@ export class AgentEngine {
           this._sessionUsesReasoning = true;
         } else if (this._sessionUsesReasoning) {
           assistantMsg.reasoning_content = "";
+        }
+        // v0.7.0 L (#76): persist Anthropic signature alongside thinking.
+        // Always stored together — if either is missing, _buildAnthropicBody
+        // skips the thinking-block replay (would be rejected as malformed).
+        if (collectedReasoningSignature) {
+          assistantMsg.reasoning_signature = collectedReasoningSignature;
         }
         if (toolCallsAcc.size > 0) {
           assistantMsg.tool_calls = Array.from(toolCallsAcc.values()).map((tc) => ({

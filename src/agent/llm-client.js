@@ -123,6 +123,18 @@ export class LLMClient {
       } else if (msg.role === "assistant" && msg.tool_calls) {
         // Convert OpenAI tool_calls to Anthropic content blocks
         const content = [];
+        // v0.7.0 L (#76): replay thinking block FIRST when prior turn
+        // produced one. Anthropic strict-mode requires the signature
+        // alongside the thinking text — drop either and the API rejects
+        // multi-turn. The thinking block belongs at the top of the
+        // assistant content array, before text and tool_use blocks.
+        if (msg.reasoning_content && msg.reasoning_signature) {
+          content.push({
+            type: "thinking",
+            thinking: msg.reasoning_content,
+            signature: msg.reasoning_signature,
+          });
+        }
         if (msg.content) content.push({ type: "text", text: msg.content });
         for (const tc of msg.tool_calls) {
           let input = {};
@@ -134,6 +146,16 @@ export class LLMClient {
             input,
           });
         }
+        filteredMessages.push({ role: "assistant", content });
+      } else if (msg.role === "assistant" && msg.reasoning_content && msg.reasoning_signature) {
+        // v0.7.0 L: assistant turn with thinking but no tool_calls — wrap
+        // content as the dual-block form so the thinking block round-trips.
+        const content = [{
+          type: "thinking",
+          thinking: msg.reasoning_content,
+          signature: msg.reasoning_signature,
+        }];
+        if (msg.content) content.push({ type: "text", text: msg.content });
         filteredMessages.push({ role: "assistant", content });
       } else {
         filteredMessages.push(msg);
@@ -457,6 +479,27 @@ export class LLMClient {
                 }],
               },
             }],
+          };
+        }
+        // v0.7.0 L (#76): Anthropic streams reasoning ("thinking") as its
+        // own content block type. Normalize to the same `reasoning_content`
+        // field the OpenAI-compatible providers (DeepSeek, GLM-5.1, MiMo)
+        // already use, so engine.js's v0.6.3 round-trip path handles it
+        // without an Anthropic-specific branch.
+        //
+        // Anthropic also emits a signature_delta that proves the thinking
+        // came from Anthropic's model — the next-turn body MUST include it
+        // alongside the thinking text for strict-mode multi-turn to work.
+        // We carry it through as `reasoning_signature` (custom field) so
+        // _buildAnthropicBody can re-attach it.
+        if (delta?.type === "thinking_delta") {
+          return {
+            choices: [{ delta: { reasoning_content: delta.thinking } }],
+          };
+        }
+        if (delta?.type === "signature_delta") {
+          return {
+            choices: [{ delta: { reasoning_signature: delta.signature } }],
           };
         }
         return null;
