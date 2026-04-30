@@ -1514,6 +1514,18 @@ export class AgentEngine {
     this.workspace.setPhase(this.currentPhase);
     this._createTasksForPhase(this.currentPhase);
 
+    // v0.7.0 N (#94): give the entered pipeline a chance to do
+    // phase-entry setup. Used by finalization to copy the release
+    // template into output/releases/v1/. Other pipelines are no-ops.
+    // Wrapped so a failure here can't trap the phase advance.
+    try { this.pipelines[this.currentPhase]?.onPhaseEnter?.({ fromPhase, workspace: this.workspace }); }
+    catch (e) {
+      this.eventLog.append("phase_enter_hook_failed", {
+        phase: this.currentPhase,
+        error: e?.message || String(e),
+      });
+    }
+
     // v0.6.2 J2: on rollback, reset the rolled-FROM phase's lastReady
     // edge-trigger so that if the agent revisits it and re-flips
     // exit-criteria true, _maybeAutoAdvance will fire correctly. Without
