@@ -2036,11 +2036,23 @@ export class AgentEngine {
 
     // Auto-continue through pending tasks
     while (this.taskManager.getNextPending()) {
-      // Context safety: force compaction if above 70%, or light compaction if history is long
+      // v0.7.0 #93: budget-aware compact threshold. The old
+      // `messages.length > 15` was message-count-based and frozen
+      // from when KC ran on smaller contexts. With 200K+ budgets it
+      // fired on every iteration of any non-trivial task — E2E #5
+      // GLM saw 76 memory_pressure events and DS saw 46 because
+      // compact pre-empted natural windowing. Replace with token-
+      // budget threshold (default 60% of context, configurable via
+      // KC_COMPACT_THRESHOLD_TOKENS) so compact runs when there's
+      // actual pressure, not just when message count crossed an
+      // ancient heuristic.
       const stats = this.getContextStats();
+      const thresholdTokens = parseInt(
+        process.env.KC_COMPACT_THRESHOLD_TOKENS || "0", 10,
+      ) || Math.round((this.config.kcContextLimit || 200000) * 0.6);
       if (stats.percentage > 70) {
         await this.compact();
-      } else if (this.history.messages.length > 15) {
+      } else if (stats.totalTokens > thresholdTokens) {
         await this.compact({ recentCount: 8 });
       }
 

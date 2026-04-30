@@ -151,8 +151,23 @@ export class ReleaseTool extends BaseTool {
     }
 
     if (ruleEntries.length === 0) {
+      // v0.7.0 #98: actionable error. The previous "no workflows found
+      // for any selected rule" message left agents confused (E2E #5 GLM
+      // dismissed it with "不影响系统功能" and shipped anyway, with a
+      // broken bundle). Spell out the canonical layout, the accepted
+      // alternatives, and where the agent's actual files are.
       return new ToolResult(
-        `no workflows found for any selected rule. Missing: ${missingWorkflows.join(", ")}`,
+        `Release tool found no workflows for the selected rules.\n\n` +
+        `Missing: ${missingWorkflows.slice(0, 10).join(", ")}` +
+        (missingWorkflows.length > 10 ? ` (+ ${missingWorkflows.length - 10} more)` : "") + "\n\n" +
+        `Accepted layouts (release tool checks all three):\n` +
+        `  workflows/<ruleId>/workflow_v1.py    (canonical)\n` +
+        `  workflows/<ruleId>_workflow.py       (flat)\n` +
+        `  workflows/<ruleId>.json              (regex_skill manifest with .entry path)\n\n` +
+        `If your workflow files exist under a different layout, either ` +
+        `relocate them or write a workflows/<ruleId>.json manifest pointing ` +
+        `at the actual file. Do NOT ship the release without workflows — ` +
+        `the run.py harness needs them at runtime.`,
         true,
       );
     }
@@ -251,15 +266,42 @@ export class ReleaseTool extends BaseTool {
   }
 
   _findLatestWorkflow(ruleId) {
+    // Canonical: workflows/<ruleId>/workflow_v#.py (subdirectory layout)
     const wfDir = path.join(this._workspace.cwd, "workflows", ruleId);
-    if (!fs.existsSync(wfDir) || !fs.statSync(wfDir).isDirectory()) return null;
-    const entries = fs.readdirSync(wfDir).sort();
-    const versioned = entries.filter((f) => /^workflow_v\d+\.py$/.test(f));
-    if (versioned.length > 0) return path.join(wfDir, versioned[versioned.length - 1]);
-    const any = entries.find((f) => f.endsWith(".py") && f.toLowerCase().includes("workflow"));
-    if (any) return path.join(wfDir, any);
-    const py = entries.find((f) => f.endsWith(".py"));
-    return py ? path.join(wfDir, py) : null;
+    if (fs.existsSync(wfDir) && fs.statSync(wfDir).isDirectory()) {
+      const entries = fs.readdirSync(wfDir).sort();
+      const versioned = entries.filter((f) => /^workflow_v\d+\.py$/.test(f));
+      if (versioned.length > 0) return path.join(wfDir, versioned[versioned.length - 1]);
+      const any = entries.find((f) => f.endsWith(".py") && f.toLowerCase().includes("workflow"));
+      if (any) return path.join(wfDir, any);
+      const py = entries.find((f) => f.endsWith(".py"));
+      if (py) return path.join(wfDir, py);
+    }
+
+    // v0.7.0 #98: fall back to flat layouts seen in E2E #5 — both DS
+    // and GLM produced workflows that release.js's strict per-dir check
+    // missed. Accept these so the release tool actually packages the
+    // agent's work instead of returning "no workflows found".
+    const flatRoot = path.join(this._workspace.cwd, "workflows");
+    if (fs.existsSync(flatRoot)) {
+      // GLM-style flat: workflows/R001_workflow.py
+      const flat = path.join(flatRoot, `${ruleId}_workflow.py`);
+      if (fs.existsSync(flat) && fs.statSync(flat).isFile()) return flat;
+      // DS-style manifest: workflows/R001.json (regex_skill pointer)
+      const manifest = path.join(flatRoot, `${ruleId}.json`);
+      if (fs.existsSync(manifest) && fs.statSync(manifest).isFile()) {
+        try {
+          const data = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+          if (data?.entry) {
+            const entryPath = path.isAbsolute(data.entry)
+              ? data.entry
+              : path.join(this._workspace.cwd, data.entry);
+            if (fs.existsSync(entryPath)) return entryPath;
+          }
+        } catch { /* manifest unreadable; skip */ }
+      }
+    }
+    return null;
   }
 
   _resolveFixture(rel) {
