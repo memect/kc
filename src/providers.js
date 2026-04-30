@@ -47,6 +47,14 @@ const PROVIDERS = [
     apiFormat: "openai",
     modelsEndpoint: "/models",
     contextLimit: 200000, // GLM-5.1, Kimi-K2.5 — 200K native
+    // v0.7.0 E3 (#96): provider hardCap. SiliconFlow's GLM-5.1
+    // deployment caps prompts at ~202,752 tokens despite the model's
+    // native 1M — E2E #5 GLM hit HTTP 413 at 203,363 tokens with
+    // KC_CONTEXT_LIMIT=400000 set. providerContextCap protects against
+    // user-set context limits exceeding the deployment hard ceiling.
+    // Effective limit becomes min(providerContextCap, modelContextLimit,
+    // KC_CONTEXT_LIMIT). When undefined, no provider cap applied.
+    providerContextCap: 200000,
     defaultModel: getTierConfig("siliconflow").conductor || "glm-5",
     defaultTiers: getTierConfig("siliconflow").llm,
     defaultVlm: getTierConfig("siliconflow").vlm,

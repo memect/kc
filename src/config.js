@@ -131,14 +131,38 @@ export function loadSettings(workspacePath) {
     // (session-scoped override for benchmarking long-context models without
     // editing global config), then workspace .env, then global config, then
     // provider.contextLimit, then a safe 200000 fallback.
-    kcContextLimit: parseInt(
-      penv.KC_CONTEXT_LIMIT ||
-        env.KC_CONTEXT_LIMIT ||
-        gc.kc_context_limit?.toString() ||
-        providerDef?.contextLimit?.toString() ||
-        "200000",
-      10,
-    ),
+    //
+    // v0.7.0 E3 (#96): providerContextCap is the deployment hard ceiling
+    // (e.g., SiliconFlow's GLM-5.1 caps at 202_752 despite the model's
+    // native 1M). Effective contextLimit = min(user-requested,
+    // providerContextCap). E2E #5 GLM hit HTTP 413 because user set
+    // KC_CONTEXT_LIMIT=400000 but the deployment refused at ~203k.
+    // The cap is applied AFTER user-priority resolution so the user
+    // can't accidentally bypass it.
+    kcContextLimit: (() => {
+      const requested = parseInt(
+        penv.KC_CONTEXT_LIMIT ||
+          env.KC_CONTEXT_LIMIT ||
+          gc.kc_context_limit?.toString() ||
+          providerDef?.contextLimit?.toString() ||
+          "200000",
+        10,
+      );
+      const cap = providerDef?.providerContextCap;
+      if (typeof cap === "number" && cap > 0 && requested > cap) {
+        // Surface a one-time warning so users notice the clamp without
+        // burying it in events.jsonl.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[config] KC_CONTEXT_LIMIT=${requested} clamped to ${cap} ` +
+          `(provider ${providerDef.id} hardCap). E2E #5 hit HTTP 413 at ` +
+          `~203k on SiliconFlow GLM-5.1; cap protects against deployment ` +
+          `hard-ceiling rejections.`,
+        );
+        return cap;
+      }
+      return requested;
+    })(),
     toolOutputOffloadTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_TOKENS || gc.tool_output_offload_tokens?.toString() || "2000", 10),
     toolOutputOffloadErrorTokens: parseInt(env.TOOL_OUTPUT_OFFLOAD_ERROR_TOKENS || gc.tool_output_offload_error_tokens?.toString() || "500", 10),
     maxMessageTokens: parseInt(env.MAX_MESSAGE_TOKENS || gc.max_message_tokens?.toString() || "60000", 10),
