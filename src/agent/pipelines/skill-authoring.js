@@ -76,15 +76,37 @@ export class SkillAuthoringPipeline extends Pipeline {
       "## Phase: SKILL_AUTHORING\n" +
       "Write verification skills for each extracted rule. Skills are first-class " +
       "deliverables — they may serve as the production solution when worker LLM " +
-      "workflows are insufficient. Follow Anthropic skill-creator format. This is " +
-      "BUILD mode.\n\n" +
+      "workflows are insufficient. Follow the canonical skill-folder layout " +
+      "(below). This is BUILD mode.\n\n" +
+      // v0.7.0 D1: inline the canonical folder structure spec so the
+      // agent sees it in every system prompt of this phase. E2E #5
+      // showed three of four contestants ignored the meta-meta spec
+      // because it required navigating to read the SKILL.md file
+      // separately. Inlining costs ~250 tokens and dramatically improves
+      // first-attempt structural compliance.
+      "### Canonical skill folder layout\n" +
+      "```\n" +
+      "rule_skills/\n" +
+      "  R014/                                # one dir per rule (or grouped range)\n" +
+      "    SKILL.md                           # YAML frontmatter (name+description) + methodology\n" +
+      "    check_r014.py                      # entry point: def check_rule|verify|check|evaluate(...)\n" +
+      "    references/regulation.md           # verbatim regulation text (optional)\n" +
+      "    references/interpretation.md       # edge-case notes (optional)\n" +
+      "    assets/test_cases.json             # annotated samples + expected verdicts (optional)\n" +
+      "```\n" +
+      "Validator-accepted alternatives: `scripts/check_r###.py` (under scripts/) " +
+      "instead of root-level. SKILL.md filename is case-insensitive (skill.md " +
+      "is also accepted). The check.py just needs a top-level `def` at module " +
+      "level — entry-point name does not have to match a strict pattern.\n\n" +
       // D2: soft granularity nudge
       "**Granularity preference:** 1 rule = 1 skill directory. Group rules into " +
       "the same file ONLY when they share evidence and fail together (e.g. " +
       "siblings from the same required-fields table). When grouping, name the " +
       "file with the range: `check_r002_r007.py`. Downstream consumers " +
-      "(workflow-run, dashboards) count rule coverage by parsing these names, " +
-      "so the file-naming matters.\n\n" +
+      "(workflow-run, dashboards, release tool) count rule coverage by parsing " +
+      "these names, so the file-naming matters. (Read `meta-meta/work-decomposition` " +
+      "for the full grouping/ordering decision framework + PATTERNS.md memory " +
+      "discipline.)\n\n" +
       "**Do not write to rules/catalog.json via sandbox_exec.** Use the " +
       "`rule_catalog` tool for any catalog edits — sandbox_exec bypasses the " +
       "workspace file lock and races with parallel workers."

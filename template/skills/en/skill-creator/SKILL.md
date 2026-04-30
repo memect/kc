@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, update or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+description: Anthropic's skill-scaffolding toolkit — use for iterating/improving existing skills or running evals on them, NOT as the primary reference for building KC's per-rule verification skills. For KC rule skills, read `meta-meta/skill-authoring` first (canonical folder layout + granularity rules + KC-specific check.py entry-point conventions) and `meta-meta/work-decomposition` for ordering + grouping decisions. This skill applies once per-rule skills exist and the agent wants to optimize their description/triggering or run formal evals.
 ---
 
 # Skill Creator
