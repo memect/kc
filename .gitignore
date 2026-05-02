@@ -13,6 +13,9 @@ archive/
 /DEV_LOG.md
 /CLAUDE.md
 /docs/
+# Personal Claude skills (e.g., e2e-audit). NOT template/skills/ which
+# is shipped — leading slash anchors to root.
+/skills/
 
 # Belt-and-suspenders in case someone recreates these at the root.
 webfront/
