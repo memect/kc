@@ -431,3 +431,58 @@ Re-run the E2E #5 setup on `archive/test_data_3_lite/` post-v0.7.0:
 docs (`archive/e2e_test_20260428_*`), `docs/update_design_v6.md`
 deferred sections, the v0.7.0 plan in `~/.claude/plans/`. Next:
 E2E #6 verification, then v0.7.1 plan with the deferred items.*
+
+---
+
+## v0.7.2 patches (2026-05-02)
+
+E2E #7 verified v0.7.1 across two parallel conductor sessions
+(DeepSeek-V4-Pro 400K + GLM-5.1 200K) on `archive/test_data_3_lite/`.
+Both reached `finalization` and produced shippable v1.0 releases.
+The architectural payload held. Five engine bugs surfaced (3
+confirmed in both audits, 2 surfaced only on GLM's deeper artifact
+tree); four skill teaching gaps to close.
+
+**Audits and synthesis**:
+
+- `archive/e2e_test_20260501_v071_observations.md`
+- `archive/e2e_test_20260501_v071_ds_session_audit.md`
+- `archive/e2e_test_20260502_v071_glm_session_audit.md`
+- `archive/e2e_test_20260502_v071_session_audit.md` (combined)
+
+**Group 1 — engine bug fixes** (commit `20f18c9`): five small,
+location-confirmed fixes — Group 1a path traversal too shallow
+(missed GLM's `output/results/skill_test/full_test_results_v[1-6].json`
+at depth 4); `kc_beta_version` hardcoded `"0.5.2"` in `engine.js:424`;
+`confidence_calibration.json` ships empty even with QC data on disk;
+two release dirs coexist (template + customized); bootstrap refusals
+return empty `engineCounts`.
+
+**Group 2 — skill teaching additions** (commit `75b6ff6`): four
+strands — distillation decision rubric for when regex isn't enough,
+rule extraction applicability sanity check (catches scope-too-narrow
+rules pre-skill-authoring), clearer canonical-relationship example
+based on GLM's clean 1:1 thin-wrapper pattern, and bless multiple
+methodology-persistence formats (PATTERNS.md OR per-phase logs OR
+AGENT.md) — accommodates the idiom each conductor naturally adopts.
+
+**Group 3 — e2e-audit skill self-improvement** (commit `3756dee`):
+auditor-side updates so the next audit doesn't reinvent methodology.
+New event-schema entries (`tool_args_recovered`, `tool_args_parse_failed`,
+`context_windowed`); walk-all-output-paths diagnostic snippet;
+v0.7.2+ regression-check guidance with one-shot verifications for
+each Group 1 fix.
+
+**Group 4 — synthesis + release wrap** (this commit): combined
+cross-session audit, package.json bump, DEV_LOG entry, this design
+doc subsection, git tag `v0.7.2`.
+
+E2E #8 to verify post-tag, post-publish. Targets: force-bypass
+count ≤ 3/6 transitions per session (was 5/6 in v0.7.1), at least
+2 of 6 transitions natural, all five v0.7.2 fixes verified
+non-regressed, at least one conductor reaches for tier1-2 LLM
+workers autonomously without user V2 prompt, inactive-rule rate
+< 25% of catalog. The personal `skills/e2e-audit/` skill encodes
+the verification methodology.
+
+*Drafted 2026-05-02 post-E2E-#7 dual-conductor verification.*

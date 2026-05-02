@@ -1,5 +1,142 @@
 # KC Agent CLI — Development Log
 
+## v0.7.2 (2026-05-02) — patches after E2E #7 v0.7.1 verification
+
+E2E #7 ran v0.7.1 in parallel with two conductors (DeepSeek-V4-Pro
++ GLM-5.1) on `archive/test_data_3_lite/` (91 samples incl. 4
+seeded-violation trust 三季度 cases). Both reached `finalization`.
+Audits:
+
+- `archive/e2e_test_20260501_v071_observations.md` — live observations
+- `archive/e2e_test_20260501_v071_ds_session_audit.md` — DS substance
+- `archive/e2e_test_20260502_v071_glm_session_audit.md` — GLM substance
+- `archive/e2e_test_20260502_v071_session_audit.md` — combined synthesis
+
+The v0.7.1 architecture stood. Both conductors produced shippable
+v1.0 releases. Five engine bugs surfaced (3 confirmed in both
+audits, 2 surfaced only on GLM's deeper artifact tree). Four skill
+teaching gaps to close. Plus updates to the personal e2e-audit skill
+so the next audit doesn't reinvent methodology.
+
+### Group 1 — engine bug fixes (20f18c9)
+
+- **1a — broaden `_milestone-derive.js` walk.** GLM wrote test
+  results to `output/results/skill_test/full_test_results_v[1-6].json`
+  (4 path components deep) — outside v0.7.1's 2-3-level walk. Switched
+  to recursive `walkFiles(maxDepth: 6)` + smarter collector that uses
+  rule-id shape regex (rejects sample_id hashes) + verdict-shape gate.
+  Verified offline: GLM 0→134 rule_ids credited, DS 21→86 (both above
+  catalog count).
+- **1b — `kc_beta_version` from `package.json`.** Was hardcoded
+  `"0.5.2"` in `engine.js:424`. Lifted `_readKcVersion()` from
+  `finalization.js` into `src/util/kc-version.js`; both engine and
+  finalization import it. Single source of truth.
+- **1c — auto-aggregate `confidence_calibration.json`.** Both v0.7.1
+  audits shipped releases with empty `historical_accuracy: {}`
+  despite per-rule QC data on disk. Release tool now walks `output/`
+  for `rule_stats_v*.json` and `full_test_results_v*.json`, computes
+  pass rates, writes calibration before the existing copy step.
+  Verified against GLM workspace: 97 rules with realistic per-rule
+  pass rates (e.g., D01-05 = 31% pass).
+- **1d — clean up template scaffold v1/.** Both audits shipped with
+  `releases/v1/` (template-derived, .tmpl files lingering) AND
+  `releases/v1-0/` (or `v1-0-hybrid/`). Conservative cleanup: only
+  delete v1/ if (slug != "v1") AND v1/ still contains .tmpl files.
+- **1e — bootstrap engineCounts.** `_buildEngineCountsBlock`
+  previously fell through to "" for bootstrap; agent saw refusals
+  with no telemetry. Added bootstrap case + new
+  `describeBootstrapChecklist()` method on InitializerPipeline.
+  Agent now sees `workspaceCreated`/`configReady`/`hasRegulations`/`hasSamples`.
+
+### Group 2 — skill teaching additions (75b6ff6)
+
+zh + en parity for all four. Existing zh files in `skill-to-workflow`
+and `rule-extraction` are English content (translation never done);
+mirror en changes verbatim. `work-decomposition` zh is genuinely
+Chinese; translated.
+
+- **2a — distillation decision rubric** (`skill-to-workflow`): new
+  "When regex alone isn't enough" subsection covering the four
+  signals (semantic / contextual / counterfactual / cross-field
+  arithmetic) and the three acceptable forms (pure regex with
+  documented limits / hybrid / pure LLM). Cost-aware tier choice
+  including the Qwen3.5 thinking-mode caveat.
+- **2b — rule extraction sanity check** (`rule-extraction`): new
+  "Sanity-check applicability against the sample corpus" section.
+  Tells agents to project applicability against samples after
+  extraction, flag 0-sample rules. Cites GLM 36/97 (37%)
+  inactive-rule rate.
+- **2c — clearer canonical-relationship example** (`work-decomposition`):
+  Extended the v0.7.1 anti-stub section with E2E #7 evidence (no
+  stubs in either run, but DS inverted the canonical/distilled
+  relationship). GLM's 1:1 thin-wrapper pattern is now the canonical
+  ✓ DO with the actual 52-line `workflow_v1.py` shape.
+- **2d — bless multiple persistence formats** (`work-decomposition`):
+  Replaced "Why PATTERNS.md FIRST" with "Persisted methodology —
+  PATTERNS.md OR phase logs OR AGENT.md decisions". The principle
+  is "persist before each phase advance, format flexible".
+  Accommodates GLM v071's pattern (rich phase docs + comprehensive
+  AGENT.md instead of PATTERNS.md).
+
+### Group 3 — e2e-audit skill self-improvement + scaffold (3756dee)
+
+The personal `skills/e2e-audit/` is auditor-side (not KC-facing).
+Updated so the next audit doesn't reinvent methodology.
+
+- **3a — event-schema additions**: `tool_args_recovered`,
+  `tool_args_parse_failed`, `context_windowed`. Each with data
+  shape, audit-side significance, threshold for flagging.
+- **3b — walk-all-output-paths snippet** (`references/snippets.md`):
+  diagnostic walker that surfaces every JSON under `output/` with
+  depth + rule-evidence flags. Useful pre/post engine-fix.
+- **3c — v0.7.2+ regression-check guidance** (in both `SKILL.md`
+  and snippets): five one-shots (one per Group 1 fix) the auditor
+  runs on every E2E #8+ session. Promote each to "expected
+  behavior" after 3+ consecutive runs hold.
+
+This commit also picks up the initial skill scaffold from prior
+turns (SKILL.md + 3 references), `CLAUDE.md` (project-root),
+and `scripts/bench-launch-v071.sh` (which was authored during
+E2E #7 setup but never staged).
+
+### Group 4 — synthesis + release wrap (this commit)
+
+`archive/e2e_test_20260502_v071_session_audit.md` — combined
+cross-session synthesis. Sections: headline, what both runs
+validated, where they diverged (rule decomposition, skill ↔
+workflow, methodology persistence, worker tier choice,
+ground-truth detection trade-off, engineering rigor), v0.7.1
+expectations confidently graded, bugs surfaced + their v0.7.2
+fix mappings, conductor traits worth carrying forward, recommended
+v0.7.2 forward decisions, E2E #8 expected outcomes.
+
+`docs/update_design_v7.md` appended with v0.7.2 patches subsection.
+
+### Critical files modified
+
+| File | Group | Change |
+|---|---|---|
+| `src/agent/pipelines/_milestone-derive.js` | 1a | walkFiles maxDepth + smarter collector |
+| `src/util/kc-version.js` (new) | 1b | extracted readKcVersion() |
+| `src/agent/engine.js` | 1b, 1e | readKcVersion + bootstrap engineCounts case |
+| `src/agent/pipelines/finalization.js` | 1b | uses shared readKcVersion |
+| `src/agent/tools/release.js` | 1c, 1d | auto-aggregate calibration + cleanup template scaffold |
+| `src/agent/pipelines/initializer.js` | 1e | describeBootstrapChecklist() |
+| `template/skills/{zh,en}/meta-meta/skill-to-workflow/SKILL.md` | 2a | distillation rubric |
+| `template/skills/{zh,en}/meta-meta/rule-extraction/SKILL.md` | 2b | applicability sanity check |
+| `template/skills/{zh,en}/meta-meta/work-decomposition/SKILL.md` | 2c, 2d | canonical relationship + persistence formats |
+| `skills/e2e-audit/references/event-schema.md` | 3a | new event types |
+| `skills/e2e-audit/references/snippets.md` | 3b, 3c | walker + regression-check |
+| `skills/e2e-audit/SKILL.md` | 3c | regression-check guidance |
+| `archive/e2e_test_20260502_v071_session_audit.md` (new) | 4a | synthesis |
+| `package.json` | 4b | 0.7.1 → 0.7.2 |
+| `DEV_LOG.md` | 4b | this entry |
+| `docs/update_design_v7.md` | 4b | v0.7.2 patches subsection |
+
+E2E #8 to verify post-tag, post-publish.
+
+---
+
 ## v0.7.1 (2026-04-30) — patch after E2E #6 v070 verification
 
 Four commits closing the narrow gaps surfaced by the v0.7.0
