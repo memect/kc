@@ -7,6 +7,13 @@ test_data/review_dashboard.html
 # Downstream apps, test data, ad-hoc archives — not part of kc core.
 archive/
 
+# Personal dev notes + design docs. Kept locally; shared manually with
+# team / company / users at author's discretion. Untracked from v0.7.2
+# onward.
+/DEV_LOG.md
+/CLAUDE.md
+/docs/
+
 # Belt-and-suspenders in case someone recreates these at the root.
 webfront/
 test_data_1/
