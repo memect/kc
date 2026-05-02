@@ -178,7 +178,21 @@ export class ReleaseTool extends BaseTool {
                        path.join(bundleAbs, "glossary.json"), { fallback: '{"version":1,"entries":[]}\n' });
     this._copyIfExists(path.join(this._workspace.cwd, "corner_cases.json"),
                        path.join(bundleAbs, "corner_cases.json"), { fallback: '[]\n' });
-    this._copyIfExists(path.join(this._workspace.cwd, "confidence_calibration.json"),
+    // v0.7.2 1c: auto-aggregate from output/ if no calibration file at
+    // workspace root. Both v0.7.1 audit runs (DS + GLM) shipped releases
+    // with empty `historical_accuracy: {}` despite having per-rule QC
+    // data on disk under output/ — the release tool just passed the
+    // file through and emitted a stub on miss. We try to populate from
+    // known QC artifact shapes here; if nothing matches, fall through
+    // to the existing stub fallback.
+    const calibSrc = path.join(this._workspace.cwd, "confidence_calibration.json");
+    if (!fs.existsSync(calibSrc)) {
+      const aggregated = this._aggregateAccuracyFromOutput();
+      if (aggregated && Object.keys(aggregated.historical_accuracy).length > 0) {
+        fs.writeFileSync(calibSrc, JSON.stringify(aggregated, null, 2) + "\n", "utf-8");
+      }
+    }
+    this._copyIfExists(calibSrc,
                        path.join(bundleAbs, "confidence_calibration.json"),
                        { fallback: '{"historical_accuracy":{}}\n' });
 
@@ -232,6 +246,30 @@ export class ReleaseTool extends BaseTool {
       .replace(/\{NOTES_BLOCK\}/g, notesBlock)
       .replace(/\{RULES_LIST\}/g, rulesList);
     fs.writeFileSync(path.join(bundleAbs, "README.md"), readme, "utf-8");
+
+    // v0.7.2 1d: clean up the template scaffold dir if a customized
+    // release was just written alongside it. Both v0.7.1 audit runs
+    // shipped with `output/releases/v1/` (template-derived, .tmpl
+    // files lingering) AND `output/releases/v1-0/` (or v1-0-hybrid/)
+    // — the customized release. The pre-scaffold is meant as a hint;
+    // once the agent calls `release(label="v1-0")` and we've written
+    // the real bundle, the unedited scaffold is just clutter.
+    //
+    // Conservative gate: only delete a sibling `v1/` if BOTH (a) we
+    // didn't just write to v1/ ourselves, AND (b) it still contains
+    // .tmpl files (signature of unedited template). If the agent
+    // intentionally edited v1/ in place (removing .tmpl), our cleanup
+    // leaves it alone.
+    if (slug !== "v1") {
+      const tmplScaffold = path.join(this._workspace.resolvePath(path.join("output", "releases")), "v1");
+      if (fs.existsSync(tmplScaffold) && fs.statSync(tmplScaffold).isDirectory()) {
+        let hasTmpl = false;
+        try { hasTmpl = fs.readdirSync(tmplScaffold).some((f) => f.endsWith(".tmpl")); } catch { /* ignore */ }
+        if (hasTmpl) {
+          try { fs.rmSync(tmplScaffold, { recursive: true, force: true }); } catch { /* best-effort */ }
+        }
+      }
+    }
 
     // Bundle dir is in output/ (gitignored). Snapshot manifest in snapshots/ IS tracked.
     const lines = [
@@ -317,6 +355,118 @@ export class ReleaseTool extends BaseTool {
       if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
     }
     return null;
+  }
+
+  // v0.7.2 1c: walk output/ for QC artifacts and aggregate per-rule
+  // accuracy. Recognized shapes (covering DS + GLM v0.7.1 audit runs):
+  //
+  //   rule_stats_v*.json — {<rule_id>: {PASS: N, FAIL: N, NOT_APPLICABLE: N, ERROR: N}}
+  //     (GLM produced 4 versions; pick the highest)
+  //   full_test_results_v*.json — {<sample_id>: {results: {<rule_id>: {verdict}}}}
+  //     (GLM; accumulate verdicts per rule across samples)
+  //   skill_test_*.json — {<doc_name>: {<rule_id>: bool}} (DS shape)
+  //
+  // Returns null if no recognized artifact, or an object with
+  //   { historical_accuracy: {<rule_id>: {pass_rate, n_samples, ...}}, computed_at, source_files }
+  // suitable for confidence_calibration.json.
+  _aggregateAccuracyFromOutput() {
+    const ruleIdShape = /^[A-Za-z][A-Za-z0-9_-]{0,29}$/;
+    const isRuleId = (s) => typeof s === "string" && ruleIdShape.test(s) && /\d/.test(s);
+    const tally = new Map();  // rule_id -> {pass, fail, na, n}
+    const sourceFiles = [];
+    const bump = (rid, kind) => {
+      if (!isRuleId(rid)) return;
+      const t = tally.get(rid) || { pass: 0, fail: 0, na: 0, n: 0 };
+      t[kind] += 1;
+      t.n += 1;
+      tally.set(rid, t);
+    };
+    const outputDir = path.join(this._workspace.cwd, "output");
+    if (!fs.existsSync(outputDir)) return null;
+
+    // Collect all .json files under output/ (depth limited)
+    const files = [];
+    const stack = [{ dir: outputDir, depth: 0 }];
+    while (stack.length) {
+      const { dir, depth } = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (e.name.startsWith(".") || e.name === "__pycache__") continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (depth < 6) stack.push({ dir: p, depth: depth + 1 });
+        } else if (e.isFile() && e.name.endsWith(".json")) {
+          files.push({ path: p, name: e.name });
+        }
+      }
+    }
+
+    // 1) Prefer rule_stats_v<N>.json (highest version) — direct counts
+    const ruleStatsFiles = files
+      .filter((f) => /^rule_stats(?:_v\d+)?\.json$/i.test(f.name))
+      .map((f) => ({ ...f, ver: (f.name.match(/_v(\d+)/) || [0, 0])[1] | 0 }))
+      .sort((a, b) => b.ver - a.ver);
+    if (ruleStatsFiles.length > 0) {
+      const top = ruleStatsFiles[0];
+      try {
+        const d = JSON.parse(fs.readFileSync(top.path, "utf-8"));
+        for (const [rid, stats] of Object.entries(d)) {
+          if (!isRuleId(rid) || !stats || typeof stats !== "object") continue;
+          const pass = stats.PASS | 0, fail = stats.FAIL | 0;
+          const na = stats.NOT_APPLICABLE | stats.NA | 0;
+          const t = tally.get(rid) || { pass: 0, fail: 0, na: 0, n: 0 };
+          t.pass += pass; t.fail += fail; t.na += na; t.n += pass + fail + na;
+          tally.set(rid, t);
+        }
+        sourceFiles.push(path.relative(this._workspace.cwd, top.path));
+      } catch { /* fall through to other shapes */ }
+    }
+
+    // 2) Fallback: full_test_results*.json with nested {sample_id: {results: {rid: {verdict}}}}
+    if (tally.size === 0) {
+      const ftrFiles = files
+        .filter((f) => /^full_test_results(?:_v\d+)?\.json$/i.test(f.name))
+        .map((f) => ({ ...f, ver: (f.name.match(/_v(\d+)/) || [0, 0])[1] | 0 }))
+        .sort((a, b) => b.ver - a.ver);
+      for (const f of ftrFiles.slice(0, 1)) {
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          for (const sample of Object.values(d)) {
+            if (!sample || typeof sample !== "object") continue;
+            const results = sample.results;
+            if (!results || typeof results !== "object") continue;
+            for (const [rid, r] of Object.entries(results)) {
+              if (!isRuleId(rid) || !r || typeof r !== "object") continue;
+              const verdict = (r.verdict || "").toString().toUpperCase();
+              if (verdict === "PASS") bump(rid, "pass");
+              else if (verdict === "FAIL") bump(rid, "fail");
+              else if (verdict === "NOT_APPLICABLE" || verdict === "NA") bump(rid, "na");
+            }
+          }
+          sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+        } catch { /* try next shape */ }
+      }
+    }
+
+    if (tally.size === 0) return null;
+
+    const historical_accuracy = {};
+    for (const [rid, t] of tally.entries()) {
+      const fired = t.pass + t.fail;
+      historical_accuracy[rid] = {
+        pass_rate: fired > 0 ? +(t.pass / fired).toFixed(4) : null,
+        n_passed: t.pass,
+        n_failed: t.fail,
+        n_not_applicable: t.na,
+        n_samples: t.n,
+      };
+    }
+    return {
+      historical_accuracy,
+      computed_at: new Date().toISOString(),
+      source_files: sourceFiles,
+    };
   }
 
   _readWorkerTiers() {

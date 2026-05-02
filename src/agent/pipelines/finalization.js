@@ -5,6 +5,7 @@ import { PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
 import { normalizeRuleCatalog } from "../rule-catalog-normalize.js";
 import { deriveFinalizationMilestones } from "./_milestone-derive.js";
+import { readKcVersion } from "../../util/kc-version.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // v0.7.0 N: ship template/release/v1/ from the npm package; copy into
@@ -310,12 +311,7 @@ export class FinalizationPipeline extends Pipeline {
   }
 
   _readKcVersion() {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(
-        path.resolve(__dirname, "../../../package.json"), "utf-8",
-      ));
-      return pkg.version || "unknown";
-    } catch { return "unknown"; }
+    return readKcVersion();
   }
 
   /**

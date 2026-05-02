@@ -240,6 +240,19 @@ export class ProjectInitializer extends Pipeline {
     return this.workspaceCreated && this.configReady && this.hasRegulations && this.hasSamples;
   }
 
+  // v0.7.2 1e: surface the checklist as engine telemetry so
+  // `_buildEngineCountsBlock("bootstrap")` has something to report when
+  // bootstrap → rule_extraction is refused. Agent sees the missing
+  // criteria directly in the refusal text.
+  describeBootstrapChecklist() {
+    return {
+      workspaceCreated: !!this.workspaceCreated,
+      configReady: !!this.configReady,
+      hasRegulations: !!this.hasRegulations,
+      hasSamples: !!this.hasSamples,
+    };
+  }
+
   /**
    * v0.6.3 (#74): nudge the agent when it does work that belongs to a later
    * phase. Bootstrap is setup — reading rules/samples, configuring keys,

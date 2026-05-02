@@ -57,16 +57,21 @@ function listChildFiles(p) {
 // Walk a directory recursively, yielding every file path. Skips hidden
 // dirs/files and __pycache__. Used by derive functions that need to
 // match arbitrarily-nested artifacts (e.g., scripts/ subdirs).
-function* walkFiles(root) {
+//
+// v0.7.2 1a: optional maxDepth caps recursion. depth=0 is root's
+// direct children; depth=1 is one level down. Default unbounded
+// (existing callers).
+function* walkFiles(root, { maxDepth } = {}) {
   if (!dirExists(root)) return;
-  const stack = [root];
+  const stack = [{ dir: root, depth: 0 }];
   while (stack.length) {
-    const dir = stack.pop();
+    const { dir, depth } = stack.pop();
     for (const e of readDirSafe(dir)) {
       if (e.name.startsWith(".") || e.name === "__pycache__") continue;
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) stack.push(p);
-      else if (e.isFile()) yield p;
+      if (e.isDirectory()) {
+        if (maxDepth == null || depth < maxDepth) stack.push({ dir: p, depth: depth + 1 });
+      } else if (e.isFile()) yield p;
     }
   }
 }
@@ -271,48 +276,66 @@ export function deriveSkillTestingMilestones(workspace) {
     }
   }
 
-  // v0.7.1 1a: also credit rules whose verdicts appear in output/*.json.
-  // Agents naturally write batch-test results to output/, not per-skill
-  // paths. v0.6.x's _loadTestResults already reads here on the canonical
-  // accuracy schema; this expands the helper-derived milestone to
-  // recognize the same shape (plus the GLM/DS-shape variants seen in
-  // E2E #6 v070). Without this, agents who run tests via sandbox_exec
-  // and persist to output/ saw skillsTested=0 and force-bypassed.
-  const collectFromJsonFile = (data) => {
-    if (!data) return;
-    if (data.rule_id) tested.add(data.rule_id);
-    if (Array.isArray(data) && data[0] && typeof data[0] === "object" && data[0].rule_id) {
-      for (const r of data) if (r?.rule_id) tested.add(r.rule_id);
+  // v0.7.1 1a / v0.7.2 1a: credit rules whose verdicts appear anywhere
+  // under output/*.json. Agents persist batch-test results in
+  // conductor-specific shapes (this is the recurring drift point —
+  // engine derivation has to match disk reality, not the other way
+  // around). Shapes seen across E2E #5/6/7:
+  //
+  //   - DS v0.7.0/0.7.1: catalog.json as array of {id: "R001", ...}
+  //     entries; skill_test_*.json as {doc_name: {R019a: bool, ...}};
+  //     skill_test_阳光资产.json with {doc, results: {R019a: ...}}
+  //   - GLM v0.7.1: rule_stats.json as {D01-01: {PASS, FAIL, NA}, ...};
+  //     full_test_results_v[1-6].json as {sample_id: {path, meta,
+  //     results: {D01-01: {verdict, ...}}}} (nested 2 levels deep, why
+  //     v0.7.1's shallow walk missed them)
+  //
+  // The collector recurses (depth-limited) and uses two heuristics to
+  // separate rule_ids from sample_ids / doc_names:
+  //   1. Rule-id shape: starts with letter, ≤ 30 chars, contains digits
+  //      (matches R001, D01-01, T02-31; rejects 06f2ed1488, doc paths)
+  //   2. Verdict-shape on values: {verdict, passed, pass, PASS, FAIL}
+  //      keys signal that the parent dict's keys are rule_ids
+  const ruleIdShape = /^[A-Za-z][A-Za-z0-9_-]{0,29}$/;
+  const isRuleIdShape = (s) => typeof s === "string" && ruleIdShape.test(s) && /\d/.test(s);
+  const looksLikeVerdict = (v) =>
+    v && typeof v === "object" && !Array.isArray(v) && (
+      v.verdict !== undefined ||
+      v.passed !== undefined ||
+      v.pass !== undefined ||
+      typeof v.PASS === "number" ||
+      typeof v.FAIL === "number"
+    );
+  const collectFromJsonFile = (data, depth = 0) => {
+    if (!data || depth > 4) return;
+    if (typeof data !== "object") return;
+    if (Array.isArray(data)) {
+      for (const r of data) collectFromJsonFile(r, depth + 1);
+      return;
     }
-    if (data.results && typeof data.results === "object") {
-      for (const k of Object.keys(data.results)) tested.add(k);
+    // {rule_id: "X"} or {id: "R001"} on a rule entry
+    if (isRuleIdShape(data.rule_id)) tested.add(data.rule_id);
+    if (isRuleIdShape(data.id)) tested.add(data.id);
+    // {<rule_id>: <verdict_shaped>, ...}  (rule_stats / per-doc test_results)
+    for (const [k, v] of Object.entries(data)) {
+      if (isRuleIdShape(k) && looksLikeVerdict(v)) tested.add(k);
+    }
+    // {results: {<rule_id>: ...}} — keys must look rule-id-shaped
+    if (data.results && typeof data.results === "object" && !Array.isArray(data.results)) {
+      for (const k of Object.keys(data.results)) {
+        if (isRuleIdShape(k)) tested.add(k);
+      }
+    }
+    // Recurse into nested objects (handles {sample_id: {results: {...}}})
+    for (const v of Object.values(data)) {
+      if (v && typeof v === "object") collectFromJsonFile(v, depth + 1);
     }
   };
 
   const outputDir = path.join(cwd, "output");
-  if (dirExists(outputDir)) {
-    for (const f of listChildFiles(outputDir)) {
-      if (!f.name.endsWith(".json")) continue;
-      collectFromJsonFile(readJsonSafe(path.join(outputDir, f.name)));
-    }
-    // One level into output/results/, output/distillation/ — the two
-    // most common batch-result locations across E2E #5 and v070 sessions.
-    for (const sub of ["results", "distillation", "qc"]) {
-      const subDir = path.join(outputDir, sub);
-      if (!dirExists(subDir)) continue;
-      for (const f of listChildFiles(subDir)) {
-        if (!f.name.endsWith(".json")) continue;
-        collectFromJsonFile(readJsonSafe(path.join(subDir, f.name)));
-      }
-      // GLM v070 wrote per-rule subdirs under output/results/<rule_id>/
-      // — walk one more level for that pattern.
-      for (const child of listChildDirs(subDir)) {
-        for (const f of listChildFiles(path.join(subDir, child.name))) {
-          if (!f.name.endsWith(".json")) continue;
-          collectFromJsonFile(readJsonSafe(path.join(subDir, child.name, f.name)));
-        }
-      }
-    }
+  for (const p of walkFiles(outputDir, { maxDepth: 6 })) {
+    if (!p.endsWith(".json")) continue;
+    collectFromJsonFile(readJsonSafe(p));
   }
 
   // DS v070 wrote a top-level aggregate at either rules/test_results.json

@@ -21,6 +21,7 @@ import { SnapshotTool } from "./tools/snapshot.js";
 import { ArchiveFileTool } from "./tools/archive-file.js";
 import { ScheduleFetchTool } from "./tools/schedule-fetch.js";
 import { ReleaseTool } from "./tools/release.js";
+import { readKcVersion } from "../util/kc-version.js";
 import { PhaseAdvanceTool } from "./tools/phase-advance.js";
 import { DocumentParseTool } from "./tools/document-parse.js";
 import { DocumentSearchTool } from "./tools/document-search.js";
@@ -421,7 +422,7 @@ export class AgentEngine {
         new SnapshotTool(this.workspace),
         new ArchiveFileTool(this.workspace),
         new ScheduleFetchTool(this.workspace),
-        new ReleaseTool(this.workspace, { kcVersion: "0.5.2" }),
+        new ReleaseTool(this.workspace, { kcVersion: readKcVersion() }),
         new PhaseAdvanceTool(
           // v0.7.1 2c: advanceFn returns rich `{advanced, engineCounts?}`
           // so the tool's refusal text can surface the engine telemetry
@@ -1679,7 +1680,24 @@ export class AgentEngine {
           parts.push(`monitoring: ${pipeline.monitoringPhase ?? "?"}`);
           break;
         }
-        // bootstrap / finalization: no specific counters, fall through
+        case "bootstrap": {
+          // v0.7.2 1e: previously fell through to empty string. Both
+          // v0.7.1 audit runs had bootstrap → rule_extraction refusals
+          // with engineCounts: "" — agent saw the refusal but had no
+          // engine telemetry to react to. The InitializerPipeline tracks
+          // boolean checklist flags rather than numeric counters; we
+          // surface those flags as "yes/no" so the agent can see which
+          // bootstrap criterion is missing.
+          if (typeof pipeline.describeBootstrapChecklist === "function") {
+            const cl = pipeline.describeBootstrapChecklist();
+            parts.push(`workspaceCreated: ${cl.workspaceCreated ? "yes" : "no"}`);
+            parts.push(`configReady: ${cl.configReady ? "yes" : "no"}`);
+            parts.push(`hasRegulations: ${cl.hasRegulations ? "yes" : "no"}`);
+            parts.push(`hasSamples: ${cl.hasSamples ? "yes" : "no"}`);
+          }
+          break;
+        }
+        // finalization: no specific counters, fall through
       }
     } catch { /* never let summary build break phase advance */ }
     return parts.join(", ");
