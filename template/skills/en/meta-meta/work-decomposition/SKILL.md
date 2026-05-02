@@ -147,6 +147,41 @@ E2E #6 v070 surfaced this pattern (DS bundled-skill check.py files
 all returned `{"pass": null, "method": "stub"}` deferring to
 workflows/). v0.7.1 added this anti-pattern explicitly.
 
+E2E #7 v071 showed the teaching prevented the stub anti-pattern in
+both conductors (no `{"pass": null}` patterns in either run), but
+**DS still inverted the canonical-vs-distilled relationship**: DS's
+6 thematic skill folders had SKILL.md only (no check.py), with the
+real verification code living in `workflows/<skill>/check.py`. The
+absence of stubs is good; the inversion is not — editing a rule then
+requires touching both SKILL.md (the doc) and the workflow check.py
+(the code). Single source of truth is lost.
+
+GLM v071 by contrast landed the canonical pattern: 97/97 skills had
+both SKILL.md AND a real `check.py` (median 143 LOC of regex +
+applicability logic), and `workflows/<id>/workflow_v1.py` was a
+50-line thin wrapper that imported and called it:
+
+```python
+# workflows/D01-01/workflow_v1.py — thin wrapper, 52 LOC
+import importlib.util, json
+from pathlib import Path
+
+def run(doc_text: str, meta: dict = None) -> dict:
+    check_path = Path(__file__).parent.parent.parent / "rule_skills" / "D01-01" / "check.py"
+    spec = importlib.util.spec_from_file_location("check", check_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    result = mod.check(doc_text, meta)
+    result["_workflow"] = "D01-01_v1"
+    return result
+```
+
+This is the v0.7.2+ canonical pattern: workflow is a shim that
+points at the skill's check.py. To iterate on a rule's verification,
+edit `rule_skills/<id>/check.py`. The workflow doesn't change. v0.7.2
+clarifies the teaching: avoid stubs AND keep the canonical
+relationship (skill is canonical, workflow is distilled wrapper).
+
 ### Naming convention for grouped checks
 
 When you do bundle, name the file with the explicit range:
@@ -309,18 +344,26 @@ When entering skill_authoring with an empty TaskBoard:
 5. **Pick the first task.** Work it to completion (skill + check + at least one local test). Update PATTERNS.md with whatever you learned. Move to the next task.
 6. **At task ~5 and task ~10:** stop and re-read PATTERNS.md. If patterns suggest a refactor of earlier work, do it now (cheap) rather than later (expensive).
 
-### Why PATTERNS.md FIRST, before any skill code
+### Persisted methodology — PATTERNS.md OR phase logs OR AGENT.md decisions
 
-If you start writing skill code (rule_skills/<id>/check.py) before PATTERNS.md exists, **stop**. Even a 200-byte initial PATTERNS.md ("decided Shannon-Huffman; first hard rule R028 will dictate verdict shape; sample corpus has bilingual table headings") sets the framework. You'll save 4× the time later not re-deriving the same shapes per rule.
+The principle: capture framework-level decisions to disk before each phase advance. The conversation will compact, agents will restart, the next phase will lose grounding. Whichever format you pick, write to disk — don't rely on conversation context that disappears.
 
-❌ "I'll write the skills first, then PATTERNS.md when I have insights."
+Three formats, each defensible. Pick one and stick with it:
 
-By the time you have N skills, you've made N implicit decisions about verdict shape, chunker boundaries, worker tier — each rule re-derives from scratch. Refactoring requires touching N files instead of one.
+- **`rules/PATTERNS.md`** — concise, framework-only, updated as the project progresses. Best for greenfield projects with clear hypothesis-up-front structure. Capped at ~5 KB; entries are transferable shapes / project constraints / anti-patterns with rationale (see "What to write" above).
 
-✅ "Write PATTERNS.md, even tentatively, then re-read it before each new rule. Update it when discoveries change the framework."
+- **`logs/phase_<name>_complete.md` per phase** — incremental, captures what each phase produced + decisions made + what the next phase inherits. Best for iterative discovery work where the framework crystallizes mid-run. E2E #7 GLM used this pattern across 6 phase docs and an `evolution_summary_v1.2.md`; the methodology was captured even though PATTERNS.md was never written.
 
-PATTERNS.md is your project's index card. Build it before the work, update it during the work, harvest it after.
+- **`AGENT.md` decisions section + domain notes** — narrative-style, living document of "what we know" and "why". Best for projects with rich domain context to capture (regulations, edge cases, thresholds, sample format distributions). E2E #7 GLM's AGENT.md included regulation enforcement dates, product type taxonomies, threshold values, and sample format counts — this is fine; it's a different idiom for the same goal.
 
-E2E #6 v070 surfaced this: DS only wrote PATTERNS.md after a rollback intervention; the per-skill design decisions before that point were already locked in and had to be re-touched. v0.7.1 reinforced this guidance.
+What you should NOT do: skip persistence and rely only on the live conversation context. By the time you have N skills authored without any persisted methodology, you've made N implicit decisions about verdict shape, chunker boundaries, and worker tier. Each rule re-derives from scratch. Refactoring requires touching N files instead of one.
 
-The engine's filesystem-derived milestones (Group A v0.7.0) verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract.
+❌ "I'll capture insights when I have time."
+
+✅ "Before each phase advance, write what I learned to whichever persistence file matches this project's idiom — even if it's tentative."
+
+E2E history:
+- E2E #6 v070 DS wrote PATTERNS.md only after a rollback. Per-skill decisions before that point had to be re-touched. v0.7.1 added "PATTERNS.md FIRST" reinforcement.
+- E2E #7 v071 neither DS nor GLM wrote PATTERNS.md, but GLM wrote 6 rich phase-completion logs and a comprehensive AGENT.md — the methodology WAS captured, just in different files. v0.7.2 blesses the broader principle: persist before you advance, format flexible.
+
+The engine's filesystem-derived milestones (Group A v0.7.0) verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract; the persistence file is your project's memory.

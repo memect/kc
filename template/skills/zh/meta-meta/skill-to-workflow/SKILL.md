@@ -45,6 +45,32 @@ If yes, design a worker LLM prompt. Use the smallest model tier that maintains a
 ### The hybrid approach (most common)
 Most rules are a mix: regex extracts the number, Python compares it to the threshold, LLM handles the exceptional cases. Design the workflow as a pipeline where cheap steps run first and expensive steps run only when needed.
 
+### When regex alone isn't enough — decision rubric
+
+Before declaring distillation complete, audit each rule's `verification_type` / `metric` / `evidence_type` (or equivalent fields in your catalog). For rules where the required verification is one of:
+
+- **Semantic** ("is this a positive guarantee or a disclaimer?")
+- **Contextual** ("interpret this in light of the document's product type")
+- **Counterfactual** ("what should this value be, given the other fields?")
+- **Cross-field arithmetic** ("does 期初 + 收益 - 分配 = 期末?")
+
+regex alone rarely suffices. Three acceptable forms:
+
+1. **Pure regex with documented limits** — write the regex check, include a comment explaining the fragility (e.g., "matches syntactic pattern only; cannot detect semantic guarantees")
+2. **Hybrid regex + LLM** — regex baseline catches obvious cases, `worker_llm_call` (tier1-2) handles ambiguous ones. The hybrid workflow declares which rule_ids escalate.
+3. **Pure LLM via `worker_llm_call`** — for fully semantic rules where no regex baseline is meaningful.
+
+Don't ship pure regex for a rule whose `verification_type` is `judgment` / `semantic` without the documented-limits note. Future-you or a colleague will assume the regex is sufficient and that bug will hide for months.
+
+### Worker LLM cost-aware tier choice
+
+If you do escalate to LLM:
+- **tier1** (most capable, ~¥0.001-0.002/doc): cross-field reasoning, ambiguity resolution, rules that benefit from chain-of-thought
+- **tier2-3**: bulk extraction with simple semantic checks
+- **tier4** (cheapest): high-volume keyword-spotting that regex can't handle. Note: tier4 models on SiliconFlow are Qwen3.5 thinking-mode — `content` can return empty if `reasoning_content` consumes max_tokens. Test with realistic prompts before relying. If you see empty responses, either bump max_tokens to ≥8192, shorten your prompt, or fall back to tier1-2.
+
+Both v0.7.1 audit conductors (DS and GLM) defaulted to all-regex distillation and only added LLM escalation when the human user explicitly asked for "V2 with worker LLM". If your rule catalog has any rules where the verification is genuinely semantic, you should reach for `worker_llm_call` yourself — don't wait to be asked.
+
 ## Workflow Structure
 
 A workflow is a Python file (or small set of files) in `workflows/`:

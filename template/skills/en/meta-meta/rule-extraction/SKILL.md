@@ -223,6 +223,24 @@ Regulations are often ambiguous. When you encounter ambiguity:
 
 Do not skip ambiguous rules. They are often the most important ones.
 
+## Sanity-check applicability against the sample corpus
+
+After extracting your rule catalog and before authoring skills, do this 5-minute check: project each rule's applicability filter against the sample corpus.
+
+For every rule:
+1. Walk `samples/`, classify each by product type / report type / document format
+2. For each rule, count how many samples it would apply to (per the rule's `applicability` field, scope filter, or whatever shape your catalog uses)
+3. Flag rules that apply to **0 samples** — they're either genuinely test-corpus-irrelevant (acceptable) or over-constrained (bug)
+
+E2E #7 GLM produced a 97-rule catalog where 36 rules (37%) had `PASS=0 FAIL=0 NOT_APPLICABLE=90` across all 90 documents — they never fired. Some were legit (rules for cash-management products with no cash-management samples in corpus), but 36 inactive of 97 was high enough to suggest scope-too-narrow drift.
+
+If many rules are 0-sample, either:
+- **Reframe their applicability** — broaden product types, look for evidence in headers/footers not just body, relax the scope filter
+- **Document them as "future scope"** and remove from this iteration's catalog (still capture them in a `rules/future_scope.md` so they're not forgotten)
+- **Update the test corpus** to include matching samples (work with the developer user)
+
+Catching this in `rule_extraction` is much cheaper than authoring 36 skills that then test as inactive in `skill_testing`. The cheap projection here is worth the time it saves later.
+
 ## When Rules Change
 
 Regulations evolve. When the developer user adds new or updated regulation documents:
