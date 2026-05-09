@@ -37,6 +37,7 @@ import { EvolutionCycleTool } from "./tools/evolution-cycle.js";
 import { TierDowngradeTool } from "./tools/tier-downgrade.js";
 import { AgentTool } from "./tools/agent-tool.js";
 import { WebSearchTool } from "./tools/web-search.js";
+import { TaskCreateTool, TaskUpdateTool, TaskCompleteTool } from "./tools/task-board.js";
 import { SkillLoader } from "./skill-loader.js";
 import { TaskManager } from "./task-manager.js";
 import { Scheduler } from "./scheduler.js";
@@ -475,6 +476,16 @@ export class AgentEngine {
           () => this.currentPhase,
         ),
         new WebSearchTool(this.config.tavilyApiKey),
+        // v0.7.3: completes the v0.7.0 "agent owns TaskBoard" design.
+        // Skills already reference TaskCreate by name; these tools make
+        // that contract truthful. See task-board.js + work-decomposition
+        // SKILL.md. Skipped for subagents — they don't own a task board
+        // (taskManager is null in subagent scope, line 216).
+        ...(this.taskManager ? [
+          new TaskCreateTool(this.workspace, this.taskManager),
+          new TaskUpdateTool(this.workspace, this.taskManager),
+          new TaskCompleteTool(this.workspace, this.taskManager),
+        ] : []),
       ],
       // Distillation+ only (DISTILL mode)
       distill: [
@@ -1308,6 +1319,7 @@ export class AgentEngine {
           yield new AgentEvent({
             type: "tool_result",
             name: tc.name,
+            input: inputData,
             output: historyContent,
             isError: result.isError,
           });

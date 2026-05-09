@@ -85,7 +85,7 @@ Bundle multiple rules into a single task (and a single check_r###_r###.py file) 
 - The judgment logic for one rule is a substring or close variant of the next
 - A single failure typically implies multiple failures (you can't pass R013 if R015 fails)
 
-Example: R013 / R015 / R017 all check that a specific table on page 3 of the report contains certain mandatory fields. Same chunk, same parse, same verdict shape. Bundle as `check_r013_r015_r017.py` and create a single TaskCreate task `R013/R015/R017 — required-fields table`. The engine's filesystem-derived milestones recognize the grouped check.py and credit all three rule_ids.
+Example: R013 / R015 / R017 all check that a specific table on page 3 of the report contains certain mandatory fields. Same chunk, same parse, same verdict shape. Bundle as `check_r013_r015_r017.py` and create a single task: `TaskCreate({id: "R013-R015-R017-skill_authoring", title: "R013/R015/R017 — required-fields table", phase: "skill_authoring"})`. The engine's filesystem-derived milestones recognize the grouped check.py and credit all three rule_ids.
 
 ### When to keep separate
 
@@ -343,6 +343,30 @@ When entering skill_authoring with an empty TaskBoard:
 4. **If `rules/difficulty.json` doesn't exist:** decide whether to spend the worker LLM calls to triage (almost always yes for a corpus of >20 rules). Run the triage step (one tier3 call per rule, batched in groups of 10 if you want), write `rules/difficulty.json`, then proceed to step 3.
 5. **Pick the first task.** Work it to completion (skill + check + at least one local test). Update PATTERNS.md with whatever you learned. Move to the next task.
 6. **At task ~5 and task ~10:** stop and re-read PATTERNS.md. If patterns suggest a refactor of earlier work, do it now (cheap) rather than later (expensive).
+
+### Calling TaskCreate / TaskUpdate / TaskComplete
+
+The engine registers three task-board tools (v0.7.3+):
+
+- `TaskCreate({id, title, phase, ruleId?})` — adds a task to `tasks.json`. `id` must be unique within the session; pick a stable shape like `<rule_id>-<phase>` for per-rule tasks or `<group-name>-<phase>` for grouped / non-rule tasks. `phase` is the phase the task belongs to (current phase or a future phase you're pre-populating). `ruleId` is optional — set it for per-rule tasks so the engine can credit the rule_id in milestone derivation.
+- `TaskUpdate({id, status?, summary?})` — updates a task's status to `pending` / `in_progress` / `completed` / `failed`, optionally with a short summary.
+- `TaskComplete({id, summary?})` — sugar for `TaskUpdate({id, status:"completed", summary})`. Use this for the common path after finishing a unit of work.
+
+After you call `TaskCreate` for your decomposition and exit the current turn, the Ralph loop pulls the next pending task and runs it. Finish the work, call `TaskComplete`, and the loop advances. If a task can't be completed (irrecoverable error), call `TaskUpdate({id, status:"failed", summary:"reason"})` so the queue moves on rather than blocking on the failed task.
+
+Examples:
+
+```
+TaskCreate({ id: "R001-skill_authoring", title: "Author skill for R001",
+             phase: "skill_authoring", ruleId: "R001" })
+
+TaskCreate({ id: "trust-bundle-skill_authoring",
+             title: "R013/R015/R017 — required-fields table",
+             phase: "skill_authoring" })
+
+TaskComplete({ id: "R001-skill_authoring",
+               summary: "regex check passes 89/90; R001 done" })
+```
 
 ### Persisted methodology — PATTERNS.md OR phase logs OR AGENT.md decisions
 
