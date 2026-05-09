@@ -133,6 +133,65 @@ conversation or existing catalog. Therefore, when composing the brief:
   catalog.json.** rule_catalog uses workspace file locking;
   sandbox_exec bypasses it and races with other writers.
 
+## How to read regulation files (default: read whole)
+
+Regulations are the audit's authoritative basis. Every `source_ref`
+in your extracted rules must be verifiable against the source text.
+For typical regulation documents (a single file under ~50 KB / under
+~100 pages), **read each regulation file whole using `workspace_file`
+(operation=read) in a single call**:
+
+```js
+workspace_file({ operation: "read", scope: "project", path: "Rules/01_some_regulation.md" })
+```
+
+`workspace_file.read` is capped at 50,000 chars per call, which
+covers virtually every individual regulation document. This is the
+default. **Read every regulation file whole before you start
+extracting rules from any of them.**
+
+### Tool choice — `workspace_file` vs `sandbox_exec`
+
+| Tool | Per-call cap | Use for |
+|---|---:|---|
+| `workspace_file` (read) | 50,000 chars | **full reads of regulation / rule documents** |
+| `sandbox_exec` (cat/head/etc) | 10,000 chars | shell commands, **not** full file reads |
+
+`sandbox_exec` is designed for shell commands; its 10K cap is too
+small for most regulations. `cat rules/01_*.md` returns only the
+first ~10 KB followed by `\n[truncated]`. Re-issuing with `head -N` /
+`tail -M` to scroll the window loses positional precision and burns
+turns. **When you see truncation, don't fight the cap — switch
+tools.**
+
+### Asymmetry — regs read whole, samples sampled
+
+Regulations are limited (typically 1-10 files), authoritative, and
+read once. Read every regulation whole.
+
+Sample documents may number 30 to 1000+, are heterogeneous, and get
+read many times during testing. **Don't try to read every sample
+whole.** Use rule-applicability filters or sampled subsets to focus
+attention.
+
+### Escape valve — when a single reg exceeds ~200K chars
+
+Rare in practice. The largest regulation in `test_data_4` is 42 KB;
+typical Chinese banking regs (资管新规, 信披办法, etc.) all fit
+under 50 KB. But if you do encounter a single regulation so large
+that reading it whole would crowd the context window — heuristic:
+the file exceeds ~200,000 chars or ~25% of your context budget —
+use your own judgment:
+
+- Read by chapter (e.g., `第X章` / `Chapter X`) using `document_parse`
+  or paginated `workspace_file` reads
+- Or build an in-workspace index file pointing to chapter offsets and
+  read on-demand per rule being extracted
+
+The 50 KB cap is high enough that this almost never triggers. **The
+default is read whole; deviate only when the file genuinely doesn't
+fit.**
+
 ## Extraction Strategies
 
 ### Strategy 1: Structured Input (Developer User Provides Rules)

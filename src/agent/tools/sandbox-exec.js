@@ -44,7 +44,10 @@ export class SandboxExecTool extends BaseTool {
       "Execute a shell command. " +
       "cwd='workspace' (default) runs in KC's workspace. " +
       "cwd='project' runs in the user's project directory. " +
-      "Pipes, redirects, and chained commands (&&) are supported."
+      "Pipes, redirects, and chained commands (&&) are supported. " +
+      "stdout + stderr combined are capped at 10,000 chars; longer output is truncated. " +
+      "For reading individual files larger than ~10 KB (e.g. regulation documents), " +
+      "prefer workspace_file (operation=read) which has a larger 50 KB cap."
     );
   }
 

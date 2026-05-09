@@ -132,6 +132,53 @@ existing catalog. Therefore, when composing the brief:
   catalog.json.** rule_catalog uses workspace file locking (B9);
   sandbox_exec bypasses it and races with other writers.
 
+## 如何读取规则文件 (默认整本读取)
+
+法规文件是审核的权威依据。你为每条规则记录的 `source_ref` 都要能在
+原文中复核。对于绝大多数规则文件 (单个文件 < 50 KB / < ~100 页),
+**用 `workspace_file` (operation=read) 一次性整本读取**:
+
+```js
+workspace_file({ operation: "read", scope: "project", path: "Rules/01_某某办法.md" })
+```
+
+`workspace_file.read` 单次上限 50,000 字符, 足以覆盖几乎所有单个法规
+文件。这是默认行为: **在抽取规则之前, 把每一份法规文件都整本读一遍。**
+
+### 工具选择 — `workspace_file` 还是 `sandbox_exec`
+
+| 工具 | 单次上限 | 适用 |
+|---|---:|---|
+| `workspace_file` (read) | 50,000 字符 | **整本读取法规/规则文件** |
+| `sandbox_exec` (cat/head) | 10,000 字符 | 短命令, 不适合整文件读取 |
+
+`sandbox_exec` 是为执行 shell 命令设计的, 10K 上限对绝大多数法规太小。
+`cat rules/01_*.md` 只会返回前 ~10 KB, 后面被截断为 `\n[truncated]`。
+反复用 `head -N` / `tail -M` 滑动窗口会丢失行号位置信息, 也浪费交互
+回合。**遇到截断, 别和上限较劲——换工具。**
+
+### 法规与样本的不对称 — 法规整本读, 样本按需抽样
+
+法规通常只有 1–10 份, 权威性强, 只需读一次。每一份法规都整本读取,
+作为后续所有规则抽取与引用的基础。
+
+样本文档可能 30 份甚至 1000+ 份, 异质性强, 在测试阶段会被多次读取。
+**不要试图把每个样本都整本读一遍**——用规则适用性过滤、抽样子集来
+聚焦注意力。
+
+### 例外 — 单个法规超过 200K 字符时
+
+实践中极少见。test_data_4 中最大的法规 42 KB; 银行业 资管新规 +
+信披办法 等典型法规也都在 50 KB 以内。但如果你确实遇到一份超大法规,
+读取整本会挤压上下文窗口 (启发式: 单文件超过 ~200,000 字符 或超过你
+上下文预算的 ~25%), 此时由你判断:
+
+- 按章 (`第X章`) 分段读, 用 `document_parse` 或分页的 `workspace_file`
+- 或建立工作区内的索引文件, 标注每章的偏移位置, 抽取规则时按需读取
+
+50 KB 的上限已经足够高, 上述例外情形几乎不会触发。**默认就是整本读;
+只有当文件确实太大时才偏离这一默认。**
+
 ## Extraction Strategies
 
 ### Strategy 1: Structured Input (Developer User Provides Rules)
