@@ -30,7 +30,9 @@ export class WorkspaceFileTool extends BaseTool {
       "Read, write, or list files. " +
       "scope='workspace' (default): KC's working directory for rules, skills, workflows, results. " +
       "scope='project': the user's project folder where KC was launched — source regulations and samples live here. " +
-      "Operations: read (returns file content), write (creates/overwrites a file), list (shows directory contents)."
+      "Operations: read (returns file content), write (creates/overwrites a file), list (shows directory contents). " +
+      "read returns up to 50,000 chars per call; longer files are truncated. " +
+      "For full reads of regulation/rule documents (typically smaller than this cap), prefer this tool over sandbox_exec."
     );
   }
 
@@ -87,7 +89,7 @@ export class WorkspaceFileTool extends BaseTool {
 
     try {
       if (op === "read") return this._read(filePath, scope);
-      if (op === "write") return this._write(filePath, content, scope);
+      if (op === "write") return await this._write(filePath, content, scope);
       if (op === "list") return this._list(filePath, scope);
       return new ToolResult(`Unknown operation: ${op}`, true);
     } catch (err) {
@@ -107,56 +109,68 @@ export class WorkspaceFileTool extends BaseTool {
     return new ToolResult(text);
   }
 
-  _write(filePath, content, scope) {
+  async _write(filePath, content, scope) {
     if (!filePath || filePath === ".") {
       return new ToolResult("Path required for write operation", true);
     }
     const resolved = this._resolveForScope(filePath, scope);
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
 
-    // v0.7.0 Group M (#84 remainder): on case-insensitive filesystems
-    // (macOS/Windows defaults), warn when the target's basename collides
-    // with an existing sibling differing only in case. Write proceeds
-    // — agents may legitimately overwrite — but the agent gets visible
-    // signal so it doesn't end up confused like E2E #5 GLM ("SKILL.md
-    // disappeared" when the inode was shared with skill.md). Workspace-
-    // scope only; project-dir scope is the user's territory.
-    let collisionNote = "";
-    if (
-      scope === "workspace" &&
-      this._workspace.fsCaseSensitive === false
-    ) {
-      try {
-        const parent = path.dirname(resolved);
-        const targetBase = path.basename(resolved);
-        const targetLower = targetBase.toLowerCase();
-        const siblings = fs.readdirSync(parent);
-        const collision = siblings.find(
-          (s) => s !== targetBase && s.toLowerCase() === targetLower,
-        );
-        if (collision) {
-          collisionNote =
-            ` ⚠ case-collision: case-insensitive filesystem already has '${collision}'` +
-            ` at this path; both names resolve to the same inode. Pick one canonical case` +
-            ` (lowercase preferred for skill files) and use it consistently — otherwise` +
-            ` archive_file / Read on either name affects the other.`;
-        }
-      } catch { /* readdirSync may fail on a fresh dir; that's fine, no collision possible */ }
-    }
+    const doWrite = () => {
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
 
-    fs.writeFileSync(resolved, content, "utf-8");
+      // v0.7.0 Group M (#84 remainder): on case-insensitive filesystems
+      // (macOS/Windows defaults), warn when the target's basename collides
+      // with an existing sibling differing only in case. Write proceeds
+      // — agents may legitimately overwrite — but the agent gets visible
+      // signal so it doesn't end up confused like E2E #5 GLM ("SKILL.md
+      // disappeared" when the inode was shared with skill.md). Workspace-
+      // scope only; project-dir scope is the user's territory.
+      let collisionNote = "";
+      if (
+        scope === "workspace" &&
+        this._workspace.fsCaseSensitive === false
+      ) {
+        try {
+          const parent = path.dirname(resolved);
+          const targetBase = path.basename(resolved);
+          const targetLower = targetBase.toLowerCase();
+          const siblings = fs.readdirSync(parent);
+          const collision = siblings.find(
+            (s) => s !== targetBase && s.toLowerCase() === targetLower,
+          );
+          if (collision) {
+            collisionNote =
+              ` ⚠ case-collision: case-insensitive filesystem already has '${collision}'` +
+              ` at this path; both names resolve to the same inode. Pick one canonical case` +
+              ` (lowercase preferred for skill files) and use it consistently — otherwise` +
+              ` archive_file / Read on either name affects the other.`;
+          }
+        } catch { /* readdirSync may fail on a fresh dir; that's fine, no collision possible */ }
+      }
 
-    // Auto-commit to git for workspace writes (silently no-ops if gitignored or git unavailable)
-    let traceId = null;
+      fs.writeFileSync(resolved, content, "utf-8");
+
+      // Auto-commit to git for workspace writes (silently no-ops if gitignored or git unavailable)
+      let traceId = null;
+      if (scope === "workspace") {
+        traceId = this._workspace.autoCommit(filePath, "update");
+      }
+
+      const label = scope === "project" ? `[project] ${filePath}` : filePath;
+      let msg = `Wrote ${content.length} chars to ${label}`;
+      if (traceId) msg += ` [trace: ${traceId}]`;
+      if (collisionNote) msg += collisionNote;
+      return new ToolResult(msg);
+    };
+
+    // v0.7.3: route writes to shared coordination paths (rules/catalog.json,
+    // tasks.json, refs/manifest.json, etc.) through the workspace lock so
+    // concurrent writers serialize. No-op for non-shared paths and for
+    // project-scope writes (project dir is the user's, not shared engine state).
     if (scope === "workspace") {
-      traceId = this._workspace.autoCommit(filePath, "update");
+      return await this._workspace.withSharedLockIfApplicable(filePath, doWrite);
     }
-
-    const label = scope === "project" ? `[project] ${filePath}` : filePath;
-    let msg = `Wrote ${content.length} chars to ${label}`;
-    if (traceId) msg += ` [trace: ${traceId}]`;
-    if (collisionNote) msg += collisionNote;
-    return new ToolResult(msg);
+    return doWrite();
   }
 
   _list(filePath, scope) {
