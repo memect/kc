@@ -23,6 +23,13 @@ skills/      — Meta skills encoding verification methodology
 .env         — Configuration: API keys, model tiers, thresholds, language
 ```
 
+Note: KC's session workspace under `~/.kc_agent/workspaces/<sessionId>/`
+uses lowercase counterparts (`rules/`, `samples/`, `input/`, `output/`,
+`logs/`, `workflows/`, `rule_skills/`) — these are runtime-internal and
+separate from this project's user-facing folders above. The asymmetry
+is intentional: title-case for human-facing project dirs, lowercase for
+KC's working state.
+
 ## Your Mission
 
 Follow this lifecycle. Each step references the skill(s) to consult:
@@ -92,6 +99,12 @@ Output/      — 核查结果
 skills/      — 编码核查方法论的元技能
 .env         — 配置：API密钥、模型层级、阈值、语言
 ```
+
+注：KC 在 `~/.kc_agent/workspaces/<sessionId>/` 下的会话工作区使用
+小写对应目录（`rules/`、`samples/`、`input/`、`output/`、`logs/`、
+`workflows/`、`rule_skills/`）—— 这些是运行时内部目录，与本项目上面
+那些用户可见的目录是分开的。这种大小写不对称是有意的：项目里给人看
+的目录用首字母大写；KC 自己的工作状态用小写。
 
 ## 你的使命
 
