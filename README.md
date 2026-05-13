@@ -216,28 +216,41 @@ Quality Thresholds, Language.
 
 ## Status
 
-**v0.6.0 — first architectural beta.** This release lands:
+**v0.7.4 — phase-control fix + codex review re-attempt.** Architectural
+payload from v0.6.0+ is still in place:
 
 - Parallel ralph-loop (up to 8 concurrent workers) with a heap-safety
   conformance gate
 - Native chunker + RAG (onion-peeler + CJK bigram keyword index +
   one-shot LLM bundle classifier, ported from the AMC verification app)
-- Source-context auto-attach on skill_authoring tasks (rule NL + evidence
-  chunks + sibling rules injected into the prompt, no manual search needed)
+- Agent-owned task board: the agent reads the rule list from
+  `describeState`, decides decomposition (per-rule / grouped / range),
+  and calls `TaskCreate` / `TaskUpdate` / `TaskComplete` to drive the
+  Ralph loop **within the current phase only** (v0.7.4). Source-context
+  auto-attach pulls rule NL + evidence chunks + sibling rules into each
+  task's prompt.
+- Phase boundaries = user checkpoints: the Ralph loop exits at every
+  phase transition, returning control to the user. The engine doesn't
+  auto-advance; phase advance is explicit (agent's `phase_advance` tool
+  call or user re-prompt). Marathon-style end-to-end autonomy lives
+  outside the engine.
 - Workspace file locking for shared coordination files (`rules/catalog.json`,
-  `rules/manifest.json`, `tasks.json`, etc.)
+  `rules/manifest.json`, `refs/manifest.json`, `tasks.json`,
+  `session-state.json`) — every writer goes through `withFileLock`.
 - `agent_tool` gets `wait` / `poll` / `list` / `kill` operations +
   `stale_subagents` phase-advance signal
-- New FINALIZATION phase packages the session into a shippable deliverable
+- FINALIZATION phase packages the session into a shippable deliverable
   (canonical `rule_skills/` layout + README + coverage report + final
   dashboard)
+- Filesystem-derived phase milestones (v0.7.0+): the engine reads disk
+  artifacts for advance criteria, never trusts tool-call assertions
 - Input stays active during streaming (type-ahead queue), arrow keys +
   history recall, CTX smoothing + peak, per-provider context-limit caps,
   `/tools`, `/parallelism`, and more
 
-See [DEV_LOG.md](./DEV_LOG.md) for the full v0.6.0 change breakdown and
-[docs/update_design_v5.md](./docs/update_design_v5.md) for the plan that
-drove it.
+See [DEV_LOG.md](./DEV_LOG.md) for the per-release change breakdowns and
+[docs/update_design_v7.md](./docs/update_design_v7.md) for the v0.7.x
+plan and patch notes.
 
 Bug reports and PRs welcome at <https://github.com/kitchen-engineer42/kc-cli>.
 

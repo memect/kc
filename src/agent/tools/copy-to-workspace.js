@@ -94,7 +94,7 @@ export class CopyToWorkspaceTool extends BaseTool {
       this._appendGitignore(`refs/${targetName}`);
     }
 
-    this._appendManifest({
+    await this._appendManifest({
       target: targetRel,
       source: sourcePath,
       size: stat.size,
@@ -113,17 +113,23 @@ export class CopyToWorkspaceTool extends BaseTool {
     );
   }
 
-  _appendManifest(entry) {
-    const manifestAbs = this._workspace.resolvePath(MANIFEST_REL);
-    fs.mkdirSync(path.dirname(manifestAbs), { recursive: true });
-    let entries = [];
-    if (fs.existsSync(manifestAbs)) {
-      try { entries = JSON.parse(fs.readFileSync(manifestAbs, "utf-8")); }
-      catch { entries = []; }
-    }
-    if (!Array.isArray(entries)) entries = [];
-    entries.push(entry);
-    fs.writeFileSync(manifestAbs, JSON.stringify(entries, null, 2), "utf-8");
+  async _appendManifest(entry) {
+    // v0.7.4 (re-applied from v0.7.3 G1a): refs/manifest.json is a
+    // shared coordination path — wrap the whole read-modify-write
+    // under the workspace lock so two parallel copy_to_workspace
+    // calls (main agent + subagent) don't lose entries.
+    return await this._workspace.withSharedLockIfApplicable(MANIFEST_REL, () => {
+      const manifestAbs = this._workspace.resolvePath(MANIFEST_REL);
+      fs.mkdirSync(path.dirname(manifestAbs), { recursive: true });
+      let entries = [];
+      if (fs.existsSync(manifestAbs)) {
+        try { entries = JSON.parse(fs.readFileSync(manifestAbs, "utf-8")); }
+        catch { entries = []; }
+      }
+      if (!Array.isArray(entries)) entries = [];
+      entries.push(entry);
+      fs.writeFileSync(manifestAbs, JSON.stringify(entries, null, 2), "utf-8");
+    });
   }
 
   _appendGitignore(line) {
