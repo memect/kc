@@ -41,24 +41,10 @@ if [[ $# -ne 1 ]]; then
   exit 1
 fi
 
-# v0.7.3: secrets live outside the repo. Put bench keys in
-# ~/.kc_agent/.bench-env (KC_WORKER_API_KEY, DEEPSEEK_API_KEY).
-if [ -f "$HOME/.kc_agent/.bench-env" ]; then
-  set -a
-  . "$HOME/.kc_agent/.bench-env"
-  set +a
-fi
-
-if [ -z "${KC_WORKER_API_KEY:-}" ]; then
-  echo "ERROR: KC_WORKER_API_KEY not set." >&2
-  echo "  Put 'KC_WORKER_API_KEY=sk-...' in ~/.kc_agent/.bench-env" >&2
-  echo "  or export it in your shell before running this script." >&2
-  exit 1
-fi
-
 # Shared across both sessions — workers stay on SiliconFlow's TIER1-4
 # pool so the only variable is the conductor model.
 export KC_WORKER_PROVIDER=siliconflow
+export KC_WORKER_API_KEY=sk-vmvteahukhncdvreaazgnyxhrogbnjahthlrgvjvmxryvyiq
 export KC_WORKER_BASE_URL=https://api.siliconflow.cn/v1
 
 # v0.7.0 hardens reasoning_content round-trip (engine.js v0.6.3 path +
@@ -81,11 +67,6 @@ case "$1" in
     CONDUCTOR_LABEL="Pro/zai-org/GLM-5.1 (siliconflow, 200K ctx)"
     ;;
   deepseek)
-    if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-      echo "ERROR: DEEPSEEK_API_KEY not set (required for deepseek session)." >&2
-      echo "  Put 'DEEPSEEK_API_KEY=sk-...' in ~/.kc_agent/.bench-env." >&2
-      exit 1
-    fi
     # DeepSeek API has genuine 1M-token native context. KC's earlier
     # 400K-on-everything choice was the right ceiling for serial
     # ralph-loop — keep it. v0.7.0 E2's budget-aware compact threshold
@@ -93,7 +74,7 @@ case "$1" in
     export KC_CONTEXT_LIMIT=400000
     export KC_PROVIDER=deepseek
     export KC_CONDUCTOR_MODEL=deepseek-v4-pro
-    export KC_LLM_API_KEY="$DEEPSEEK_API_KEY"
+    export KC_LLM_API_KEY=sk-5267402b58f14d63bb9f2ab211057ca3
     export KC_LLM_BASE_URL=https://api.deepseek.com
     export KC_WORKSPACE_ROOT="$HOME/.kc_agent/bench-deepseek-v071"
     CONDUCTOR_LABEL="deepseek-v4-pro (deepseek, 400K ctx)"

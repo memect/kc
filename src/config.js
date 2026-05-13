@@ -90,12 +90,10 @@ export function loadSettings(workspacePath) {
     tier3: env.TIER3 || gc.tiers?.tier3 || "",
     tier4: env.TIER4 || gc.tiers?.tier4 || "",
 
-    // VLM tiers (vision/OCR models). v0.7.3: accept OCR_MODEL_TIER* as
-    // alias since template/.env.template + initializer.js seed that name.
-    // VLM_TIER* takes precedence when both are set.
-    vlmTier1: env.VLM_TIER1 || env.OCR_MODEL_TIER1 || gc.vlm_tiers?.tier1 || "",
-    vlmTier2: env.VLM_TIER2 || env.OCR_MODEL_TIER2 || gc.vlm_tiers?.tier2 || "",
-    vlmTier3: env.VLM_TIER3 || env.OCR_MODEL_TIER3 || gc.vlm_tiers?.tier3 || "",
+    // VLM tiers (vision/OCR models)
+    vlmTier1: env.VLM_TIER1 || gc.vlm_tiers?.tier1 || "",
+    vlmTier2: env.VLM_TIER2 || gc.vlm_tiers?.tier2 || "",
+    vlmTier3: env.VLM_TIER3 || gc.vlm_tiers?.tier3 || "",
 
     // Worker LLM — optional, defaults to conductor config (process.env wins)
     workerProvider: penv.KC_WORKER_PROVIDER || gc.worker_provider || "",
