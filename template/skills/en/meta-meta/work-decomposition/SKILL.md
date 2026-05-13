@@ -85,7 +85,7 @@ Bundle multiple rules into a single task (and a single check_r###_r###.py file) 
 - The judgment logic for one rule is a substring or close variant of the next
 - A single failure typically implies multiple failures (you can't pass R013 if R015 fails)
 
-Example: R013 / R015 / R017 all check that a specific table on page 3 of the report contains certain mandatory fields. Same chunk, same parse, same verdict shape. Bundle as `check_r013_r015_r017.py` and create a single TaskCreate task `R013/R015/R017 — required-fields table`. The engine's filesystem-derived milestones recognize the grouped check.py and credit all three rule_ids.
+Example: R013 / R015 / R017 all check that a specific table on page 3 of the report contains certain mandatory fields. Same chunk, same parse, same verdict shape. Bundle as `check_r013_r015_r017.py` and create a single task: `TaskCreate({id: "R013-R015-R017-skill_authoring", title: "R013/R015/R017 — required-fields table", phase: "skill_authoring"})`. The engine's filesystem-derived milestones recognize the grouped check.py and credit all three rule_ids.
 
 ### When to keep separate
 
@@ -343,6 +343,40 @@ When entering skill_authoring with an empty TaskBoard:
 4. **If `rules/difficulty.json` doesn't exist:** decide whether to spend the worker LLM calls to triage (almost always yes for a corpus of >20 rules). Run the triage step (one tier3 call per rule, batched in groups of 10 if you want), write `rules/difficulty.json`, then proceed to step 3.
 5. **Pick the first task.** Work it to completion (skill + check + at least one local test). Update PATTERNS.md with whatever you learned. Move to the next task.
 6. **At task ~5 and task ~10:** stop and re-read PATTERNS.md. If patterns suggest a refactor of earlier work, do it now (cheap) rather than later (expensive).
+
+### Calling TaskCreate / TaskUpdate / TaskComplete
+
+The engine registers three task-board tools (v0.7.4):
+
+- `TaskCreate({id, title, phase, ruleId?})` — adds a task to `tasks.json`. `id` must be unique within the session; pick a stable shape like `<rule_id>-<phase>` for per-rule tasks or `<group-name>-<phase>` for grouped / non-rule tasks. `phase` is the current phase the task belongs to. `ruleId` is optional — set it for per-rule tasks so the engine can credit the rule_id in milestone derivation.
+- `TaskUpdate({id, status?, summary?})` — change a task's status (`pending` / `in_progress` / `completed` / `failed`), optionally with a short summary.
+- `TaskComplete({id, summary?})` — sugar for `TaskUpdate({id, status:"completed", summary})`. Use this after finishing a unit of work.
+
+### Ralph loop scope — within a phase only
+
+Important contract (changed in v0.7.4 after team feedback):
+
+- **Loop scope = current phase only.** TaskCreate populates tasks for the CURRENT phase. The Ralph loop processes them one by one within the phase.
+- **Loop exits at phase boundaries.** When all current-phase tasks complete OR the phase advances (you call `phase_advance`, or anything else changes `currentPhase`), the loop exits cleanly. Control returns to the user.
+- **No engine auto-advance.** The engine does NOT auto-advance phases when tasks complete + exit criteria are met. Phase advance is YOUR explicit call (`phase_advance` tool) or the user's re-prompt.
+- **Don't pre-create tasks for future phases.** They'll be ignored — the loop exits at the phase boundary before processing them. Create tasks only for the phase you're currently in.
+- **Phase boundaries = user checkpoints.** This is intentional. The team needs visibility into progress at natural breakpoints. After your task batch + `phase_advance`, the loop exits, you summarize progress in your final message, the user prompts you to begin the next phase.
+
+End-to-end autonomous "run from bootstrap to finalization without stopping" is NOT the engine's job — when that capability ships, it'll be an external driver (`/loop`-style command) that calls the agent repeatedly across phases. Inside one invocation, work the current phase fully, advance, and return to the user.
+
+Examples:
+
+```
+TaskCreate({ id: "R001-skill_authoring", title: "Author skill for R001",
+             phase: "skill_authoring", ruleId: "R001" })
+
+TaskCreate({ id: "trust-bundle-skill_authoring",
+             title: "R013/R015/R017 — required-fields table",
+             phase: "skill_authoring" })
+
+TaskComplete({ id: "R001-skill_authoring",
+               summary: "regex check passes 89/90; R001 done" })
+```
 
 ### Persisted methodology — PATTERNS.md OR phase logs OR AGENT.md decisions
 

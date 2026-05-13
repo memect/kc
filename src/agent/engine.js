@@ -37,6 +37,7 @@ import { EvolutionCycleTool } from "./tools/evolution-cycle.js";
 import { TierDowngradeTool } from "./tools/tier-downgrade.js";
 import { AgentTool } from "./tools/agent-tool.js";
 import { WebSearchTool } from "./tools/web-search.js";
+import { TaskCreateTool, TaskUpdateTool, TaskCompleteTool } from "./tools/task-board.js";
 import { SkillLoader } from "./skill-loader.js";
 import { TaskManager } from "./task-manager.js";
 import { Scheduler } from "./scheduler.js";
@@ -475,6 +476,16 @@ export class AgentEngine {
           () => this.currentPhase,
         ),
         new WebSearchTool(this.config.tavilyApiKey),
+        // v0.7.4 (re-applied from v0.7.3 G2b): TaskCreate /
+        // TaskUpdate / TaskComplete — agent populates the
+        // Ralph-loop queue for the CURRENT phase only. Phase
+        // boundaries exit the loop (v0.7.4 G0c). Skipped for
+        // subagents (taskManager null in subagent scope).
+        ...(this.taskManager ? [
+          new TaskCreateTool(this.workspace, this.taskManager),
+          new TaskUpdateTool(this.workspace, this.taskManager),
+          new TaskCompleteTool(this.workspace, this.taskManager),
+        ] : []),
       ],
       // Distillation+ only (DISTILL mode)
       distill: [
@@ -1185,11 +1196,11 @@ export class AgentEngine {
           }
           this._totalTurns = (this._totalTurns || 0) + 1;
 
-          // Bug 4 trigger (1): re-check phase criteria at end of every turn —
-          // KC may have advanced state via conversation alone, without any
-          // tool that the pipeline narrowly watches.
-          const advancedEv = this._maybeAutoAdvance();
-          if (advancedEv) yield advancedEv;
+          // v0.7.4 G0b: removed `_maybeAutoAdvance()` auto-fire here.
+          // Phase advance is now 100% explicit (agent's `phase_advance`
+          // tool, or user re-prompt). v0.7.3 phase-control regression
+          // was caused by this edge-triggered auto-advance firing mid-
+          // session and chaining into next phase without user check-in.
 
           this.eventLog.append("turn_complete", {});
           this.saveState();
@@ -1308,6 +1319,7 @@ export class AgentEngine {
           yield new AgentEvent({
             type: "tool_result",
             name: tc.name,
+            input: inputData,
             output: historyContent,
             isError: result.isError,
           });
@@ -1374,12 +1386,9 @@ export class AgentEngine {
           }
         }
 
-        // Bug 4 fix: re-check exit criteria after every tool-result loop, not
-        // just from pipeline.onToolResult. The pipeline's describeState() (called
-        // on every turn) already re-scans, so exitCriteriaMet() is accurate; we
-        // just need to act on it eagerly.
-        const ev = this._maybeAutoAdvance();
-        if (ev) yield ev;
+        // v0.7.4 G0b: removed post-tool `_maybeAutoAdvance()` call.
+        // Phase advance is now 100% explicit. See `_runTaskLoopSerial`
+        // phase-change-exit guard for the loop-level checkpoint.
 
       } catch (err) {
         // A8: If the LLM client tagged the stream termination reason, pass
@@ -2097,7 +2106,14 @@ export class AgentEngine {
     // Run the initial turn (user's request)
     yield* this.runTurn(userMessage);
 
-    // Auto-continue through pending tasks
+    // v0.7.4 G0c: capture phase at loop entry. If phase changes
+    // during the loop (agent calls phase_advance from inside a
+    // task), exit so user gets a checkpoint at the boundary.
+    // Restores the v0.7.2 "stops between phases" behavior that
+    // v0.7.3 broke by enabling cross-phase task chaining.
+    const startingPhase = this.currentPhase;
+
+    // Auto-continue through pending tasks (within current phase only)
     while (this.taskManager.getNextPending()) {
       // v0.7.0 #93: budget-aware compact threshold. The old
       // `messages.length > 15` was message-count-based and frozen
@@ -2158,26 +2174,20 @@ export class AgentEngine {
         },
       });
 
-      // Bug 4 trigger (2): auto-advance when all phase tasks are done AND
-      // the pipeline's exit criteria are also met (Bug 5 fix — task state
-      // alone is a ralph-loop convenience, not authoritative phase signal;
-      // tasks could be marked skipped manually or by an editor).
-      if (this._allCurrentPhaseTasksComplete()) {
-        const pipeline = this.pipelines[this.currentPhase];
-        let exitMet = false;
-        try { exitMet = !!pipeline?.exitCriteriaMet?.(); } catch { exitMet = false; }
-        if (exitMet) {
-          const next = NEXT_PHASE[this.currentPhase];
-          if (next) {
-            const advanced = this._advancePhase(next, "all current-phase tasks completed + exit criteria met");
-            if (advanced) {
-              yield new AgentEvent({
-                type: "pipeline_event",
-                data: { type: "phase_ready", nextPhase: next, message: "all phase tasks done; exit criteria met" },
-              });
-            }
-          }
-        }
+      // v0.7.4 G0c: phase boundary = user checkpoint. Exit the
+      // loop if the agent advanced phase during this task —
+      // even if pre-created tasks for the new phase are queued.
+      // User sees current state and explicitly re-prompts to
+      // begin the next phase. Marathon-style end-to-end
+      // autonomy belongs to an external driver (Claude Code
+      // /loop pattern), not the engine.
+      if (this.currentPhase !== startingPhase) {
+        this.eventLog.append("ralph_loop_exit", {
+          reason: "phase_changed",
+          from: startingPhase,
+          to: this.currentPhase,
+        });
+        break;
       }
     }
   }
@@ -2203,6 +2213,11 @@ export class AgentEngine {
     // Initial turn: main agent reads user request, creates tasks.
     yield* this.runTurn(userMessage);
 
+    // v0.7.4 G0c: capture phase at loop entry. Phase change mid-loop
+    // = user checkpoint. Same contract as serial path. Workers in
+    // flight finish; no new ones dispatched after the change.
+    const startingPhase = this.currentPhase;
+
     const agentTool = this._buildTools.core.find((t) => t?.name === "agent_tool");
     if (!agentTool) {
       // Shouldn't happen (agent_tool is core), but fall back safely.
@@ -2227,6 +2242,9 @@ export class AgentEngine {
     const inFlight = new Map();
 
     const dispatch = async () => {
+      // v0.7.4 G0c: stop dispatching if phase changed since loop start.
+      // In-flight workers complete naturally; queue stays untouched.
+      if (this.currentPhase !== startingPhase) return;
       while (inFlight.size < parallelism) {
         const task = this.taskManager.claimNextPending(`pool${inFlight.size}`);
         if (!task) return;
@@ -2362,23 +2380,15 @@ export class AgentEngine {
 
     this.saveState();
 
-    // After all workers done, check for phase auto-advance (same as serial path).
-    if (this._allCurrentPhaseTasksComplete()) {
-      const pipeline = this.pipelines[this.currentPhase];
-      let exitMet = false;
-      try { exitMet = !!pipeline?.exitCriteriaMet?.(); } catch { exitMet = false; }
-      if (exitMet) {
-        const next = NEXT_PHASE[this.currentPhase];
-        if (next) {
-          const advanced = this._advancePhase(next, "all parallel tasks completed + exit criteria met");
-          if (advanced) {
-            yield new AgentEvent({
-              type: "pipeline_event",
-              data: { type: "phase_ready", nextPhase: next, message: "all phase tasks done; exit criteria met" },
-            });
-          }
-        }
-      }
+    // v0.7.4 G0c: if phase changed during the parallel run, log the
+    // checkpoint event for the audit trail. No auto-advance — that
+    // belongs to the agent (phase_advance tool) or user re-prompt.
+    if (this.currentPhase !== startingPhase) {
+      this.eventLog.append("ralph_loop_exit", {
+        reason: "phase_changed",
+        from: startingPhase,
+        to: this.currentPhase,
+      });
     }
   }
 
