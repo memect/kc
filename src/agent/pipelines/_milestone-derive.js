@@ -333,11 +333,86 @@ export function deriveSkillAuthoringMilestones(workspace) {
     }
   }
 
+  // v0.8 P2-F (item 22): count stub-shaped check.py files. Pairs with
+  // v0.8 P2-A teaching about the inverse-stub anti-pattern. Surfaces
+  // a ratio that downstream code (skill-authoring exitCriteriaMet)
+  // can choose to enforce via env flag.
+  const checkPyAudit = _auditCheckPyShapes(skillsDir);
+
   return {
     skillsAuthored,
     skillsWithScripts,
     ruleIdsCovered: [...ruleIdsCovered],
+    checkPyTotal: checkPyAudit.total,
+    checkPyStubCount: checkPyAudit.stubFiles.length,
+    checkPyStubFiles: checkPyAudit.stubFiles,
+    checkPyStubRatio: checkPyAudit.total > 0
+      ? +(checkPyAudit.stubFiles.length / checkPyAudit.total).toFixed(3)
+      : 0,
   };
+}
+
+// v0.8 P2-F: walk rule_skills/<id>/ for check_*.py and check each for
+// stub-shape patterns. Returns {total, stubFiles}. Patterns recognized
+// as stubs (per v0.7.x audit findings):
+//   - returns literal `"verdict": "NOT_APPLICABLE"` (资管 v0.7.5 variant)
+//   - returns literal `"pass": null` (v0.7.0 legacy)
+//   - returns literal `"method": "stub"`
+//   - AND none of: workflow import, >20 non-comment lines.
+// Substantive signals override the stub-return signal (a check.py that
+// imports + delegates to a workflow but happens to return NOT_APPLICABLE
+// for some sub-path is not a stub).
+function _auditCheckPyShapes(skillsDir) {
+  const stubFiles = [];
+  let total = 0;
+  if (!dirExists(skillsDir)) return { total, stubFiles };
+
+  for (const dirEntry of listChildDirs(skillsDir)) {
+    if (dirEntry.name.startsWith("__")) continue;
+    const skillPath = path.join(skillsDir, dirEntry.name);
+    const scripts = findCheckScripts(skillPath);
+    for (const scriptPath of scripts) {
+      total++;
+      if (_isCheckPyStubShaped(scriptPath)) {
+        stubFiles.push(path.relative(skillsDir, scriptPath));
+      }
+    }
+  }
+  return { total, stubFiles };
+}
+
+function _isCheckPyStubShaped(scriptPath) {
+  let content;
+  try { content = fs.readFileSync(scriptPath, "utf-8"); }
+  catch { return false; }
+
+  // Substantive signal 1: imports a workflow (direct delegation)
+  if (/from\s+workflows[.\w]+\s+import|^import\s+workflows\./m.test(content)) {
+    return false;
+  }
+
+  // Stub return patterns. A check.py is a stub if it ALWAYS returns one
+  // of these regardless of input. We detect "always returns" by checking
+  // that the file has no other verdict literal — no PASS, FAIL, WARNING
+  // returns elsewhere. A scaffold with 30+ lines but a single
+  // NOT_APPLICABLE return path (like 资管 v0.7.5's 14 check.py files) is
+  // still a stub by behavior — line count is unreliable.
+  const stubReturn1 = /return\s+\{[^}]*["']verdict["']\s*:\s*["']NOT_APPLICABLE["']/m.test(content);
+  const stubReturn2 = /return\s+\{[^}]*["']pass["']\s*:\s*None/m.test(content);
+  const stubReturn3 = /return\s+\{[^}]*["']method["']\s*:\s*["']stub["']/m.test(content);
+  const hasStubReturn = stubReturn1 || stubReturn2 || stubReturn3;
+
+  if (!hasStubReturn) return false;
+
+  // If we find ANY other verdict (PASS, FAIL, WARNING), the file is doing
+  // real branching even if one path returns NOT_APPLICABLE — not a stub.
+  const hasOtherVerdict =
+    /["']verdict["']\s*:\s*["']PASS["']/m.test(content) ||
+    /["']verdict["']\s*:\s*["']FAIL["']/m.test(content) ||
+    /["']verdict["']\s*:\s*["']WARNING["']/m.test(content) ||
+    /\bmake_result\b/.test(content); // common helper that produces non-stub returns
+
+  return !hasOtherVerdict;
 }
 
 // ───────────────────────────────────────────────────────────────────

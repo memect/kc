@@ -59,6 +59,10 @@ export class SkillAuthoringPipeline extends Pipeline {
     this.skillsAuthored = [...m.skillsAuthored];
     this.skillsWithScripts = [...m.skillsWithScripts];
     this.ruleIdsCovered = new Set(m.ruleIdsCovered);
+    // v0.8 P2-F (item 22): stub-shape audit for check.py files.
+    this._checkPyStubRatio = m.checkPyStubRatio || 0;
+    this._checkPyStubFiles = m.checkPyStubFiles || [];
+    this._checkPyTotal = m.checkPyTotal || 0;
   }
 
   // v0.7.0 A1: ruleId extraction moved to _milestone-derive.js
@@ -228,7 +232,32 @@ export class SkillAuthoringPipeline extends Pipeline {
     this._validationFailures = v.failures;
     this._validationSkipped = v.skipped;
     if (!v.ok) return false;
-    return this.skillsWithScripts.length >= Math.max(1, this.skillsAuthored.length * 0.5);
+    if (this.skillsWithScripts.length < Math.max(1, this.skillsAuthored.length * 0.5)) {
+      return false;
+    }
+
+    // v0.8 P2-F (item 22): optional enforcement of check.py substantiveness.
+    // SOFT-by-default — the stub ratio is always computed (visible in
+    // describeState / events) but only blocks phase advance if
+    // KC_ENFORCE_CHECK_PY_SUBSTANTIVE=1 is set. Default-off because
+    // the heuristic may over-fire on legitimate scaffolds; v0.8 ships
+    // the detection + reporting, v0.8.x revisits enforcement after audit
+    // data shows whether the signal is reliable.
+    const enforce = process.env.KC_ENFORCE_CHECK_PY_SUBSTANTIVE === "1";
+    if (enforce && this._checkPyTotal > 0 && this._checkPyStubRatio > 0.5) {
+      this._validationFailures = this._validationFailures || [];
+      this._validationFailures.push({
+        file: "<check_py_substantiveness>",
+        reason:
+          `${this._checkPyStubCount || this._checkPyStubFiles.length}/${this._checkPyTotal} check.py files are stub-shaped ` +
+          `(return NOT_APPLICABLE / pass:null with no workflow import + ≤20 lines). ` +
+          `Examples: ${this._checkPyStubFiles.slice(0, 3).join(", ")}${this._checkPyStubFiles.length > 3 ? "..." : ""}. ` +
+          `See skill-authoring SKILL.md anti-pattern section. ` +
+          `Set KC_ENFORCE_CHECK_PY_SUBSTANTIVE=0 to bypass this gate if intentional.`,
+      });
+      return false;
+    }
+    return true;
   }
 
   /**
