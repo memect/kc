@@ -21,9 +21,50 @@ npm install -g kc-beta
 kc-beta onboard      # configure provider + API key
 cd my-project        # a folder containing rules/ and samples/
 kc-beta              # launch the agent
+
+# v0.8+ unattended runs:
+kc-marathon --workspace ~/.kc_agent/workspaces/<id> \
+            --goal "Verify the new regulation against samples/" \
+            --max-wall-clock 6h
 ```
 
 Requires **Node.js 20+**. See [QUICKSTART.md](./QUICKSTART.md) for the full setup walkthrough.
+
+---
+
+## v0.8 Highlights
+
+- **`kc-marathon` driver** — separate-process unattended-run mode. The
+  driver tails KC's events.jsonl and writes continuation prompts to the
+  workspace's `.kc_marathon/inbox.jsonl`. F5 strict one-phase-per-prompt
+  stays enabled for interactive sessions and bypasses cleanly when
+  marathon is attached.
+- **Skill usage counter** — passive Layer-B measurement of which skills
+  the engine actually ships to the LLM. `skill_byte_send` events go to
+  events.jsonl; the audit script aggregates per-phase × per-skill.
+  Agent-blind by design.
+- **`worker_llm_call` batch mode** — `prompts: [...]` array input with
+  concurrency control (default 5, max 10). Pairs with a canonical
+  `workflows/common/llm_client.py` shim (taught in `skill-to-workflow`)
+  so distilled workflows route through the engine where possible and
+  log to `output/llm_ledger.jsonl` when they don't.
+- **`sandbox_exec` timeout model** — default 120s (was 30s); per-call
+  `timeout_ms` up to 600s for known-slow commands. Configurable via
+  `KC_EXEC_DEFAULT_TIMEOUT_MS` + `KC_EXEC_MAX_TIMEOUT_MS`.
+- **Prescriptive phase-advance hints** — refusal messages now name
+  concrete next-action artifacts (`workflows/<rule_id>/workflow_v1.py`,
+  `output/results/production_qc_results.json`, etc.) instead of
+  descriptive `engineCounts` only.
+- **`check.py` substantiveness audit** — engine detects stub-shaped
+  rule_skills/<id>/check.py files (NOT_APPLICABLE-only returns with no
+  workflow delegation). Surfaced in milestones; opt-in enforcement via
+  `KC_ENFORCE_CHECK_PY_SUBSTANTIVE=1`.
+
+Plus engine-fix carryover from the v0.7.5 audit cycle: H3 calibration
+aggregator schema, milestone-derivation gaps (review_001.json + multi-
+path coverage_report.md), VLM runtime hardcode (workspace .env overlay),
+heap_mb periodic-write fix, stale release detection, taskboard skill
+availability in every phase. Full list: see DEV_LOG v0.8 entry.
 
 ---
 
