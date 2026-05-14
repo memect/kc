@@ -188,6 +188,106 @@ Worker LLMs are accessed via SiliconFlow API. Connection details are in `.env`:
 
 See `references/worker-llm-catalog.md` for current model capabilities and context window sizes.
 
+## Two access paths: `worker_llm_call` tool (preferred) vs direct HTTP
+
+KC ships a `worker_llm_call` tool. Use it whenever possible — the engine sees every call, can track cost + token spend, applies rate limiting, and surfaces in audit. v0.8 P2-B added a batch mode:
+
+```
+worker_llm_call({
+  tier: "tier1",
+  prompts: ["check doc A...", "check doc B...", "check doc C..."],
+  system_prompt: "You are a compliance assistant. Reply with JSON {verdict, evidence, confidence}.",
+  concurrency: 5    // 1-10, default 5
+})
+```
+
+Returns a `{n_total, n_succeeded, n_failed, total_tokens_in, total_tokens_out, results: [...]}` summary. Partial failures don't fail the whole batch.
+
+### When to write your own llm_client.py (and what it should look like)
+
+For a workflow that runs **standalone** (no KC session — e.g., a customer deploys the release bundle and runs `python run.py doc.pdf`), the workflow has no access to `worker_llm_call`. In that case, the workflow needs its own thin HTTP client. **Don't reinvent.** Use this canonical shim at `workflows/common/llm_client.py`:
+
+```python
+"""Worker LLM client for distilled workflows.
+
+When this file runs inside a KC session, KC's `worker_llm_call` tool
+is the preferred path — but distilled workflows are designed to run
+standalone too (in deployed release bundles). This shim provides a
+direct-HTTP fallback that also writes to `output/llm_ledger.jsonl`
+so a KC audit can reconstruct LLM usage even when calls bypassed
+the engine's tool surface.
+"""
+import json
+import os
+import time
+import urllib.request
+
+_LEDGER_PATH = os.path.join("output", "llm_ledger.jsonl")
+
+
+def call(tier="tier2", prompt="", system_prompt=None, max_tokens=4096):
+    """Single-prompt call. Returns {response, model_used, tier, tokens_in, tokens_out}."""
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("SILICONFLOW_API_KEY", "")
+    base_url = (os.environ.get("LLM_BASE_URL") or os.environ.get("SILICONFLOW_BASE_URL")
+                or "https://api.siliconflow.cn/v1").rstrip("/")
+    if not api_key:
+        raise RuntimeError("LLM_API_KEY not configured")
+
+    tier_models = _load_tier_models(tier)
+    if not tier_models:
+        raise RuntimeError(f"No models configured for {tier}; check .env TIER1-TIER4")
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    body = json.dumps({"model": tier_models[0], "messages": messages, "max_tokens": max_tokens}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read())
+    usage = data.get("usage") or {}
+    result = {
+        "response": data["choices"][0]["message"]["content"],
+        "model_used": tier_models[0],
+        "tier": tier,
+        "tokens_in": usage.get("prompt_tokens", 0),
+        "tokens_out": usage.get("completion_tokens", 0),
+    }
+    _write_ledger({**result, "duration_s": round(time.time() - t0, 3), "ts": time.time()})
+    return result
+
+
+def _load_tier_models(tier):
+    env_key = tier.upper()  # TIER1 / TIER2 / ...
+    raw = os.environ.get(env_key, "")
+    if not raw and os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(f"{env_key}="):
+                    raw = line.split("=", 1)[1].strip()
+                    break
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _write_ledger(record):
+    try:
+        os.makedirs(os.path.dirname(_LEDGER_PATH), exist_ok=True)
+        with open(_LEDGER_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # ledger is best-effort
+```
+
+Drop this into `workflows/common/llm_client.py` when you start distillation. Standalone runs get LLM access; KC sessions get audit-visibility through the ledger (engine reads `output/llm_ledger.jsonl` on phase advance + finalization).
+
+**Don't write your own llm_client.py from scratch.** The agent in the 资管 v0.7.5 session did this and ended up bypassing `worker_llm_call` entirely — engine had 0 visibility into 100+ post-distillation LLM calls. The shim above gives you the same path without the bypass.
+
 ## sandbox_exec timeout for known-slow commands
 
 Default `sandbox_exec` timeout is 120 seconds. For commands you expect to take longer — LLM batch processing, large regression runs, document parsing — pass an explicit `timeout_ms` (up to 600000ms = 10 minutes). Don't fight the default by re-batching artificially small chunks; that wastes turns and obscures intent.

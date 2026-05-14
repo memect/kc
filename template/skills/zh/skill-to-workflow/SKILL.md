@@ -189,6 +189,106 @@ Worker LLM 通过 SiliconFlow API 访问。连接信息在 `.env` 里：
 
 各模型当前的能力与上下文窗口大小，见 `references/worker-llm-catalog.md`。
 
+## 两条访问路径：`worker_llm_call` 工具（优先）vs 直接 HTTP
+
+KC 自带一个 `worker_llm_call` 工具。能用就用 —— 引擎能看到每次调用，能统计成本和 token、做限流、并把数据进入审计。v0.8 P2-B 增加了批量模式：
+
+```
+worker_llm_call({
+  tier: "tier1",
+  prompts: ["核查文档 A...", "核查文档 B...", "核查文档 C..."],
+  system_prompt: "你是合规助手。返回 JSON {verdict, evidence, confidence}。",
+  concurrency: 5    // 1-10，默认 5
+})
+```
+
+返回 `{n_total, n_succeeded, n_failed, total_tokens_in, total_tokens_out, results: [...]}` 摘要。部分失败不会让整批失败。
+
+### 什么时候自己写 llm_client.py（以及它应该长什么样）
+
+对于一个 **独立运行** 的 workflow（没有 KC 会话 —— 比如客户把 release 包部署后跑 `python run.py doc.pdf`），workflow 拿不到 `worker_llm_call`。这时 workflow 需要自己的薄 HTTP 客户端。**不要从零造轮子**。在 `workflows/common/llm_client.py` 用下面这份规范化的 shim：
+
+```python
+"""Worker LLM client for distilled workflows.
+
+When this file runs inside a KC session, KC's `worker_llm_call` tool
+is the preferred path — but distilled workflows are designed to run
+standalone too (in deployed release bundles). This shim provides a
+direct-HTTP fallback that also writes to `output/llm_ledger.jsonl`
+so a KC audit can reconstruct LLM usage even when calls bypassed
+the engine's tool surface.
+"""
+import json
+import os
+import time
+import urllib.request
+
+_LEDGER_PATH = os.path.join("output", "llm_ledger.jsonl")
+
+
+def call(tier="tier2", prompt="", system_prompt=None, max_tokens=4096):
+    """Single-prompt call. Returns {response, model_used, tier, tokens_in, tokens_out}."""
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("SILICONFLOW_API_KEY", "")
+    base_url = (os.environ.get("LLM_BASE_URL") or os.environ.get("SILICONFLOW_BASE_URL")
+                or "https://api.siliconflow.cn/v1").rstrip("/")
+    if not api_key:
+        raise RuntimeError("LLM_API_KEY not configured")
+
+    tier_models = _load_tier_models(tier)
+    if not tier_models:
+        raise RuntimeError(f"No models configured for {tier}; check .env TIER1-TIER4")
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    body = json.dumps({"model": tier_models[0], "messages": messages, "max_tokens": max_tokens}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read())
+    usage = data.get("usage") or {}
+    result = {
+        "response": data["choices"][0]["message"]["content"],
+        "model_used": tier_models[0],
+        "tier": tier,
+        "tokens_in": usage.get("prompt_tokens", 0),
+        "tokens_out": usage.get("completion_tokens", 0),
+    }
+    _write_ledger({**result, "duration_s": round(time.time() - t0, 3), "ts": time.time()})
+    return result
+
+
+def _load_tier_models(tier):
+    env_key = tier.upper()  # TIER1 / TIER2 / ...
+    raw = os.environ.get(env_key, "")
+    if not raw and os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(f"{env_key}="):
+                    raw = line.split("=", 1)[1].strip()
+                    break
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _write_ledger(record):
+    try:
+        os.makedirs(os.path.dirname(_LEDGER_PATH), exist_ok=True)
+        with open(_LEDGER_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # ledger is best-effort
+```
+
+开始 distillation 时把这份 shim 放到 `workflows/common/llm_client.py`。独立运行场景能拿到 LLM 访问；KC 会话通过 ledger 也能看到（引擎会在阶段推进与 finalization 时读 `output/llm_ledger.jsonl`）。
+
+**不要自己从零写 llm_client.py**。资管 v0.7.5 会话里的智能体就这么干了，结果完全绕过了 `worker_llm_call` —— 引擎对 distillation 之后 100+ 次 LLM 调用一无所知。上面这份 shim 给你同样的路径但不绕过审计。
+
 ## sandbox_exec 超时设置（已知耗时长的命令）
 
 `sandbox_exec` 默认超时是 120 秒。对于你预期会跑得更久的命令 —— LLM 批处理、大型回归测试、文档解析 —— 显式传 `timeout_ms`（最大 600000ms = 10 分钟）。不要靠把任务切成不必要的小块来绕开默认值；那只会浪费回合数并模糊意图。
