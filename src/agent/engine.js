@@ -1442,11 +1442,17 @@ export class AgentEngine {
           // path-matching emission stays only as a fallback for any agent
           // that reads a SKILL.md path directly (out of pattern).
           try {
+            // v0.8 P1-E: heredoc detection. `cat << 'EOF' > /tmp/skill.md`
+            // matches the read-verb regex but is actually a WRITE — the
+            // heredoc operator `<<` means cat is consuming inline content
+            // (the heredoc body), not a file path. 资管 v0.7.5 audit § 5f
+            // confirmed 1 spurious skill_invoked event of this kind.
+            // Excluding any command with `<<` from the isRead classification.
+            const cmd = String(inputData?.command || "");
+            const isHeredoc = cmd.includes("<<");
             const isRead =
               (tc.name === "workspace_file" && inputData?.operation === "read") ||
-              (tc.name === "sandbox_exec" && /\b(cat|head|tail|less|grep|view|read)\b/.test(
-                String(inputData?.command || "")
-              ));
+              (tc.name === "sandbox_exec" && !isHeredoc && /\b(cat|head|tail|less|grep|view|read)\b/.test(cmd));
             if (
               !result.isError &&
               isRead &&
