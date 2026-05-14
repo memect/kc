@@ -23,6 +23,7 @@ phases:
     always_loaded:
       - bootstrap-workspace
     available:
+      - work-decomposition       # v0.8 P2-E
       - auto-model-selection
       - data-sensibility
       - document-parsing
@@ -60,6 +61,7 @@ phases:
     always_loaded:
       - evolution-loop
     available:
+      - work-decomposition       # v0.8 P2-E
       - skill-authoring
       - skill-to-workflow
       - tree-processing
@@ -74,6 +76,7 @@ phases:
       - skill-to-workflow
       - evolution-loop
     available:
+      - work-decomposition       # v0.8 P2-E
       - skill-authoring
       - task-decomposition
       - corner-case-management
@@ -87,6 +90,7 @@ phases:
       - quality-control
       - evolution-loop
     available:
+      - work-decomposition       # v0.8 P2-E
       - skill-authoring
       - skill-to-workflow
       - confidence-system
@@ -100,6 +104,7 @@ phases:
     always_loaded:
       - quality-control
     available:
+      - work-decomposition       # v0.8 P2-E
       - skill-authoring
       - skill-to-workflow
       - dashboard-reporting

@@ -15,6 +15,14 @@ This skill is the conductor's playbook for that decision. It's tagged `tier: met
 - **Entering rule_extraction.** Read the regulation, decompose into rules, then decide how those rules will be ordered and grouped before declaring the phase done. Coverage audit + chunk refs are downstream of these decisions.
 - **Entering skill_authoring.** TaskBoard is empty (engine no longer auto-populates per-rule tasks). Read the rule list from `describeState`, decide grouping + order, then call `TaskCreate` for each unit of work.
 - **Mid-run re-decomposition.** If the TaskBoard feels wrong (rules accumulating in the wrong order, an obviously-bundled pair across two tasks), stop adding work and re-decompose. The cost of pausing 5 minutes to re-plan is recovered within 2 rules of better-shaped work.
+- **Any phase with 3+ parallel sub-goals.** If you find yourself juggling multiple parallel sub-goals in working memory (3+ rules × docs, multiple deliverable-prep items in finalization, several QC batches in production_qc), drop them into the TaskBoard and work serially. v0.7.5 audits showed distillation + production_qc benefit from explicit tasks even when the registry didn't expose this skill there — v0.8 P2-E makes the skill available in every phase.
+
+## Quick rule: when does the TaskBoard belong?
+
+- Touching N+ rules or docs in parallel? → `TaskCreate` one task per rule/doc before starting.
+- Single 1-step request? → Skip; just do it.
+- Subagent internal coordination? → Skip; subagents don't get the TaskBoard.
+- Anything you'd otherwise need to remember "I'll come back to that"? → TaskCreate it now. Working memory loses partial completions over long turns.
 
 ## Locked principles
 
