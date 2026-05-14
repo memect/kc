@@ -28,6 +28,8 @@ rule-skills/
 
 Not every rule needs all of these. A simple threshold check might only need SKILL.md and a script. A complex semantic rule might need detailed references and many samples. Start minimal, add as needed during testing.
 
+**文件名大小写很重要。** 必须使用大写 `SKILL.md`（与 `template/skills/` 中的 meta-skill 约定一致）。Linux 文件系统区分大小写；引擎的路径匹配、审计脚本、下游工具都假定为大写。不要写成 `skill.md`、`Skill.md` 或其他大小写变体。
+
 ## 颗粒度：默认 1 条规则 = 1 个技能目录
 
 默认**每条规则一个独立技能目录**。仅当同时满足以下两个条件时，才能把多条规则合并到同一个文件：

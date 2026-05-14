@@ -1354,9 +1354,13 @@ export class AgentEngine {
               // v0.7.5 flat layout: skills/<name>/SKILL.md (workspace scope)
               // OR template/skills/<lang>/<name>/SKILL.md (template scope, rare)
               // Deep layout backward-compat preserved for any stragglers.
+              // v0.8 P0-B: accept lowercase `skill.md` too — 资管 audit § 3.2
+              // found agents writing lowercase consistently (14/14 rule_skills/).
+              // Limited to exact uppercase OR exact lowercase (no mixed case)
+              // to avoid spurious matches on unrelated files (e.g., `Skill.md`).
               const skillMatch = p.match(
-                /(?:template\/)?skills\/(?:[a-z]+\/)?(?:(?:meta-meta|meta|skill-creator)\/)?([a-zA-Z0-9_-]+)\/SKILL\.md\b/
-              ) || p.match(/\bSKILL\.md\b/);
+                /(?:template\/)?skills\/(?:[a-z]+\/)?(?:(?:meta-meta|meta|skill-creator)\/)?([a-zA-Z0-9_-]+)\/(?:SKILL|skill)\.md\b/
+              ) || p.match(/\b(?:SKILL|skill)\.md\b/);
               if (skillMatch) {
                 const skillName = skillMatch[1] || "(unknown)";
                 this.eventLog.append("skill_invoked", {

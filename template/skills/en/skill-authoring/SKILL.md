@@ -28,6 +28,8 @@ rule-skills/
 
 Not every rule needs all of these. A simple threshold check might only need SKILL.md and a script. A complex semantic rule might need detailed references and many samples. Start minimal, add as needed during testing.
 
+**Filename case matters.** Use uppercase `SKILL.md` (matching the meta-skill convention you see in `template/skills/`). On Linux filesystems this is case-sensitive; engine path-matching, audit scripts, and downstream tooling all assume uppercase. Do not write `skill.md`, `Skill.md`, or any other case variant.
+
 ## Granularity: 1 rule = 1 skill directory (default)
 
 Default to **one rule per skill directory**. Group rules into the same file ONLY when they meet BOTH:
