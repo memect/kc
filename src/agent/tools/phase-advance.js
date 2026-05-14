@@ -1,5 +1,6 @@
 import { BaseTool, ToolResult } from "./base.js";
 import { Phase } from "../pipelines/index.js";
+import { getPrescriptiveHint } from "../pipelines/_advance-hints.js";
 
 const VALID_PHASES = new Set(Object.values(Phase));
 
@@ -126,18 +127,21 @@ export class PhaseAdvanceTool extends BaseTool {
     // exactly which milestones the gate is reading and can satisfy them.
     // E2E #6 v070 showed the generic "check /status" hint wasn't concrete
     // enough — agents forced through. Naming the gap inline reduces that.
-    const engineCountsLine = advanceResult?.engineCounts
-      ? `\nEngine telemetry: ${advanceResult.engineCounts}`
-      : "";
+    // v0.8 P0-E: prescriptive refusal hint — name the artifacts the agent
+    // needs to produce, derived from the same paths _milestone-derive.js
+    // walks. Replaces the v0.7.x descriptive "check /status" message that
+    // 资管 + 贷款 v0.7.5 audits showed agents force-bypassing.
+    const prescriptive = getPrescriptiveHint(
+      beforePhase,
+      advanceResult?.engineCounts,
+      advanceResult?.engineCounts || "",
+    );
 
     return new ToolResult(
       `Did not advance to ${to} (currently in ${beforePhase || "?"}). ` +
-      `Likely cause: source-phase exit criteria not met.${engineCountsLine}\n\n` +
-      `Run /status (or read the phase describeState block in this turn's system reminder) ` +
-      `to see which milestones are missing, then produce the disk artifacts that satisfy them — ` +
-      `the engine derives milestones from filesystem facts (rule_skills/<id>/SKILL.md, check.py, ` +
-      `workflows/<id>/*.py, output/results/*.json, etc.). ` +
-      `If the transition is non-adjacent or this phase truly is done despite the gate, ` +
+      `Likely cause: source-phase exit criteria not met.\n\n` +
+      prescriptive +
+      `\n\nIf the transition is non-adjacent or this phase truly is done despite the gate, ` +
       `re-call with the documented schema flag. The engine logged the precise reason in ` +
       `events.jsonl as 'phase_advance_refused'.`,
       false,

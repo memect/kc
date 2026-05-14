@@ -5,6 +5,7 @@ import {
   deriveSkillAuthoringMilestones,
   deriveSkillTestingMilestones,
 } from "./pipelines/_milestone-derive.js";
+import { getPrescriptiveHint } from "./pipelines/_advance-hints.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { findSafeSplitPoint } from "./message-utils.js";
@@ -1542,9 +1543,17 @@ export class AgentEngine {
         try { criteriaMet = !!fromPipeline?.exitCriteriaMet?.(); } catch { criteriaMet = true; }
         if (!criteriaMet) {
           const counts = this._buildEngineCountsBlock(this.currentPhase);
+          // v0.8 P0-E: prescriptive hint in the event payload so post-mortem
+          // audits see what the agent was told (matches what phase-advance.js
+          // returns to the LLM).
+          let prescriptive = null;
+          try {
+            prescriptive = getPrescriptiveHint(this.currentPhase, null, counts || "");
+          } catch { /* hint generation is best-effort */ }
           this.eventLog.append("phase_advance_refused", {
             from: this.currentPhase, to: nextPhase, reason,
             hint: "exit criteria not met by engine telemetry",
+            prescriptive_hint: prescriptive,
             engineCounts: counts || null,
           });
           return false;
