@@ -274,16 +274,13 @@ export class AgentEngine {
     this.toolRegistry = new ToolRegistry();
     this._registerToolsForPhase(this.currentPhase);
 
-    // Edge-trigger state for _maybeAutoAdvance. Initialize to false for every
-    // phase so the first real false→true flip inside onToolResult triggers an
-    // advance — even when the user launches from a pre-populated workspace
-    // whose exit criteria already happen to be met at boot.
-    // resume() re-primes this from the restored pipeline state (see ~L566),
-    // which is the correct behaviour there: resumed sessions that were already
-    // past this phase shouldn't re-fire.
-    this._lastReady = Object.fromEntries(
-      Object.keys(this.pipelines).map((p) => [p, false]),
-    );
+    // v0.8 P1-D: removed `_lastReady` edge-trigger state. It was the
+    // bookkeeping for `_maybeAutoAdvance`, which v0.7.4 G0b decommissioned
+    // (all call sites removed because v0.7.3's mid-session auto-advance
+    // chain regression was caused by it). The method definition itself
+    // is also gone in P1-D. Phase advance is now 100% explicit: agent's
+    // `phase_advance` tool or user re-prompt. Resume + rollback paths
+    // that previously re-primed `_lastReady` are no-ops now.
 
     // B0.1: Heap sampler. Parent engines only — sub-agents share a process
     // with the parent and would double-log. Writes a single JSONL line
@@ -1085,16 +1082,9 @@ export class AgentEngine {
         }
       }
 
-      // Re-prime _lastReady AFTER importState so it reflects the restored
-      // pipeline milestones, not the empty defaults from constructor.
-      // (Bug 5 fix — without this, resume reignites auto-advance.)
-      for (const phase of Object.keys(engine.pipelines)) {
-        try {
-          engine._lastReady[phase] = !!engine.pipelines[phase].exitCriteriaMet?.();
-        } catch {
-          engine._lastReady[phase] = false;
-        }
-      }
+      // v0.8 P1-D: removed `_lastReady` re-prime. Was the bookkeeping for
+      // `_maybeAutoAdvance` which v0.7.4 G0b decommissioned. Phase advance
+      // is explicit now; nothing to re-prime on resume.
 
       engine.eventLog.append("session_resume", {
         resumedPhase: engine.currentPhase,
@@ -1573,10 +1563,12 @@ export class AgentEngine {
   }
 
   /**
-   * Centralized phase transition (Bug 4). All three triggers route through here:
+   * Centralized phase transition (Bug 4). Two triggers route through here
+   * after v0.7.4 G0b + v0.8 P1-D:
    * (1) pipeline.onToolResult returning phase_ready
-   * (2) post-turn auto-check via _maybeAutoAdvance
-   * (3) explicit user request via the phase_advance tool
+   * (2) explicit user request via the phase_advance tool
+   * (The historical (3) post-turn auto-check via `_maybeAutoAdvance` was
+   * removed; phase advance is 100% explicit.)
    *
    * Reachability: by default only forward-by-one transitions per NEXT_PHASE.
    * Set `force: true` to allow non-adjacent or backward transitions (e.g. user
@@ -1739,23 +1731,16 @@ export class AgentEngine {
       });
     }
 
-    // v0.6.2 J2: on rollback, reset the rolled-FROM phase's lastReady
-    // edge-trigger so that if the agent revisits it and re-flips
-    // exit-criteria true, _maybeAutoAdvance will fire correctly. Without
-    // this, the auto-advance edge trigger stays latched true and the
-    // moment the agent returns to fromPhase the engine immediately
-    // bounces them back out — defeating the rollback.
-    if (direction === "rollback" && this._lastReady) {
-      this._lastReady[fromPhase] = false;
-    }
+    // v0.8 P1-D: removed `_lastReady` rollback reset. Was the bookkeeping
+    // for `_maybeAutoAdvance` which v0.7.4 G0b decommissioned. Phase
+    // advance is explicit now; rollback just needs to commit the new phase.
 
     this.saveState();
 
     // B8: Soft signal — surface any sub-agents left running from the prior
     // phase so the main agent's next turn can decide whether to kill them.
-    // NOT automated: phase_advance can fire from _maybeAutoAdvance on a
-    // criteria-flip, and auto-killing would couple lifecycle with blast
-    // radius. This just informs.
+    // NOT automated: auto-killing would couple lifecycle with blast radius.
+    // This just informs.
     try {
       const agentTool = this._buildTools?.core?.find((t) => t?.name === "agent_tool");
       const runningIds = agentTool?.getRunningTaskIds?.() || [];
@@ -1955,35 +1940,12 @@ export class AgentEngine {
     return false;
   }
 
-  /**
-   * Bug 4 trigger (1) auto-detect, edge-triggered (Bug 5): only fires on a
-   * fresh false → true flip in `exitCriteriaMet()`. Sessions resumed in an
-   * already-met state do nothing; users iterating in a phase whose criteria
-   * have been met for a while do nothing. Real new evidence is required.
-   */
-  _maybeAutoAdvance() {
-    const phase = this.currentPhase;
-    const pipeline = this.pipelines[phase];
-    let nowReady = false;
-    try { nowReady = !!pipeline?.exitCriteriaMet?.(); } catch { nowReady = false; }
-
-    if (!nowReady) {
-      this._lastReady[phase] = false;
-      return null;
-    }
-    // Edge-trigger: nowReady && !wasReady
-    if (this._lastReady[phase]) return null;
-    this._lastReady[phase] = true;
-
-    const next = NEXT_PHASE[phase];
-    if (!next) return null;
-    const advanced = this._advancePhase(next, "exit criteria flipped to met");
-    if (!advanced) return null;
-    return new AgentEvent({
-      type: "pipeline_event",
-      data: { type: "phase_ready", nextPhase: next, message: "exit criteria flipped to met" },
-    });
-  }
+  // v0.8 P1-D: `_maybeAutoAdvance()` deleted. The method auto-fired phase
+  // advance on a false→true flip of `exitCriteriaMet()`, but v0.7.3
+  // showed mid-session auto-advance chains were a regression hazard
+  // (user couldn't review between phases). v0.7.4 G0b removed all call
+  // sites; v0.8 P1-D removes the now-dead method definition + the
+  // `_lastReady` bookkeeping it relied on. Phase advance is 100% explicit.
 
   /**
    * Tool-call offloading. If the tool's content exceeds the threshold,

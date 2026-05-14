@@ -382,8 +382,8 @@ export class AgentTool extends BaseTool {
    * B8: List currently-running sub-agents. Called by engine's phase-advance
    * path to emit a `stale_subagents` pipeline event — the main agent's next
    * turn sees the list and decides whether to kill each. Soft signal, not
-   * an automated kill, because phase_advance can fire from _maybeAutoAdvance
-   * unexpectedly and coupling the lifecycle would amplify blast radius.
+   * an automated kill: coupling the subagent lifecycle to phase advance
+   * would amplify blast radius if a transition happened unexpectedly.
    */
   getRunningTaskIds() {
     return Array.from(this._runningTasks.keys());

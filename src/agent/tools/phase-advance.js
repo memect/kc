@@ -73,12 +73,12 @@ export class PhaseAdvanceTool extends BaseTool {
 
     const beforePhase = this._getCurrentPhase();
     // H1: short-circuit the "already in target" case with an informational
-    // message — the agent was trying to advance correctly, engine just
-    // auto-advanced ahead of it (common when _maybeAutoAdvance fires on a
-    // criteria flip). Treat as success, not refusal.
+    // message — agent was trying to advance correctly, engine was already
+    // there (from a prior pipeline_event-driven advance or an earlier
+    // explicit call). Treat as success, not refusal.
     if (beforePhase && beforePhase === to) {
       return new ToolResult(
-        `Already in phase ${to} (engine auto-advanced earlier via criteria flip or prior explicit call). Proceed with phase-appropriate work.`,
+        `Already in phase ${to} (engine was already there from a prior advance). Proceed with phase-appropriate work.`,
       );
     }
 
