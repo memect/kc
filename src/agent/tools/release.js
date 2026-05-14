@@ -185,8 +185,23 @@ export class ReleaseTool extends BaseTool {
     // file through and emitted a stub on miss. We try to populate from
     // known QC artifact shapes here; if nothing matches, fall through
     // to the existing stub fallback.
+    // v0.7.5 G-H3: aggregator now runs if calibSrc is MISSING **or** has
+    // empty `historical_accuracy`. v0.7.4 audit (both 贷款 + 资管) shipped
+    // empty stubs despite QC data on disk — root cause was the v0.7.2
+    // gate only checked file existence; a stub written earlier (e.g., on
+    // finalization phase entry) kept the aggregator from firing later.
     const calibSrc = path.join(this._workspace.cwd, "confidence_calibration.json");
-    if (!fs.existsSync(calibSrc)) {
+    let shouldAggregate = !fs.existsSync(calibSrc);
+    if (!shouldAggregate) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(calibSrc, "utf-8"));
+        const ha = existing?.historical_accuracy;
+        if (!ha || (typeof ha === "object" && Object.keys(ha).length === 0)) {
+          shouldAggregate = true;
+        }
+      } catch { shouldAggregate = true; } // corrupt → re-aggregate
+    }
+    if (shouldAggregate) {
       const aggregated = this._aggregateAccuracyFromOutput();
       if (aggregated && Object.keys(aggregated.historical_accuracy).length > 0) {
         fs.writeFileSync(calibSrc, JSON.stringify(aggregated, null, 2) + "\n", "utf-8");
@@ -247,6 +262,14 @@ export class ReleaseTool extends BaseTool {
       .replace(/\{RULES_LIST\}/g, rulesList);
     fs.writeFileSync(path.join(bundleAbs, "README.md"), readme, "utf-8");
 
+    // v0.7.5 G-H4: sweep any leftover `.tmpl` files from the bundle dir.
+    // template/release/v1/ contains manifest.json.tmpl, catalog.json.tmpl,
+    // README.md.tmpl. _copyDir's exclude list (line 119) only filters
+    // README.md.tmpl; the other two ride along and persist alongside their
+    // populated counterparts. Audit (v0.7.4 贷款) confirmed this regression
+    // of v0.7.2 G1d which only handled the v1/ scaffold case.
+    this._sweepTmplFiles(bundleAbs);
+
     // v0.7.2 1d: clean up the template scaffold dir if a customized
     // release was just written alongside it. Both v0.7.1 audit runs
     // shipped with `output/releases/v1/` (template-derived, .tmpl
@@ -303,6 +326,25 @@ export class ReleaseTool extends BaseTool {
     }
   }
 
+  /**
+   * v0.7.5 G-H4: recursively remove any `*.tmpl` files from a directory.
+   * Used after populating a release bundle to drop template stubs that
+   * weren't filtered by the initial copy's exclude list. Idempotent.
+   */
+  _sweepTmplFiles(dir) {
+    try {
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          this._sweepTmplFiles(entryPath);
+        } else if (entry.isFile() && entry.name.endsWith(".tmpl")) {
+          try { fs.unlinkSync(entryPath); } catch { /* best-effort */ }
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+
   _findLatestWorkflow(ruleId) {
     // Canonical: workflows/<ruleId>/workflow_v#.py (subdirectory layout)
     const wfDir = path.join(this._workspace.cwd, "workflows", ruleId);
@@ -338,8 +380,93 @@ export class ReleaseTool extends BaseTool {
           }
         } catch { /* manifest unreadable; skip */ }
       }
+
+      // v0.7.5 G-H2: master / grouped workflow pattern. Agent shipped a
+      // single workflow folder (e.g., workflows/master/ or workflows/
+      // bank_wm_compliance/) declaring `source_rules: [R001, R002, ...]`
+      // in its SKILL.md / workflow.md / config.json. The manifest writer
+      // should credit this rule_id as covered by that workflow.
+      //
+      // Walk workflows/ subdirs looking for a source_rules declaration
+      // that includes this ruleId. Return the first matching workflow file.
+      // Audit (v0.7.4 贷款 session) confirmed manifest under-counted:
+      // catalog had 15 rules; manifest only listed R001 because R002-R015
+      // weren't found as standalone workflows.
+      for (const entry of fs.readdirSync(flatRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === ruleId) continue; // already checked above
+        const subDir = path.join(flatRoot, entry.name);
+        const declaredRules = this._readWorkflowSourceRules(subDir);
+        if (declaredRules.includes(ruleId)) {
+          // Find the workflow entry file in this dir
+          const subFiles = fs.readdirSync(subDir);
+          const versioned = subFiles.filter((f) => /^workflow_v\d+\.py$/.test(f)).sort();
+          if (versioned.length > 0) return path.join(subDir, versioned[versioned.length - 1]);
+          const any = subFiles.find((f) => f.endsWith(".py"));
+          if (any) return path.join(subDir, any);
+        }
+      }
     }
     return null;
+  }
+
+  /**
+   * v0.7.5 G-H2: read a workflow directory's source_rules declaration.
+   * Checks SKILL.md / workflow.md frontmatter (`source_rules: [...]`)
+   * and config.json (`source_rules`, `rules`, or `rule_ids` field).
+   * Returns array of canonical rule IDs.
+   */
+  _readWorkflowSourceRules(workflowDir) {
+    const ids = new Set();
+    try {
+      const files = fs.readdirSync(workflowDir);
+
+      // Frontmatter sources
+      for (const fname of files) {
+        if (!/^(skill|workflow)\.md$/i.test(fname)) continue;
+        let content;
+        try { content = fs.readFileSync(path.join(workflowDir, fname), "utf-8"); } catch { continue; }
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!fmMatch) continue;
+        const fm = fmMatch[1];
+        // Inline form
+        const inlineMatch = fm.match(/^source_rules\s*:\s*\[([^\]]*)\]\s*$/m);
+        if (inlineMatch) {
+          inlineMatch[1].split(",").map(s => s.trim().replace(/^["']|["']$/g, ""))
+            .filter(Boolean).forEach(s => {
+              const m = s.match(/^R0*(\d+)$/i);
+              if (m) ids.add(`R${String(parseInt(m[1], 10)).padStart(3, "0")}`);
+            });
+        }
+        // Block form
+        const blockMatch = fm.match(/^source_rules\s*:\s*\n((?:[ \t]+-\s+\S+\s*\n?)+)/m);
+        if (blockMatch) {
+          blockMatch[1].split("\n").forEach(line => {
+            const m = line.match(/^[ \t]+-\s+["']?(R0*\d+)["']?\s*$/i);
+            if (m) {
+              const n = m[1].match(/R0*(\d+)/i);
+              if (n) ids.add(`R${String(parseInt(n[1], 10)).padStart(3, "0")}`);
+            }
+          });
+        }
+      }
+
+      // Config.json sources
+      const configPath = path.join(workflowDir, "config.json");
+      if (fs.existsSync(configPath)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          const rules = Array.isArray(data?.source_rules) ? data.source_rules :
+                        Array.isArray(data?.rules) ? data.rules :
+                        Array.isArray(data?.rule_ids) ? data.rule_ids : [];
+          for (const r of rules) {
+            const m = String(r).match(/^R0*(\d+)$/i);
+            if (m) ids.add(`R${String(parseInt(m[1], 10)).padStart(3, "0")}`);
+          }
+        } catch { /* ignore */ }
+      }
+    } catch { /* dir unreadable */ }
+    return [...ids];
   }
 
   _resolveFixture(rel) {

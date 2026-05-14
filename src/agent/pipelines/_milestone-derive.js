@@ -80,6 +80,59 @@ function readJsonSafe(p) {
   try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; }
 }
 
+function readFileSafe(p) {
+  try { return fs.readFileSync(p, "utf-8"); } catch { return ""; }
+}
+
+/**
+ * v0.7.5 G-H1: extract `source_rules: [...]` from YAML frontmatter.
+ *
+ * Supports both inline and block list forms:
+ *   source_rules: [R001, R005, R007]
+ *   source_rules:
+ *     - R001
+ *     - R005
+ *
+ * Used by milestone derivation to credit grouped/thematic skill folders
+ * + master workflows where the agent declares which rules are covered.
+ * Returns an array of canonical rule IDs (e.g., ["R001", "R005"]).
+ */
+function parseSourceRulesFromFrontmatter(content) {
+  if (!content || typeof content !== "string") return [];
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return [];
+  const fm = fmMatch[1];
+
+  // Inline form: source_rules: [R001, R005, "R007"]
+  const inlineMatch = fm.match(/^source_rules\s*:\s*\[([^\]]*)\]\s*$/m);
+  if (inlineMatch) {
+    return inlineMatch[1]
+      .split(",")
+      .map(s => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean)
+      .map(s => canonicalRuleId(s) || s)
+      .filter(rid => /^R\d+$/i.test(rid))
+      .map(rid => rid.toUpperCase().replace(/^R0*(\d+)$/, (_, n) => `R${String(parseInt(n,10)).padStart(3,"0")}`));
+  }
+
+  // Block form: source_rules:\n  - R001\n  - R005
+  const blockMatch = fm.match(/^source_rules\s*:\s*\n((?:[ \t]+-\s+\S+\s*\n?)+)/m);
+  if (blockMatch) {
+    return blockMatch[1]
+      .split("\n")
+      .map(line => {
+        const m = line.match(/^[ \t]+-\s+["']?([^"'\s]+)["']?\s*$/);
+        return m ? m[1] : null;
+      })
+      .filter(Boolean)
+      .map(s => canonicalRuleId(s) || s)
+      .filter(rid => /^R\d+$/i.test(rid))
+      .map(rid => rid.toUpperCase().replace(/^R0*(\d+)$/, (_, n) => `R${String(parseInt(n,10)).padStart(3,"0")}`));
+  }
+
+  return [];
+}
+
 function sha256OfFile(p) {
   try {
     const buf = fs.readFileSync(p);
@@ -239,6 +292,26 @@ export function deriveSkillAuthoringMilestones(workspace) {
         }
       }
     }
+
+    // v0.7.5 G-H1: also credit rule_ids declared in SKILL.md frontmatter
+    // `source_rules:` field. Agents using grouped/thematic skill folders
+    // (e.g., S01_compliance/, custodian_checks/) declare which rules
+    // their grouped check covers via frontmatter; engine derivation
+    // credits each declared rule_id. Audit found 资管 v0.7.4 session
+    // forced through skill_authoring → skill_testing because its 10 S*
+    // grouped folders weren't credited (rulesCovered=0/94).
+    if (hasSkillMd) {
+      try {
+        const skillMdFile = listChildFiles(skillPath).find(
+          (f) => f.name.toLowerCase() === "skill.md",
+        );
+        if (skillMdFile) {
+          const content = readFileSafe(path.join(skillPath, skillMdFile.name));
+          const sourceRules = parseSourceRulesFromFrontmatter(content);
+          for (const rid of sourceRules) ruleIdsCovered.add(rid);
+        }
+      } catch { /* best-effort */ }
+    }
   }
 
   return {
@@ -362,6 +435,37 @@ export function deriveDistillationMilestones(workspace) {
   const cwd = cwdOf(workspace);
   const wfRoot = path.join(cwd, "workflows");
   const workflowsCreated = [];
+  // v0.7.5 G-H1: also track rule IDs covered by workflows. Grouped/master
+  // workflows (e.g., 贷款 v0.7.4's master + R001 template) cover multiple
+  // rules; declare them via SKILL.md frontmatter `source_rules: [...]`.
+  // Engine credits each declared rule_id so workflowsCovered milestone
+  // matches catalog reality.
+  const ruleIdsCovered = new Set();
+
+  const creditWorkflowSourceRules = (workflowDir) => {
+    // Check for a SKILL.md (or workflow.md) declaring source_rules
+    const candidates = listChildFiles(workflowDir).filter(
+      (f) => /^(skill|workflow)\.md$/i.test(f.name),
+    );
+    for (const c of candidates) {
+      const content = readFileSafe(path.join(workflowDir, c.name));
+      for (const rid of parseSourceRulesFromFrontmatter(content)) {
+        ruleIdsCovered.add(rid);
+      }
+    }
+    // Also: per-workflow config.json may declare rule coverage
+    const configPath = path.join(workflowDir, "config.json");
+    if (fileExists(configPath)) {
+      const data = readJsonSafe(configPath);
+      const rules = Array.isArray(data?.source_rules) ? data.source_rules :
+                    Array.isArray(data?.rules) ? data.rules :
+                    Array.isArray(data?.rule_ids) ? data.rule_ids : [];
+      for (const r of rules) {
+        const canon = canonicalRuleId(String(r));
+        if (canon) ruleIdsCovered.add(canon);
+      }
+    }
+  };
 
   if (dirExists(wfRoot)) {
     // Two layouts seen in E2E #5:
@@ -375,16 +479,39 @@ export function deriveDistillationMilestones(workspace) {
         const sub = path.join(wfRoot, e.name);
         const hasPy = listChildFiles(sub).some((f) =>
           /workflow.*\.py$/i.test(f.name) || /^check.*\.py$/i.test(f.name));
-        if (hasPy) workflowsCreated.push(e.name);
+        if (hasPy) {
+          workflowsCreated.push(e.name);
+          // Dir name might itself be a rule_id
+          const canon = canonicalRuleId(e.name);
+          if (canon) ruleIdsCovered.add(canon);
+          // Plus any frontmatter / config-declared source_rules
+          creditWorkflowSourceRules(sub);
+        }
         continue;
       }
       if (e.isFile()) {
         const m1 = e.name.match(/^(.+)_workflow\.py$/i);
-        if (m1) { workflowsCreated.push(m1[1]); continue; }
+        if (m1) {
+          workflowsCreated.push(m1[1]);
+          const canon = canonicalRuleId(m1[1]);
+          if (canon) ruleIdsCovered.add(canon);
+          continue;
+        }
         const m2 = e.name.match(/^(.+)\.json$/i);
         if (m2) {
           const data = readJsonSafe(path.join(wfRoot, e.name));
-          if (data && (data.rule_id || data.entry || data.type)) workflowsCreated.push(m2[1]);
+          if (data && (data.rule_id || data.entry || data.type)) {
+            workflowsCreated.push(m2[1]);
+            const canon = canonicalRuleId(data.rule_id || m2[1]);
+            if (canon) ruleIdsCovered.add(canon);
+            // Manifest-declared source_rules
+            const rules = Array.isArray(data.source_rules) ? data.source_rules :
+                          Array.isArray(data.rules) ? data.rules : [];
+            for (const r of rules) {
+              const c2 = canonicalRuleId(String(r));
+              if (c2) ruleIdsCovered.add(c2);
+            }
+          }
           continue;
         }
       }
@@ -408,7 +535,16 @@ export function deriveDistillationMilestones(workspace) {
     }
   }
 
-  return { workflowsCreated, workflowsTested };
+  return {
+    workflowsCreated,
+    workflowsTested,
+    // v0.7.5 G-H1: rule_ids the engine credits as having workflow coverage
+    // (either via dir name being a canonical rule_id, or via SKILL.md /
+    // workflow.md / config.json frontmatter declaring source_rules: [...]).
+    // Pipelines that check workflow coverage against the catalog should
+    // prefer ruleIdsCovered over workflowsCreated for grouped patterns.
+    ruleIdsCovered: [...ruleIdsCovered],
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────

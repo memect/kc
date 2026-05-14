@@ -34,16 +34,30 @@ if (parallelismOverride !== null) {
 // their own output.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-function printBanner() {
+function readPkgVersion() {
   try {
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf-8"));
-    const scriptPath = __filename;
-    process.stderr.write(`⏵⏵  KC Agent CLI  v${pkg.version}  ·  ${scriptPath}\n`);
-  } catch { /* package.json missing or unreadable — silent */ }
+    return pkg.version || "unknown";
+  } catch { return "unknown"; }
 }
-const suppressBanner = args.includes("--version") || args.includes("-v") ||
-                       args.includes("--help") || args.includes("-h");
+function printBanner() {
+  try {
+    const v = readPkgVersion();
+    process.stderr.write(`⏵⏵  KC Agent CLI  v${v}  ·  ${__filename}\n`);
+  } catch { /* silent */ }
+}
+const isVersion = args.includes("--version") || args.includes("-v");
+const isHelp = args.includes("--help") || args.includes("-h");
+const suppressBanner = isVersion || isHelp;
 if (!suppressBanner) printBanner();
+
+// v0.7.5 G-F1: `--version` prints version and exits. Previously the flag
+// suppressed the banner but fell through to TUI launch (audit confirmed
+// during v0.7.4 testing). Print + exit before the subcommand dispatch.
+if (isVersion) {
+  process.stdout.write(`${readPkgVersion()}\n`);
+  process.exit(0);
+}
 
 (async () => {
   if (subcommand === "onboard" || subcommand === "setup") {
