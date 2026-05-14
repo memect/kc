@@ -49,6 +49,25 @@ E2E #4 demonstrated the cost: an agent wrote `unified_qc.py` to bypass 110 indiv
 
 If individual skills aren't running cleanly, the right response is to identify which ones break and fix them, not consolidate. The whole pipeline (extraction → skill_testing → distillation → production_qc) assumes one rule = one verifiable artifact.
 
+### Anti-pattern: stub SKILL.md OR stub check.py
+
+Each rule_skill folder MUST have BOTH a substantive `SKILL.md` AND a substantive `check.py` (or `check.py` that imports + calls a workflow that does the real work). One side being a stub breaks the contract.
+
+**Variant 1 (v0.7.5 贷款 audit § 9.1)**: stub `SKILL.md` (templated 19 lines with `检查逻辑: N/A`) paired with real `check.py` (44-131 LOC of regex methodology). SKILL.md is supposed to be the human-readable methodology document. A reader scanning the rule folder for "what does this verify and why" gets nothing. The agent put all the methodology into `check.py` comments, which works for the engine but loses the deliverable framing.
+
+**Variant 2 (v0.7.5 资管 audit § 3.4)**: substantive `SKILL.md` (real methodology, PASS/FAIL criteria, regulation cross-refs) paired with stub `check.py` (29-line scaffold returning `{"verdict": "NOT_APPLICABLE", "evidence": "Check requires worker LLM execution"}`). The real check logic lives in `workflows/<rule_id>/workflow.py` — but `check.py` doesn't import or call it. A user running `python rule_skills/R01-01/check.py document.txt` gets `NOT_APPLICABLE` on every input, which is misleading.
+
+**Variant 3 (legacy v0.7.0)**: stub `check.py` returning `{"pass": null, "method": "stub"}` paired with otherwise-real SKILL.md. Methodology described but never executable.
+
+**The contract**:
+- ✓ DO: SKILL.md describes WHAT to check + WHY + WHEN to flag it. Substantive — typically 50-300 lines, not 19.
+- ✓ DO: check.py implements the check. EITHER substantive direct logic OR `from workflows.<rule_id>.workflow_v1 import verify` + delegate. Returns concrete verdicts.
+- ✗ DON'T: stub SKILL.md with methodology in check.py comments (variant 1).
+- ✗ DON'T: substantive SKILL.md with check.py that returns NOT_APPLICABLE without delegating to a workflow (variant 2).
+- ✗ DON'T: stub check.py returning null verdict (variant 3, legacy).
+
+A future engine milestone check (v0.8 P2-F) may refuse phase advance if too many check.py files are stub-shaped. Better to author them substantively now.
+
 ## Writing SKILL.md
 
 ### Frontmatter
