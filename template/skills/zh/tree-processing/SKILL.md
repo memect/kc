@@ -12,62 +12,65 @@ description: >
 
 # Tree Processing
 
-Most verification rules do not need the entire document. They need a specific section, a specific table, a specific disclosure. The tree is your map for navigating large documents efficiently.
+绝大多数验证规则并不需要整篇文档。它们只需要某个特定的章节、某张特定的表格、或某条特定的披露内容。树就是你在大型文档中高效导航的地图。把一份动辄数百页、上千页的法规摊在工作 LLM 面前,既装不进上下文窗口,也会被无关内容稀释关键事实。建好树之后,验证就从"在整片汪洋里捞针",收敛为"先按图找到房间,再在房间里翻箱倒柜"。
 
-## Production Chunking Methodology
+## 生产级分块方法论
 
-For verification workflows that process many documents, the chunking mechanism must be precise, consistent, and fast. The approach:
+对于需要处理大量文档的验证工作流而言,分块机制必须做到精确、一致且快速。"精确"意味着同一份文档被切出的边界总是落在正确的位置;"一致"意味着今天切和明天切的结果一模一样;"快速"意味着不会成为流水线里的瓶颈。要同时满足这三点,几乎只有"用代码固化结构规律"这一条路径。基本路径如下:
 
-1. **Observe**: Read 3-5 sample documents. Note their structure — headers, numbering, section patterns.
-2. **Find patterns**: Identify what's consistent (header format, numbering convention, TOC structure).
-3. **Write code**: Design a chunking script (regex-based splitter, header detector, TOC parser) that captures the pattern.
-4. **Test**: Run the script on samples. Verify it produces correct, consistent chunks.
-5. **Deploy**: The script runs in production workflows. It's deterministic, free, and fast.
+1. **观察**:阅读 3 到 5 份样本文档。记录其结构特征——标题样式、编号方式、章节划分规律。不要只看一份就动手,小样本的偶然格式会把你引向一段过拟合的脆弱正则。
+2. **找出模式**:识别那些保持一致的元素(标题格式、编号约定、目录结构)。同时把不一致的部分单独列出来,这些就是后续脚本需要兜底处理的边缘情形。
+3. **编写代码**:设计一段分块脚本(基于正则的切分器、标题检测器、目录解析器),用代码固化所发现的模式。脚本应当是确定性的、可重入的,并且对输入文本的小幅扰动具有鲁棒性。
+4. **测试**:在样本上运行脚本。验证它产出的分块结果与你人工标注的边界一致。如果出现错切、漏切或越切,先回到第 1 步补充观察样本,再来调整规则。
+5. **部署**:脚本在生产工作流中正式运行。它是确定性的、零成本的、且执行迅速。一份脚本写好,就可以服务于同类型文档的全部后续处理。
 
-This is different from `document-chunking` (quick, cheap splits for exploration). Production chunking is a one-time design effort that pays off across all documents of the same type.
+这与 `document-chunking` 不同(后者用于探索阶段的快速、低成本切分)。生产级分块是一次性的设计投入,但其收益会在同类型文档的所有处理过程中持续兑现。换言之,前者是面向"我先粗略看看这文档大致长什么样"的临时手段,后者是面向"我每天都要处理一千份这种文档"的工程资产。
 
-## Why Trees
+## 为什么要使用树
 
-Two reasons:
+两条理由,都很硬:
 
-1. **Rules have scope.** "The risk disclosure in Chapter 5 must contain..." — you need to find Chapter 5, not read 1000 pages.
-2. **Worker LLMs have limits.** A 16K-32K context window cannot hold a 1000-page document. You must narrow to the relevant section.
+1. **规则带有作用域。**"第 5 章中的风险披露必须包含……"——你需要定位第 5 章,而不是把 1000 页全部读一遍。验证类规则几乎天生就是带作用域的:它要么针对某个章节,要么针对某张表,要么针对某条具体的条款。把规则原原本本喂给一份完整文档,等于在让 LLM 自己先承担"找位置"这件本不该由它承担的工作。
+2. **工作 LLM 有上下文上限。**16K 到 32K 的上下文窗口装不下一份 1000 页的文档。你必须把范围收窄到相关章节。即便是更大的上下文窗口,只要你把无关内容也一起喂进去,准确率就会被稀释,延迟会上升,Token 成本也会随之上涨。
 
-The tree structure solves both: it tells you WHERE things are, and lets you extract JUST what you need.
+树结构同时解决了这两个问题:它告诉你"东西在哪里",并让你只抽取"你真正需要的那部分"。从工程视角看,树是文档的索引;从语义视角看,树是规则与文本之间的桥梁。把这座桥建好,后续每一条规则的验证都会变得简单、可靠、可解释。
 
-## Building the Tree
+## 构建树
 
-### Step 1: Discover the Structure
+### 步骤 1:发现结构
 
-Before building a tree parser, explore several sample documents to find structural patterns. Look for:
+在动手实现树解析器之前,先去探查几份样本文档,找出其结构上的规律。这一步看似只是"翻一翻文档",但它直接决定了后续所有工程决策的下限。请把它当作严肃的需求调研来做,而不是顺手扫一眼。关注以下要素:
 
-- **Header conventions**: Do chapters start with "Chapter X"? "第X章"? "Part X"? A Roman numeral?
-- **Numbering systems**: "1.1.2", "Article 3", "(a)(i)", hierarchical numbering?
-- **Visual markers**: Bold text, larger font, horizontal rules, page breaks before chapters?
-- **Table of contents**: Most formal documents have one. It is the document's own tree.
+- **标题约定**:章是以 "Chapter X" 开头?"第X章"?"Part X"?还是罗马数字?同一份文档中,顶层与子层的标题格式是否一致?中英混排的文档是否两种约定并存?
+- **编号体系**:"1.1.2"、"Article 3"、"(a)(i)"、还是层级化的编号?编号是否每章重置?是否存在跨章共享的全局编号?编号缺位或跳号的情况是个例还是规律?
+- **视觉标记**:加粗字体、更大的字号、水平分隔线、章节前的分页符?这些信息在转成纯文本以后是否还能保留?如果输入是 PDF 解析后的文本,是否需要先在更早的环节注入这些标记?
+- **目录(TOC)**:大多数正式文档都带有目录。它本身就是这份文档自带的树。目录还能告诉你页码区间、官方的层级深度、以及哪些标题是法定的、哪些是排版插入的。
 
-Spend time here. The patterns you find determine whether the tree builder is a simple regex or a complex parser.
+在这一步多花点时间。你找到的模式将直接决定:树构建器是一段简单的正则,还是一个复杂的解析器。经验上,凡是受监管发布的法规文档,几乎都遵循同一套排版规范;凡是来自不同机构的合并文档,则常常需要把多套规则同时纳入解析器的考量。
 
-### Step 2: Choose the Parser
+### 步骤 2:选择解析器
 
-**If patterns are consistent** (they usually are in regulated documents):
-- Write a regex-based splitter. For example:
-  - `^第[一二三四五六七八九十百千]+章` for Chinese chapter headers
-  - `^Chapter \d+` for English
-  - `^\d+\.\d+(\.\d+)*\s` for numbered sections
-- This is fast, deterministic, and reliable. Prefer this when it works.
+**如果模式足够一致**(在受监管的法规类文档中通常都是一致的):
+- 写一个基于正则的切分器。例如:
+  - `^第[一二三四五六七八九十百千]+章` 用于匹配中文的章标题
+  - `^Chapter \d+` 用于匹配英文章标题
+  - `^\d+\.\d+(\.\d+)*\s` 用于匹配带编号的小节
+- 这种方案快速、确定、可靠。只要正则跑得通,优先选它。不要因为追求"看起来更智能"就放弃确定性的方案——确定性本身就是生产环境最稀缺、最值钱的属性。
+- 在调试阶段,记得为正则写一组小型的单元测试:包括典型的命中样例、明确不应命中的反例,以及容易混淆的边界样例(比如标题中混入的全角空格、不可见控制字符)。
 
-**If patterns are inconsistent or absent**:
-- Use the LLM-guided wedge-driving approach (see `rule-extraction/references/chunking-strategies.md` for the full algorithm: rolling context window, K-token quoting, Levenshtein fuzzy matching).
-- This is slower and costs LLM calls, but handles unstructured documents. The rolling window means even very large unstructured leaf nodes can be chunked incrementally.
+**如果模式不一致或根本不存在**:
+- 使用 LLM 引导的"楔入式"切分方法(完整算法见 `rule-extraction/references/chunking-strategies.md`:滚动上下文窗口、K-token 引用比对、Levenshtein 模糊匹配)。
+- 这种方式较慢,且要消耗 LLM 调用,但能处理非结构化的文档。滚动窗口的意义在于:即便是非常巨大的非结构化叶子节点,也可以逐段递进地完成切分。
+- 一个务实的折中是混合策略:能用正则切到的层级先用正则切,正则啃不动的子节点再交给 LLM 引导式切分。这样可以把昂贵的 LLM 调用集中投放在真正需要语义判断的地方。
 
-**If the document has a table of contents**:
-- Parse the TOC first. It gives you the tree structure and page numbers for free.
-- Then use the TOC-derived structure to split the document body.
+**如果文档自带目录**:
+- 先解析目录。它免费地给了你一棵树的结构,外加每个节点的页码。
+- 然后再用从目录派生出的结构去切分文档正文。
+- 需要注意目录与正文之间偶尔会出现不一致(目录漏列了某节、或正文新增了目录里没有的小节)。把这些差异当作日志输出,便于后续人工核对,而不是默默吞掉。
 
-### Step 3: Build the Tree
+### 步骤 3:构建树
 
-The tree is a simple nested structure:
+树本身是一种简单的嵌套结构:
 
 ```
 Document
@@ -83,40 +86,41 @@ Document
     └── Chapter 5: Risk Disclosure (pages 79-120)
 ```
 
-Each node stores: the header text, the level, the start/end positions in the document, and the content size (in tokens or characters).
+每个节点都需要存储:标题文本、所在层级、在文档中的起止位置、以及内容规模(以 token 数或字符数计)。在工程实现上,建议同时保留一个稳定的节点 ID(例如从根到当前节点的编号路径),便于后续的引用追踪、缓存命中以及跨规则的复用。父节点和子节点之间通过显式的指针或 ID 关联,这样无论是自顶向下遍历还是自底向上追溯祖先,代价都是常数级的。
 
-### Step 4: Use the Tree
+### 步骤 4:使用树
 
-Given a rule that says "check the risk disclosure section":
+假设有一条规则要求"检查风险披露章节":
 
-1. **Search the tree** for the relevant node. Match the rule's scope description against node headers.
-   - Exact match: "Chapter 5" → find node with "Chapter 5" header.
-   - Semantic match: "risk disclosure section" → find node whose header or content relates to risk disclosure. May need fuzzy matching or LLM classification.
-2. **Extract the content** of that node (and optionally its children).
-3. **Check the size.** If the content fits in the worker LLM's context window, use it directly. If not, descend to child nodes and find the specific subsection needed.
+1. **在树中检索**目标节点。把规则中描述的作用域与节点标题做匹配。
+   - 精确匹配:"Chapter 5" → 找到标题为 "Chapter 5" 的节点。这种命中是最理想的情况,可以直接落点,不留歧义。
+   - 语义匹配:"风险披露章节" → 查找其标题或内容与"风险披露"相关的节点。这一步可能需要模糊匹配,或者用 LLM 做分类判断。在大型文档中,语义匹配应当先在标题层面尝试命中,只有标题不足以判断时,才下沉到摘要或正文。
+2. **抽取该节点的内容**(必要时也包括其子节点的内容)。抽取时同时记录这次抽取的来源节点 ID,这样验证结论就能反向追溯到文档中的具体位置,而不是悬空于"模型说"。
+3. **检查规模。**如果内容能够塞进工作 LLM 的上下文窗口,就直接使用。如果塞不下,则向下进入子节点,定位到真正需要的那个小节。在下沉过程中,记得保留祖先节点的标题链,使得 LLM 始终知道它正在阅读的是文档中的哪个位置。
 
-## The Full Context → Chapter → Entity Pipeline
+## "全文 → 章 → 实体" 流水线
 
-This is the standard narrowing funnel for extracting entities for verification:
+这是从文档中抽取待验证实体的标准漏斗式收窄过程,也是 KC 推荐的默认验证编排方式。每一步都把范围进一步收紧,把验证任务交给一个能力恰好匹配、上下文恰好够用的环节去完成:
 
-1. **Full context**: Use the tree to understand the document structure. Know where everything is.
-2. **Chapter**: Navigate to the specific section that the rule targets. Extract its content.
-3. **Entity**: Within the chapter content, extract the specific entity (number, text, clause) using the techniques from `entity-extraction`.
+1. **全文上下文**:借助树来理解整份文档的结构。知道每样东西分别在哪里。这一步不需要 LLM 真的去读全文,只需要让规则与树之间建立索引关系。
+2. **章节**:导航到这条规则所针对的具体章节。抽取其内容。注意章节边界要严格按照树上的起止位置来,不要凭印象多取或少取,否则验证准确率会被边界噪声拖累。
+3. **实体**:在章节内容内,使用 `entity-extraction` 中的方法,把具体的实体(数字、文本片段、条款)抽取出来。这是最贴近规则原子比对单元的一步。
 
-For worker LLMs with 16K-32K context:
-- The chapter content + the extraction prompt must fit in the context window.
-- If a chapter is too large, descend further in the tree.
-- Always include the parent header chain for context: "Part II > Chapter 3 > Section 3.1" so the LLM knows where this content sits in the document.
+对于上下文窗口为 16K–32K 的工作 LLM:
+- 章节内容加上抽取提示词必须能够装进上下文窗口。把这两部分的预估 Token 数加起来,留出至少 10% 余量给输出。
+- 如果某一章过大,就继续向下进入树的更深层。优先选择能完整覆盖规则作用域的最小子节点。
+- 始终把父级标题链一并附带上,作为定位上下文:例如 "Part II > Chapter 3 > Section 3.1",这样 LLM 才知道这段内容在整份文档中处于什么位置。缺少这条标题链,LLM 容易把同名的小节弄混,尤其是在带有"通则—分则"结构的法规中。
 
-## Caching and Reuse
+## 缓存与复用
 
-Build the tree once per document, reuse across all rules:
-- Save the tree structure as JSON alongside the parsed document.
-- Multiple rules may need different sections of the same document. The tree lets each rule navigate directly to its section without re-parsing.
+每份文档只需构建一次树,然后在所有规则上复用:
+- 把树结构以 JSON 形式与解析后的文档一同保存下来。文件名可以采用 `<doc_id>_tree.json` 这样的稳定模式,便于后续按文档 ID 直接读取。
+- 同一份文档常常会被多条规则命中不同的章节。树让每条规则都能直接跳转到自己关心的位置,而无需重新解析文档。这一点在批量验证场景下尤其重要,它把"O(规则数 × 文档解析)"的代价降到了"O(文档解析)+O(规则数 × 树检索)"。
+- 当文档版本发生变化时,把新旧两版的树做对比,可以快速看出新增、删除、合并、重排的章节,从而决定哪些旧的验证结论需要重跑、哪些可以延续。
 
-## Edge Cases
+## 边界情况
 
-- **Flat documents**: Some documents have no structural hierarchy. Treat the entire document as one node. Use LLM-guided chunking if it exceeds the context window.
-- **Deeply nested structures**: Some legal documents have 6+ nesting levels. Build all levels but typically only navigate 2-3 levels deep for any given rule.
-- **Cross-section references**: A section might reference "as defined in Section 1.2." When extracting, you may need content from multiple tree nodes. Collect them into a single context for the LLM.
-- **Appendices and annexes**: Often contain critical tables and data. Include them as top-level nodes in the tree.
+- **扁平文档**:有些文档完全没有结构化的层级。把整份文档当作一个节点处理。如果其规模超出上下文窗口,则改用 LLM 引导式分块。在这种情形下,要特别注意保留一份原文的连续性索引,以便后续把抽取结果回贴到正确的字符偏移上。
+- **嵌套很深的结构**:某些法律文档有 6 层及以上的嵌套层级。构建时把所有层级都建起来,但对任何一条具体规则,通常只需向下导航 2 到 3 层即可。过度下钻反而会让规则失去其应有的上下文,使得 LLM 看不到关键的限定性表述。
+- **跨章节的交叉引用**:某节可能写有"如第 1.2 节所定义"这样的字样。在抽取时,你可能需要同时从树上多个节点取内容。把它们拼成一个统一的上下文,再交给 LLM。在记录验证依据时,要分别标注每段来源节点,避免把"第 5 章的结论"与"第 1.2 节的定义"混为一谈。
+- **附录与附件**:附录和附件中往往承载着关键的表格和数据。要把它们作为顶层节点纳入树中,不要遗漏。许多披露类规则的"数字真相"恰恰躲在附录的表格里,正文反而只是导引性的描述。

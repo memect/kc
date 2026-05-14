@@ -4,27 +4,27 @@ tier: meta
 description: Determine whether extracted entities comply with verification rules. Use after entity extraction to make the pass/fail judgment for each rule on each document. Covers translating natural language rules into executable logic, choosing between Python calculation and LLM semantic judgment, and producing actionable comments on failures. Also use when designing the judgment step of a workflow or when a rule's judgment logic needs debugging.
 ---
 
-# Compliance Judgment
+# 合规判定
 
-Judgment is the moment of truth. You have the extracted entity. You have the rule. Do they comply? The answer must be clear, correct, and — when the answer is no — accompanied by a concise, actionable comment.
+判定是真相到来的时刻。你已经拿到抽取出来的实体，也有规则在手。它们是否合规？答案必须清晰、正确，并且——当答案为否时——附带一条简洁、可执行的说明。判定环节直接决定整个核查工作流的最终产出质量：抽取做得再细，如果判定阶段含糊或前后不一，下游的合规报告就难以使用。
 
-## The Judgment Spectrum
+## 判定光谱
 
-Rules range from trivially deterministic to deeply semantic. Pick the right tool for each rule.
+规则的复杂度跨度很大，从纯粹的确定性检查到深度语义判断都有。要为每条规则挑选合适的工具，不能一刀切。
 
-**Deterministic** — threshold checks, format validation, date arithmetic, cross-field consistency. Pure Python: free, instant, deterministic.
+**确定性判定** —— 阈值核查、格式校验、日期运算、跨字段一致性。纯 Python 就够：免费、即时、可复现，并且同一份输入永远给出同一份结果，便于审计与回溯。
 
-**Semantic** — adequacy, completeness, consistency, compliance with templates, detecting misleading or suggestive language, assessing whether a description is fair and balanced. These require language understanding — use worker LLM.
+**语义判定** —— 是否充分披露、是否完整、前后是否一致、是否符合模板、是否存在误导性或暗示性表述、描述是否公允平衡。这类判断需要语言理解能力，规则关键词法或模式匹配无法胜任，应直接使用 worker LLM 完成。
 
-Many real compliance rules require semantic judgment. "The risk disclosure must adequately describe the key risks" cannot be checked with regex or Python. "The contract description must not be misleading or suggestive" requires deep language understanding. Use worker LLM for these without hesitation.
+很多真实的合规规则都需要语义判定。"风险揭示必须充分描述主要风险"无法用正则或 Python 核查；"合同描述不得具有误导性或暗示性"需要深层的语言理解；"资产管理产品的宣传材料不得含有承诺收益的暗示"同样如此。这类场景应毫不犹豫地调用 worker LLM，强行用规则匹配反而会牺牲准确率。
 
-Some rules combine both: extract a number (deterministic), compare to threshold (deterministic), then assess the explanation if borderline (semantic). The mix depends on the rule.
+也有些规则会两者并用：先抽取数值（确定性），再与阈值比较（确定性），如果结果处于临界区间，再对其解释做语义评估。这种"Python 主跑、LLM 兜底"的组合往往是性价比最高的方案。具体如何组合，取决于规则本身。
 
-The right method is whatever achieves accuracy at lowest cost. Simple threshold checks don't need LLM. Semantic assessments don't benefit from Python. Most projects will have a mix — let the nature of each rule determine the method.
+正确的方法，是以最低成本达到所需准确率的那一个。简单的阈值核查不需要 LLM，语义评估也无法靠 Python 完成。多数项目都会两者混用——让每条规则的性质决定其判定方法，而不是反过来用方法去硬套规则。
 
-## Output Format
+## 输出格式
 
-For each rule × document combination:
+对每个"规则 × 文档"的组合：
 
 ```json
 {
@@ -38,26 +38,26 @@ For each rule × document combination:
 }
 ```
 
-**Result values:**
-- **pass**: Entity complies with the rule.
-- **fail**: Entity does not comply. Comment is required.
-- **missing**: The entity could not be found in the document. This is different from fail — the information is absent, not non-compliant.
-- **error**: Something went wrong during extraction or judgment (parsing failure, API error). Needs investigation.
-- **uncertain**: The judgment is ambiguous. May need human review.
+**结果取值：**
+- **pass**：实体符合规则要求。
+- **fail**：实体不符合规则要求。必须填写 comment。
+- **missing**：文档中未找到该实体。这与 fail 不同——信息缺失，并不代表违规。
+- **error**：抽取或判定过程出现异常（解析失败、API 错误等）。需要排查。
+- **uncertain**：判定结果存在歧义，可能需要人工复核。
 
-**Design exit criteria first:** Before writing judgment logic for a rule, define the exit conditions: what constitutes pass, what constitutes fail, what triggers escalation to human, how to handle empty/missing values, what value ranges are valid. Explicit exit criteria prevent ambiguous or inconsistent judgment.
+**先设计退出条件：** 在为一条规则编写判定逻辑前，先把退出条件定义清楚：什么算 pass、什么算 fail、什么情况下需要升级到人工、空值/缺失值如何处理、合法的取值范围是什么。显式的退出条件能避免判定模糊或前后不一致，也方便后续在进化循环中复盘判定逻辑的盲区。
 
-**Prompt design:** Design prompts for what you want, not against what you don't want. "Don't include reasoning" is less reliable than extracting the verdict from structured output in postprocessing. Use output filtering instead of prompt negation.
+**Prompt 设计：** 提示词要正向描述你想要什么，而不是反向描述你不想要什么。"不要包含推理过程"远不如在结构化输出里抽取判定结果可靠。模型对否定指令的遵循度普遍偏低，不如直接约束输出字段、再用后处理过滤把多余内容去掉。
 
-**Comments:**
-- Required only when result is `fail`. Skip for `pass` unless the developer user specifically requests pass comments.
-- Be concise and factual: "Capital adequacy ratio is 7.2%, below the regulatory minimum of 8.0%."
-- Do not editorialize: not "This is a serious violation that could result in penalties." Just state the facts.
-- Include the extracted value and the expected value/condition for context.
+**Comment 写法：**
+- 仅在 result 为 `fail` 时必须填写。`pass` 时不写，除非开发者用户明确要求记录通过项的说明。
+- 简洁、陈述事实："资本充足率为 7.2%，低于 8.0% 的监管最低要求。"
+- 不做评论性发挥：不要写"这是严重违规，可能招致处罚"。只陈述事实即可。
+- 在 comment 中给出抽取值和期望值/条件，便于读者理解上下文。
 
-### Lightweight Annotation Markup
+### 轻量标注语法
 
-For human review, token-efficient logging, and clean diff comparisons, results can also be expressed in compact text markup:
+为了便于人工复核、节省日志 token、做干净的 diff 比对，结果也可以用紧凑的文本标注形式表达：
 
 ```
 [PASS] capital_adequacy <- 12.5% (>= 8.0%) | conf:0.95 | src:p3-s2
@@ -65,19 +65,19 @@ For human review, token-efficient logging, and clean diff comparisons, results c
 [MISSING] collateral_value | conf:0.60 | note:Collateral valuation not found in document
 ```
 
-This format is losslessly convertible to and from the JSON format above. Use it when presenting results to the developer user for quick review, logging to evolution iteration summaries where token economy matters, or computing diffs between verification runs. See `references/output-format.md` for the full specification and conversion rules.
+这一格式与上面的 JSON 格式可无损互转。在以下场景使用：向开发者用户展示结果以便快速过目、写入进化迭代摘要等对 token 经济敏感的日志、在多次核查运行之间计算 diff 以发现回归。完整规范和转换规则参见 `references/output-format.md`。
 
-## Judgment Ordering
+## 判定执行顺序
 
-Some rules depend on the results of other rules:
-- Rule B might only apply if Rule A passes. "If the borrower is a new customer (Rule A), then additional documentation is required (Rule B)."
-- Rule C might use a value computed by Rule A. "The risk-weighted capital ratio (Rule A) determines the required reserve level (Rule C)."
+部分规则会依赖其他规则的结果：
+- 规则 B 可能只在规则 A 通过时才适用。"如果借款人是新客户（规则 A），则需要额外的文件资料（规则 B）。"
+- 规则 C 可能要复用规则 A 计算出的数值。"风险加权资本充足率（规则 A）决定了所需的准备金水平（规则 C）。"
 
-Map these dependencies in the rule catalog. Execute rules in dependency order. Pass upstream results as context to downstream rules.
+把这类依赖关系登记在规则目录中，最好以显式的依赖图形式维护。按依赖顺序执行规则，把上游规则的结果作为上下文传给下游规则，避免下游规则在缺少前置真值时拿到错误的输入。
 
-## Handling Edge Cases
+## 边界情况处理
 
-- **Null extraction**: The entity was not found. Default to `missing`, not `fail`. A missing value is an extraction problem, not a compliance problem.
-- **Multiple values**: The document contains the entity in multiple places with different values. Flag as `uncertain`. Report all found values.
-- **Conditional rules**: "If the loan exceeds 1M, then collateral is required." Check the condition before applying the rule. If the condition is not met, the rule does not apply — result is `pass` (or `not_applicable` if you add that category).
-- **Negative results**: Some rules check for absence. "The document must NOT contain guarantees to related parties." Searching for absence is harder than searching for presence. Be thorough in the search, then be confident in the negative.
+- **抽取为空**：实体未找到。默认归为 `missing`，而不是 `fail`。值缺失属于抽取问题，不是合规问题。
+- **多值情况**：文档在多处出现同一实体，但取值不一致。标记为 `uncertain`，并把所有找到的值连同各自的位置都报出来，便于人工复核时定位差异源头。
+- **条件规则**："如果贷款金额超过 100 万，则必须有担保。"先核查条件再套用规则。条件不成立时规则不适用——结果记为 `pass`（如果你额外引入了 `not_applicable` 类别，也可以使用）。
+- **否定型规则**：有些规则核查的是"不存在"。"文档中不得存在向关联方提供的担保。"搜索"不存在"比搜索"存在"难，因为要先证伪所有可能的命中位置才能下结论。先把搜索做彻底，再对否定结论保持信心。

@@ -4,99 +4,99 @@ tier: meta
 description: Parse source documents into machine-readable text with maximum fidelity. Use when processing any document in Samples/ or Input/ for the first time, when parsed text quality is poor, or when tables and charts need special handling. Covers multi-level parser selection from simple text extraction to OCR and vision models. Also use when a verification rule fails due to parsing issues (garbled text, missing tables, mangled layouts) and the parser needs to be upgraded for that document type.
 ---
 
-# Document Parsing
+# 文档解析
 
-Parsing is the foundation. If the text is wrong, everything downstream is wrong. But parsing is also a cost center — do not use expensive vision models when simple text extraction works.
+解析是整个工作流的根基。一旦文本提取错了,下游的所有规则判断、对账、合规核查都会跟着一起错,而且这种错误往往很难在后续环节里被发现——因为下游看到的只是"一段文字",并不知道这段文字其实已经丢失了关键数字或错位了表头。但解析同时也是一个明显的成本中心——能用简单文本抽取解决的事情,就不要轻易动用昂贵的视觉模型或重型 OCR 流水线,这只会拖慢整体节奏并消耗预算。
 
-## The Minimum Viable Parser Principle
+## 最小可用解析器原则
 
-Start with the simplest parser. Escalate only when necessary. This is not about saving money — it is about producing the most reliable output. Simple parsers have fewer failure modes.
+从最简单的解析器开始。只有在确有必要时才向上升级。这条原则并不是单纯为了省钱——更重要的是为了产出最可靠、最稳定的结果。简单的解析器失败模式更少、更可控,排查起来也更直接;一旦堆叠了过多的处理层,出问题时几乎无法定位究竟是哪一层引入了偏差,调试成本会指数级上升。优先选择能用就用的最低层级,把复杂性留给真正需要的文档类型。
 
-### Level 1: Direct Text Extraction
-- Tool: pdfjs-dist or similar PDF text extraction.
-- When: Well-formed digital PDFs with embedded text. This covers most modern business documents.
-- Output: Raw text with basic structure preserved (paragraphs, basic formatting).
-- Limitations: Tables may come out as messy text. Charts and images are invisible. Scanned PDFs produce nothing.
+### Level 1: 直接文本抽取
+- 工具:pdfjs-dist,或其它类似的 PDF 文本抽取库。
+- 适用场景:结构良好、内嵌文本的数字版 PDF。绝大多数现代商业文档(年报、招股说明书、合同、技术手册)都属于这一类。
+- 输出:保留基本结构(段落、基础格式)的原始文本。
+- 局限:表格往往会被拉平成杂乱的文字流,行列关系丢失。图表与图片完全不可见。扫描件 PDF 抽不出任何内容,加密 PDF 也会直接失败。
 
-### Level 2: Provider VLM (Vision Language Model)
-- Tool: VLM models from configured provider (VLM_TIER3 for cheap OCR, VLM_TIER1 for complex interpretation).
-- When: Level 1 produces garbled/incomplete text, scanned PDFs, image-based PDFs.
-- Output: Recognized text from page images, or structured interpretation (table as markdown, chart data as JSON).
-- Calling a provider VLM is more convenient and reliable than deploying local OCR. Use the cheapest VLM tier first; escalate to a more capable tier for complex tables/charts.
+### Level 2: Provider VLM(视觉语言模型)
+- 工具:已配置 provider 的 VLM 模型(VLM_TIER3 用于低成本 OCR,VLM_TIER1 用于复杂内容的语义解读)。
+- 适用场景:Level 1 产出乱码或文本残缺、扫描件 PDF、图像型 PDF,以及版式高度复杂、列布局或注脚混乱的报告。
+- 输出:从页面图像中识别出的文本,或更进一步的结构化解读结果(表格转成 markdown、图表数据转成 JSON)。
+- 调用 provider VLM 通常比自行部署本地 OCR 更便捷、更稳定,也省去了维护模型权重、显卡资源与推理环境的整套开销。优先使用最便宜的 VLM 层级把内容先拿到手并完成基本评估;只有遇到复杂的表格、密集的图表,或更低层级在测试样本上确实不够用时,再升级到更强的层级,而不是一开始就用旗舰模型把所有页面跑一遍。
 
-### Level 3: MineRU API or Local Tools (Optional)
-- Tool: MineRU API, pdfplumber, or locally deployed OCR — if configured.
-- When: Provider VLM is unavailable or too expensive for batch processing.
-- These are optional fallbacks. Most users will use Level 1 + Level 2.
+### Level 3: MineRU API 或本地工具(可选)
+- 工具:MineRU API、pdfplumber,或本地部署的 OCR——前提是已经配置好。
+- 适用场景:provider VLM 不可用,或批量处理时整体费用过高。
+- 这些属于可选的兜底方案,并不是默认路径。大多数用户使用 Level 1 + Level 2 的组合就已经足够覆盖日常需求。
 
-## Quality Detection
+## 质量检测
 
-How to know when to escalate:
+如何判断当前层级该不该向上升级:
 
-- **Low character count**: The document has pages but extracted text is very short. Likely a scanned PDF.
-- **Garbled text**: Unusual character sequences, encoding errors, or meaningless text patterns.
-- **Missing expected sections**: The table of contents mentions Chapter 5 but no Chapter 5 text was extracted.
-- **Table artifacts**: Columns of numbers without alignment, cell content mixed with headers, or table borders appearing as characters.
-- **Missing numbers in financial tables**: If a financial document's key metrics are not in the extracted text, the tables were probably not parsed.
+- **字符数过低**:文档有多页,但抽取出的文本极短。大概率是扫描件 PDF,或者是带有大量图像内容的 PDF。
+- **乱码文本**:出现异常的字符序列、明显的编码错误,或一眼看上去毫无意义的文字模式。
+- **预期章节缺失**:目录中提到了第 5 章,但抽取结果里完全没有第 5 章的正文,这通常意味着排版方式让文本抽取器卡住了。
+- **表格残骸**:成列的数字没有对齐、单元格内容与表头混在一起、表格边框被识别成无意义的字符流。
+- **财务表格中关键数字缺失**:如果一份财务文档的关键指标没有出现在抽取文本里,那大概率就是表格没有被正确解析,而不是它们本身就不存在。
 
-Write a quick quality check after parsing and before proceeding. If quality is insufficient, escalate to the next parser level.
+在解析之后、继续后续处理之前,写一个快速的质量检查脚本。如果质量不达标,就升级到下一层解析器,而不是带病往下走。
 
-### Parse Quality Score
+### 解析质量分数
 
-Compute a quality score (0.0 to 1.0) from weighted heuristics to make escalation decisions systematic rather than ad-hoc. A recommended starting framework:
+通过加权启发式规则计算一个 0.0 到 1.0 的质量分数,让升级决策有据可依,而不是单纯凭感觉做判断。一个推荐的初始框架如下:
 
-- **Character density** (weight ~0.3): actual character count / expected characters for the document's page count. A 10-page PDF that yields only 200 characters likely failed.
-- **Garble ratio** (weight ~0.2): fraction of characters that are common CJK/Latin vs control characters, unusual sequences, or encoding artifacts.
-- **Section completeness** (weight ~0.3): if the document has a table of contents, what fraction of TOC entries have matching content in the extracted text?
-- **Table integrity** (weight ~0.2): for financial documents, are key numeric values that should appear in tables actually present in the extracted text?
+- **字符密度**(权重约 0.3):实际字符数 / 该文档页数下的预期字符数。一份 10 页的 PDF 如果只抽出 200 个字符,基本可以直接判定为失败。
+- **乱码比例**(权重约 0.2):常见中英文字符占总字符的比例,相对于控制字符、异常序列或编码残留物的比例。
+- **章节完整度**(权重约 0.3):如果文档自带目录,目录条目中有多少比例能在抽取文本里找到对应内容?
+- **表格完整性**(权重约 0.2):对于财务类文档,本应出现在表格中的关键数值,是否真的出现在抽取文本中?
 
-**Escalation thresholds** (recommended defaults — adjust freely):
-- Score >= 0.7: accept this parser level, proceed to downstream processing.
-- Score 0.4-0.7: escalate to the next parser level, re-parse, re-score.
-- Score < 0.4: skip directly to Level 3 (OCR) or Level 4 (vision) depending on document characteristics.
+**升级阈值**(推荐默认值——可根据实际情况自由调整):
+- 分数 >= 0.7:接受当前解析器层级,进入下游处理。
+- 分数 0.4-0.7:升级到下一层解析器,重新解析,重新打分。
+- 分数 < 0.4:直接跳过中间层级,根据文档特征跳到 Level 3(OCR)或 Level 4(视觉模型)。
 
-**Lock-in**: once a parser level produces an acceptable score for a document type, record that level. Do not re-evaluate unless a downstream verification failure is traced back to a parsing issue.
+**层级锁定**:一旦某个解析器层级在某类文档上跑出可接受的分数,就把这个层级记录下来。除非下游某次验证失败被追溯到解析环节,否则不要再花时间重复评估,这能避免在已经稳定的链路上反复折腾。
 
-These weights, thresholds, and the scoring approach itself are starting points. The coding agent should design whatever quality assessment works for the specific document types at hand — a simple pass/fail heuristic may be sufficient for some scenarios; a more nuanced scoring function may be needed for others. The important pattern is: **measure quality → compare to threshold → decide whether to escalate**.
+上述权重、阈值,乃至打分思路本身,都只是一个起点。编码 agent 应当为手头的具体文档类型设计真正合适的质量评估方案——某些场景下简单的通过/失败启发式就完全够用,另一些场景则可能需要更精细的分项打分函数。真正关键的模式是:**度量质量 → 与阈值比较 → 决定是否升级**,而不是某一组具体的权重数字。
 
-This follows the same tier-transition pattern as model tier selection in `skill-to-workflow`: a quality/accuracy score drives the decision to stay, escalate, or skip tiers.
+这与 `skill-to-workflow` 中模型层级选择遵循的层级跃迁模式是一致的:都由一个质量或准确率分数,来驱动"停留在当前层级、升级到下一层级、还是跳过中间层直接进入更高层"这三种决策。
 
-## Table Handling
+## 表格处理
 
-Tables are critical in financial documents (balance sheets, ratio tables, compliance metrics). They deserve special attention:
+表格在财务文档中至关重要(资产负债表、比率表、合规指标表、监管披露表),它们承载了规则验证最常引用的数值,因此值得专门对待:
 
-1. **Detection**: Identify table regions. Look for grid patterns, consistent column spacing, or explicit table markers.
-2. **Extraction**: Extract cell-by-cell content. Preserve the row-column relationship.
-3. **Reconstruction**: Convert to a structured format (markdown table, JSON array of rows, or CSV).
-4. **Validation**: Spot-check that key values in the reconstructed table match what is visible in the document.
+1. **检测**:识别出页面中的表格区域。寻找规则的网格模式、稳定的列间距,或文档自身的显式表格标记。
+2. **抽取**:逐单元格提取内容。严格保留行列对应关系,不要把多列合并成一行长字符串。
+3. **重建**:把抽取结果转换成结构化格式(markdown 表格、JSON 行数组,或 CSV),便于下游程序消费。
+4. **校验**:对重建后的表格抽查若干关键单元格,确认其数值与文档中肉眼可见的值一致,以此尽早发现错位或漏行。
 
-When the standard parser fails on tables, try the vision model approach: send the table image (cropped from the PDF page) to a vision model and ask it to produce a markdown table.
+如果标准解析器在表格上失手,可以尝试视觉模型路线:把表格图像(从 PDF 页面上精确裁剪出来)发送给视觉模型,让它直接产出一个 markdown 表格。这种方式对带合并单元格、跨页延续的复杂表格尤其有效。
 
-## Chart Handling
+## 图表处理
 
-Charts (bar charts, line charts, pie charts) occasionally contain data needed for verification:
+图表(柱状图、折线图、饼图、雷达图)偶尔也会承载验证所需的数据:
 
-- Extract the chart image from the document.
-- Send to a vision model with a prompt: "Extract the data points, labels, and values from this chart. Return as a JSON array."
-- Validate the extracted data against any nearby text or table that might contain the same numbers.
+- 从文档中抽出图表图像,保留必要的坐标轴与图例区域。
+- 发送给视觉模型,prompt 类似:"Extract the data points, labels, and values from this chart. Return as a JSON array."
+- 用图表附近的文字段落或表格(它们经常会以另一种形式呈现相同的数字)对抽取结果进行交叉校验。
 
-This is expensive. Only do it when a verification rule specifically requires data from a chart and that data is not available in text elsewhere in the document.
+这一步代价相对昂贵,而且图表识别的准确率天然低于纯文本抽取。只有当某条验证规则明确要求使用图表中的数据,且该数据无法从文档其他文字或表格中获得时,才动用它,而不是默认对所有图表都跑一遍视觉模型。优先尝试在邻近文字中找到相同的数字,这通常是更经济也更可信的路径。
 
-## Output Format
+## 输出格式
 
-Parsed documents should be saved as clean markdown:
+解析后的文档应当保存为干净、规范的 markdown:
 
-- Preserve the document's heading hierarchy (# Chapter, ## Section, ### Subsection).
-- Preserve lists, numbered or bulleted.
-- Convert tables to markdown table format.
-- Note page boundaries if relevant (some rules reference specific pages).
-- Strip noise: headers, footers, page numbers, watermarks (unless a rule specifically checks for them).
+- 保留文档原有的标题层级(# 章、## 节、### 小节),不要把所有标题压平到同一层。
+- 保留列表结构,无论是有序列表还是无序列表。
+- 把表格转换成 markdown 表格格式,而不是用纯文字描述。
+- 在有需要时标注页边界(部分规则会引用具体页码,这种位置信息必须保留)。
+- 剔除噪声:页眉、页脚、页码、水印——除非某条规则专门要检查它们。
 
-Save parsed output alongside the original document for reuse across rules.
+把解析输出与原始文档保存在一起,方便跨规则、跨技能复用同一份解析结果。
 
-## Caching
+## 缓存
 
-Parsing is expensive (especially Level 3-4). Cache parsed output:
-- Store the parsed markdown alongside the original file.
-- Track which parser level produced it.
-- Re-parse only when: the original file changes, a rule requires higher-quality parsing than what is cached, or a verification failure is traced back to a parsing issue.
+解析这一步本身很昂贵(尤其是 Level 3-4),在迭代规则、反复跑验证流程时尤其明显。务必把解析结果缓存下来,而不是每次都从原始 PDF 重新跑一遍:
+- 把解析后的 markdown 与原始文件保存在同一目录,命名约定要稳定、可预测,便于程序化查找。
+- 同时记录是哪一层解析器产出的,以及该层级当时拿到的质量分数,方便日后回溯与对比。
+- 仅在以下情况重新解析:原始文件发生变化、某条规则要求比当前缓存更高质量的解析结果,或某次验证失败被追溯到了解析问题本身。

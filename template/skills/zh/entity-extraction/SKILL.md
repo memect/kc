@@ -4,61 +4,61 @@ tier: meta
 description: Extract specific entities, values, and text segments from documents as required by verification rules. Use after tree processing has located the relevant section, when a rule needs a specific number, date, name, amount, clause, or any domain-specific entity extracted. Covers extraction method selection (regex vs LLM), schema design, postprocessing, and confidence annotation. Also use when designing the extraction step of a workflow for worker LLMs.
 ---
 
-# Entity Extraction
+# 实体提取
 
-An entity is the thing you need to check. A number, a date, a name, a clause, a percentage, a statement. The rule says what to check; extraction is how you get the value to check it against.
+实体就是你需要核查的对象：一个数字、一个日期、一个名称、一个条款、一个百分比、一段陈述。规则告诉你要核查什么，提取负责把可核查的值从原文中取出来。换句话说，规则定义了"核查目标"，而实体提取是把这个目标从纸面化为程序可比较、可判定的结构化数据的关键一步。没有可靠的提取，后续的判定和报告都是空中楼阁；提取阶段每多一分误差，下游的判定和汇总就会把这分误差放大。在金融与监管合规这类对数字、口径、时点极其敏感的场景里，提取的稳定性直接决定整套验证流程能否被信任。
 
-## Extraction Type Taxonomy
+## 提取场景分类
 
-Different extraction scenarios call for different approaches:
+不同的提取场景需要不同的策略。先对照下面四类，识别当前规则属于哪一种，再去选具体的实现方法：
 
-### Single Entity from Single Section
-The simplest case. One rule needs one value from one place.
-- Example: "Extract the capital adequacy ratio from the Key Metrics table."
-- Approach: Locate the section, apply regex or LLM extraction.
+### 单一章节中的单一实体
+最简单的情况。一条规则只需要从一个固定位置取一个值。
+- 示例："从关键指标表中提取资本充足率。"
+- 思路：先通过树处理定位到对应章节，再用正则或 LLM 对该段文本做一次提取即可。
 
-### Multiple Entities from Single Section
-One rule needs several related values from the same place.
-- Example: "Extract the borrower's name, loan amount, interest rate, and maturity date from the loan agreement summary."
-- Approach: Design a single extraction call that returns all values. More efficient than multiple calls.
+### 单一章节中的多个实体
+一条规则需要从同一段落或同一张表里取出多个相关的值。
+- 示例："从贷款协议摘要中提取借款人姓名、贷款金额、利率和到期日。"
+- 思路：设计一次提取调用，让模型或脚本一次性返回所有字段。比拆成多次调用更高效，也更容易保持字段之间的一致性，避免重复加载相同的上下文。
 
-### Single Entity from Multiple Sections
-One value is scattered across multiple places, or needs cross-referencing.
-- Example: "Extract the total collateral value, which may be listed in the collateral section or in Appendix A."
-- Approach: Collect content from all relevant sections, then extract. Note which source the value came from.
+### 多个章节中的单一实体
+同一个值分散在多个位置，或需要交叉比对、汇总。
+- 示例："提取抵押物总价值，该值可能列在抵押物章节，也可能列在附件 A。"
+- 思路：先把所有可能含有该值的章节内容汇总，再做一次提取。务必在结果中标注该值的来源章节，方便后续追溯和审计。
 
-### Entity from Full Document
-The value could be anywhere, or the rule applies to the document as a whole.
-- Example: "Check whether the document contains a valid signature page."
-- Approach: For the coding agent, scan the full document. For worker LLM workflows, design a two-pass approach: first pass identifies the location, second pass extracts the value.
+### 全文档级别的实体
+该值可能出现在任意位置，或者规则本身是针对整份文档的属性。
+- 示例："核查文档是否包含有效的签章页。"
+- 思路：对于编码 agent，可以直接扫描整份文档。对于 worker LLM 工作流，建议设计两遍流程：第一遍粗扫整篇定位候选位置，第二遍只对候选段做精提取。这样能避免把整篇文档塞进单次调用导致上下文超限，也便于在候选阶段做并行化处理。
 
-## Method Selection
+## 方法选择
 
-Extraction method selection is a cost-accuracy search. The goal is finding the cheapest method that meets the accuracy threshold. Regex is the smallest, cheapest "model" — zero cost, instant, deterministic. Worker LLM is more capable but costs tokens and time. Any search strategy is valid: try the cheapest first and escalate, try the most capable first and downgrade, bisect, or jump directly to a known-good method based on past experience in AGENT.md.
+提取方法的选择本质上是一次成本-准确率的搜索。目标是找到能稳定达到准确率阈值的最低成本方案。正则表达式是最小、最便宜的"模型"——零成本、即时、确定性、可重放、可被单元测试覆盖。Worker LLM 能力更强，覆盖语义层面的提取需求，但消耗 tokens 和时间，且每次输出可能存在细微差异，需要后处理与校验来兜底。任何搜索策略都成立：可以先试最便宜的方法再逐步升级，也可以先试最强的方法再逐步降级，可以在中间档位做二分查找，也可以基于 AGENT.md 中沉淀的历史经验直接跳到已验证可行的方法上，不必每次都从零开始重新试错。重要的是先想清楚"达标"的标准是什么，再开始搜索，否则容易在没有目标的情况下无限抬高成本。
 
-### Available Methods
+### 可用方法
 
-**Regex / Python** — Cost: zero. Speed: instant. Deterministic.
-Works well for: dates, monetary amounts, percentages, identifiers, fixed phrases, any value with a predictable format.
+**正则 / Python** —— 成本：零。速度：即时。结果确定。
+适用场景：日期、金额、百分比、标识符、固定短语、编号、电话、地址等任何格式可预测的值。任何能写出清晰格式约束的字段，都应该优先考虑正则。
 
-**Worker LLM** — Cost: API tokens. Speed: seconds. Semantic understanding.
-Works well for: contextual interpretation, conditional values, semantic matching, ambiguous structures, suggestive or misleading language detection, table interpretation, anything requiring understanding rather than pattern matching.
+**Worker LLM** —— 成本：API tokens。速度：秒级。具备语义理解能力。
+适用场景：需要结合上下文判断、条件性取值、语义匹配、结构模糊、识别误导性或暗示性表述、表格语义解读，凡是依赖理解而非模式匹配的任务。Worker LLM 在表面形式不稳定但语义清晰的场景下尤其有价值。
 
-Many real verification tasks require semantic understanding — "is this description misleading?", "does this clause adequately disclose risk?", "is this guarantor's business description consistent with their stated industry?" — regex cannot handle these. Use worker LLM without hesitation for such tasks.
+实际验证任务中存在大量需要语义理解的场景——"这段描述是否具有误导性？"、"该条款是否充分披露风险？"、"该担保人的业务描述是否与其所述行业一致？"、"产品类型表述与底层资产是否匹配？"——这些都不是正则能处理的问题。遇到此类任务，毫不犹豫地使用 worker LLM；不要为了节省 tokens 而把不适合的任务硬塞给正则，否则就是用低成本换高漏报或高误报，最终在审计或复核环节付出更大代价。
 
-### The Search
+### 搜索过程
 
-If a method's results fall below the accuracy threshold, try a different method or a more capable model. If regex works and meets accuracy — keep it, it's free. If regex produces results below threshold, escalate to worker LLM. If a cheap worker LLM isn't accurate enough, try a more capable tier. Record what works for each extraction type in AGENT.md for future reference.
+如果某个方法的结果低于准确率阈值，就换一种方法或换一档更强的模型。正则可行且达标——保留它，反正免费、稳定、可回放。正则结果不达标，升级到 worker LLM。便宜档的 worker LLM 不够准确，再换更高一档的模型。每个项目都应当把"哪类提取适用哪个方法"沉淀到 AGENT.md 里，作为后续同类规则的参考；这样下一条规则上来就能直接选对档位，而不是每次都从最便宜的方法重新搜索一遍。同时记录失败案例和阈值不达标的边界条件，让后续同类规则可以提前避坑、节省迭代成本。
 
-## Project Glossary
+## 项目术语表
 
-The project glossary (built and maintained by `rule-extraction`, stored at `rules/glossary.json`) is a useful resource when designing extraction. It records canonical names and known aliases for entities that appear across rules. Reading it before extracting helps keep entity names schema-aligned and avoids parallel labels for the same thing.
+项目术语表（由 `rule-extraction` 构建并维护，存储在 `rules/glossary.json`）是设计提取时的有用资源。它记录了在多条规则中反复出现的实体的规范名称以及已知别名。在动手提取前先读一遍术语表，有助于保持实体命名与项目 schema 对齐，避免对同一事物使用并列的不同标签——例如同一个字段在不同规则里被叫作"资本充足率"、"资本充足比例"、"CAR"等，最终汇总报告时就会出现重复或漏匹配。
 
-Whether the glossary becomes more than a naming convention — for instance, driving cheap pattern matching for entities with stable surface forms — is a per-project judgment. Apply the same cost-accuracy logic as elsewhere: whatever method meets the accuracy threshold for the task at hand.
+术语表是否要承担命名约定之外的角色——例如，对表面形式稳定的实体直接驱动便宜的模式匹配——是逐项目判断的。在这里同样适用成本-准确率逻辑：在当前任务上能达到准确率阈值的方法就是合适的方法。如果术语表里某个实体的别名集合稳定且可枚举，那么基于术语表生成正则可能是性价比最高的方案；如果别名在新文档中持续扩展、随业务术语演化，那不如直接交给 worker LLM 做语义识别。术语表的另一个隐藏价值在于：它把命名约定固化成项目级单一事实来源，减少跨规则、跨技能之间因为称呼不同而产生的不一致问题。
 
-## Schema Design
+## Schema 设计
 
-Define the expected output for each extraction. Keep it simple and JIT:
+为每次提取定义清晰的预期输出。保持简单、按需扩展（JIT 原则）：
 
 ```json
 {
@@ -72,50 +72,50 @@ Define the expected output for each extraction. Keep it simple and JIT:
 }
 ```
 
-The schema should capture:
-- **value**: The extracted value, normalized.
-- **unit**: If applicable (%, 元, days, etc.).
-- **raw_text**: The original text fragment where the value was found. This is evidence for the judgment step.
-- **source_location**: Where in the document the value was found.
-- **confidence**: How sure you are (see `confidence-system`).
-- **extraction_method**: What extracted it (regex, LLM-TIER2, etc.).
+Schema 通常需要包含以下信息：
+- **value**：提取出的值，已经过归一化处理。
+- **unit**：单位（如 %、元、天等），如果适用就填写。
+- **raw_text**：值所在的原文片段。这是后续判定步骤的核心证据，也是出现争议时最容易回溯定位的字段。
+- **source_location**：值在文档中的位置（章节号、表名、行列号等）。
+- **confidence**：置信度，详见 `confidence-system`。
+- **extraction_method**：使用的提取方法（regex、LLM-TIER2 等），便于事后做方法效果分析。
 
-Do not over-engineer the schema. Add fields as needed during testing.
+不要过度设计 schema。最开始保持最小集合，在测试中遇到判定需要什么信息再补充对应字段；不要在第一次就把可能用到的字段全部塞进去。冗余字段不仅增加 prompt 体量、增加 worker LLM 的失误面，还会让后续维护时不清楚哪些字段是真正被消费的、哪些是历史残留。schema 一旦写错或扩张得太快，回头清理的成本会很高。
 
-## Postprocessing
+## 后处理
 
-Raw extracted values often need normalization:
+提取出的原始值通常需要归一化才能与规则中的阈值或目标值做严格比较：
 
-- **Chinese numerals → digits**: 一百二十万 → 1200000
-- **Date standardization**: 2024年3月15日 → 2024-03-15
-- **Unit conversion**: 万元 → multiply by 10000 if comparing to a threshold in 元.
-- **Whitespace and noise removal**: Strip extra spaces, line breaks, formatting artifacts.
-- **Percentage normalization**: 0.125 → 12.5% or vice versa, depending on what the rule expects.
+- **中文数字 → 阿拉伯数字**：一百二十万 → 1200000
+- **日期标准化**：2024年3月15日 → 2024-03-15
+- **单位换算**：万元 → 若规则的阈值以元为单位，需要乘以 10000 再比较。
+- **空白与噪声清理**：去除多余空格、换行符、转义符、表格分隔符等格式残留。
+- **百分比归一化**：0.125 → 12.5%，或反向转换，取决于规则期望的形式。
 
-Build postprocessing as Python functions in the rule skill's `scripts/` directory. They are deterministic and reusable.
+把后处理实现为规则技能 `scripts/` 目录下的 Python 函数。它们是确定性的、可复用的，且便于单元测试。提取与后处理分离也让 schema 中的 `raw_text` 保持忠实于原文，归一化后的值放进 `value`，两者各司其职。这种分层好处还在于：当后处理逻辑出现 bug 时，只要 `raw_text` 是对的，就可以重跑归一化而不必重新调用 LLM、节省成本。
 
-## Confidence Annotation
+## 置信度标注
 
-Every extraction should carry a confidence estimate:
+每次提取都应当带上一个置信度估计，作为后续判定与汇报阶段的重要输入：
 
-- **Regex match, validated format**: 0.90-0.95
-- **LLM extraction, high certainty**: 0.80-0.85
-- **LLM extraction, some ambiguity**: 0.60-0.75
-- **Fallback or inferred value**: 0.40-0.60
-- **No value found**: 0.0 (flag as MISSING)
+- **正则匹配，格式校验通过**：0.90-0.95
+- **LLM 提取，高度确定**：0.80-0.85
+- **LLM 提取，存在一定歧义**：0.60-0.75
+- **回退或推断得到的值**：0.40-0.60
+- **未找到值**：0.0（标记为 MISSING）
 
-These are starting points. Calibrate based on actual accuracy (see `confidence-system`).
+以上只是起始值。随着 ground truth 累积，应根据实际准确率持续校准（详见 `confidence-system`）。低置信度的提取应在判定阶段被特别对待，例如触发人工复核或交叉比对，而不是直接当作高置信度结果使用。置信度本身不是装饰字段，而是判定阶段做风险加权的依据；如果整套流程对置信度毫无消费，那这个字段就形同虚设，反而会让团队对系统输出产生虚假的"完整感"。
 
-## Prompt Design: Ask For What You Want
+## Prompt 设计：要什么，说什么
 
-Design prompts for what you want, not against what you don't want. "Don't include explanations" in a prompt is less reliable than stripping non-JSON text from the output in postprocessing. If you need to tell the LLM not to do something, use output filtering instead of prompt negation.
+写 prompt 时要直接描述你想要的输出形态，而不是反复强调你不想要的内容。在 prompt 里写"不要包含解释"或"不要输出额外文本"，远不如在后处理时从输出中剥离非 JSON 文本来得可靠——大模型在压力下经常会"为了帮助你"补充一些自以为有用的说明、致歉、或开场白，从而违反否定指令。如果确实必须告诉 LLM 不要做某事，那就把控制点放在后处理的输出过滤上，而不是 prompt 中的否定句。换言之：用确定性的后处理来兜底不确定的 LLM 行为，永远比单靠 prompt 措辞更稳。同理，"必须返回合法 JSON"也应当配套一段健壮的解析与修复逻辑，而不是天真地假设模型每次都能完美输出。
 
-## Fitting Worker LLM Context
+## Worker LLM 上下文适配
 
-When designing extraction for worker LLM workflows:
+为 worker LLM 工作流设计提取时，需要预先估算并约束上下文规模：
 
-1. Calculate the prompt size: system prompt + instructions + examples + output format = N tokens.
-2. Available context for document content = model's context window - N.
-3. If the section exceeds available context, narrow further via tree processing.
-4. Always leave room for the model's response.
-5. Test with the actual model to verify the context fits — token counts from the coding agent may differ from the worker LLM's tokenizer.
+1. 估算 prompt 体量：系统 prompt + 指令 + 示例 + 输出格式 = N tokens。
+2. 留给文档内容的可用上下文 = 模型上下文窗口 - N。
+3. 若目标章节超出可用上下文，回到树处理进一步收窄，或将其切分为多次调用。
+4. 始终为模型的响应预留足够空间，否则可能在生成中途被截断，导致 JSON 不完整。
+5. 用真实使用的模型做端到端测试以验证上下文确实能装下——编码 agent 估算的 token 数可能与 worker LLM 自己的分词器结果不一致，尤其是在中文、表格与代码混排的场景下，差异可能达到数十个百分点，仅凭估算容易在生产环境上线后才发现窗口被打爆。
