@@ -6,6 +6,7 @@ import {
   deriveSkillTestingMilestones,
 } from "./pipelines/_milestone-derive.js";
 import { getPrescriptiveHint } from "./pipelines/_advance-hints.js";
+import { loadEnvFile } from "../config.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { findSafeSplitPoint } from "./message-utils.js";
@@ -167,6 +168,10 @@ export class AgentEngine {
       { gitAutoCommit: config.gitAutoCommit !== false },
     );
 
+    // v0.8 P1-B: workspace .env overlay deferred until after eventLog
+    // init (see _overlayWorkspaceEnv call below). Workspace dir is
+    // known here, but the overlay's audit event needs eventLog.
+
     // For sub-agents, persistence (history/events/state) lives under
     // sub_agents/<scope>/ instead of the workspace root. Workspace files
     // (rules/, rule_skills/, workflows/) stay shared.
@@ -203,6 +208,18 @@ export class AgentEngine {
 
     // Event log (append-only JSONL, source of truth)
     this.eventLog = new EventLog(this.workspace.cwd, { logDir });
+
+    // v0.8 P1-B: overlay workspace .env onto this.config. cli/index.js
+    // calls loadSettings() without a workspace path because the path
+    // isn't known until this constructor runs. Result: workspace .env's
+    // VLM_TIER1 / OCR_MODEL_TIER1 / TIER1..4 / LANGUAGE were silently
+    // ignored, with gc defaults (~/.kc_agent/config.json) winning.
+    // 资管 audit § 9.2 finding 7: user's OCR_MODEL_TIER1=zai-org/GLM-4.6V
+    // never reached document_parse; error messages quoted gc's
+    // Qwen3-VL-235B default. Overlay reads workspace .env, fills in
+    // fields where current config came from gc fallback (penv-set values
+    // still win because loadSettings applied them).
+    try { this._overlayWorkspaceEnv(); } catch { /* best-effort */ }
 
     // Context windowing
     this.contextWindow = new ContextWindow({
@@ -275,6 +292,70 @@ export class AgentEngine {
     // plus active task count and history length). Always on, ~60 bytes
     // per minute to disk.
     this._heapSamplerStop = this._isSubagent ? null : this._startHeapSampler();
+  }
+
+  /**
+   * v0.8 P1-B: overlay workspace .env onto this.config now that
+   * this.workspace.cwd is known. Only fills in fields where the current
+   * config value was a gc fallback (empty OR the gc default) — does NOT
+   * override fields that came from process.env (those win at
+   * loadSettings() time and stay winning).
+   *
+   * Without this overlay, workspace .env's VLM_TIER1 / OCR_MODEL_TIER1 /
+   * TIER1..4 / LANGUAGE are silently ignored — the v0.7.4 G1b OCR_MODEL_TIER1
+   * alias fix landed at the config layer but never reached the runtime
+   * because loadSettings() is called without a workspace path.
+   */
+  _overlayWorkspaceEnv() {
+    if (!this.workspace?.cwd) return;
+    const envPath = path.join(this.workspace.cwd, ".env");
+    if (!fs.existsSync(envPath)) return;
+    let wsEnv;
+    try { wsEnv = loadEnvFile(envPath); } catch { return; }
+    if (!wsEnv || typeof wsEnv !== "object") return;
+
+    // VLM tiers — workspace .env's VLM_TIER1 / OCR_MODEL_TIER1 wins over
+    // gc's vlm_tiers.tier1 default. process.env precedence preserved
+    // because loadSettings already applied it; we only fill in slots
+    // that fell through to gc-or-empty.
+    const overlays = [
+      { configKey: "vlmTier1", envKey: ["VLM_TIER1", "OCR_MODEL_TIER1"] },
+      { configKey: "vlmTier2", envKey: ["VLM_TIER2", "OCR_MODEL_TIER2"] },
+      { configKey: "vlmTier3", envKey: ["VLM_TIER3", "OCR_MODEL_TIER3"] },
+      { configKey: "tier1", envKey: ["TIER1"] },
+      { configKey: "tier2", envKey: ["TIER2"] },
+      { configKey: "tier3", envKey: ["TIER3"] },
+      { configKey: "tier4", envKey: ["TIER4"] },
+      { configKey: "language", envKey: ["LANGUAGE"] },
+    ];
+
+    const applied = [];
+    for (const { configKey, envKey } of overlays) {
+      // Find first non-empty workspace .env value for this config key
+      let wsValue = "";
+      for (const k of envKey) {
+        if (wsEnv[k]) { wsValue = wsEnv[k]; break; }
+      }
+      if (!wsValue) continue;
+      // Skip if process.env has the same key set — penv already won
+      const penvWon = envKey.some((k) => process.env[k] && process.env[k] !== wsValue);
+      if (penvWon) continue;
+      // Apply the workspace value
+      if (this.config[configKey] !== wsValue) {
+        applied.push({ key: configKey, from: this.config[configKey] || "(empty)", to: wsValue });
+        this.config[configKey] = wsValue;
+      }
+    }
+
+    // Audit visibility: emit a one-time event listing what was overlaid.
+    if (applied.length > 0) {
+      try {
+        this.eventLog?.append?.("workspace_env_overlay", {
+          envPath: path.relative(this.workspace.cwd, envPath),
+          fields: applied,
+        });
+      } catch { /* best-effort */ }
+    }
   }
 
   /**

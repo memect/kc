@@ -21,7 +21,11 @@ function loadGlobalConfig() {
  * Parse a .env file into a key-value object.
  * Handles KEY=VALUE lines, ignores comments and blank lines.
  */
-function loadEnvFile(envPath) {
+// v0.8 P1-B: exported so engine.js can re-overlay workspace .env after
+// the workspace directory is known (cli/index.js calls loadSettings()
+// without a workspace path because the path isn't known until the engine
+// constructs the Workspace object).
+export function loadEnvFile(envPath) {
   if (!fs.existsSync(envPath)) return {};
   // v0.7.0 H9: defend bootstrap against a .env that exists but isn't
   // readable (permission denied, unexpected directory, encoding error,
