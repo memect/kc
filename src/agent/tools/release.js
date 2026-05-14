@@ -576,6 +576,110 @@ export class ReleaseTool extends BaseTool {
       }
     }
 
+    // 3) v0.8 P0-C: production_qc_results.json + qc_results_v*.json shapes
+    // (资管 + 贷款 v0.7.5 audits both shipped empty historical_accuracy
+    // because the v0.7.2 aggregator only recognized rule_stats / full_test_results).
+    if (tally.size === 0) {
+      const qcFiles = files
+        .filter((f) =>
+          /^production_qc(?:_results)?(?:_v\d+)?\.json$/i.test(f.name) ||
+          /^qc_results(?:_v\d+)?\.json$/i.test(f.name)
+        )
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const f of qcFiles.slice(0, 5)) {
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          const results = d.results;
+          if (!results) continue;
+
+          // Shape 3a (资管): nested rule-keyed map
+          //   {results: {<rid>: {<doc_id>: {verdict, ...}}}}
+          if (typeof results === "object" && !Array.isArray(results)) {
+            for (const [rid, docs] of Object.entries(results)) {
+              if (!isRuleId(rid) || !docs || typeof docs !== "object") continue;
+              for (const r of Object.values(docs)) {
+                if (!r || typeof r !== "object") continue;
+                const verdict = (r.verdict || "").toString().toUpperCase();
+                if (verdict === "PASS") bump(rid, "pass");
+                else if (verdict === "FAIL") bump(rid, "fail");
+                else if (verdict === "NOT_APPLICABLE" || verdict === "NA" || verdict === "WARNING") bump(rid, "na");
+              }
+            }
+            if (tally.size > 0) sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+          }
+          // Shape 3b (贷款): per-doc rollup list with failed_rules
+          //   {results: [{filename, actual, correct, failed_rules: [...]}], total_tested: N}
+          // For each rule: failures counted from failed_rules union; passes
+          // inferred as (total_tested - failures) for rules that appear in the catalog.
+          else if (Array.isArray(results)) {
+            const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
+            let catalogRules = [];
+            try {
+              const cat = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+              const list = Array.isArray(cat) ? cat : Array.isArray(cat?.rules) ? cat.rules : [];
+              catalogRules = list.map((r) => r?.id || r?.rule_id).filter((x) => isRuleId(x));
+            } catch { /* catalog optional */ }
+
+            const failCountByRule = new Map();
+            let docCount = 0;
+            for (const row of results) {
+              if (!row || typeof row !== "object") continue;
+              docCount += 1;
+              const failed = Array.isArray(row.failed_rules) ? row.failed_rules : [];
+              for (const rid of failed) {
+                if (!isRuleId(rid)) continue;
+                failCountByRule.set(rid, (failCountByRule.get(rid) || 0) + 1);
+              }
+            }
+            if (docCount > 0) {
+              const ruleSet = new Set([...catalogRules, ...failCountByRule.keys()]);
+              for (const rid of ruleSet) {
+                const fails = failCountByRule.get(rid) || 0;
+                const passes = Math.max(0, docCount - fails);
+                const t = tally.get(rid) || { pass: 0, fail: 0, na: 0, n: 0 };
+                t.pass += passes; t.fail += fails; t.n += docCount;
+                tally.set(rid, t);
+              }
+              if (tally.size > 0) sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+            }
+          }
+        } catch { /* try next file */ }
+        if (tally.size > 0) break;
+      }
+    }
+
+    // 4) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
+    // walk any output/*.json with a top-level rule_id-keyed shape that has
+    // verdict-like leaf objects. Catches future schema drift before the
+    // next audit cycle.
+    if (tally.size === 0) {
+      for (const f of files) {
+        if (!/qc|verdict|result/i.test(f.name)) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          const root = d?.results || d;
+          if (!root || typeof root !== "object" || Array.isArray(root)) continue;
+          let matched = false;
+          for (const [rid, val] of Object.entries(root)) {
+            if (!isRuleId(rid) || !val || typeof val !== "object") continue;
+            // val might be {verdict, ...} OR {<doc>: {verdict, ...}}
+            const probe = val.verdict ? [val] : Object.values(val);
+            for (const r of probe) {
+              if (!r || typeof r !== "object") continue;
+              const verdict = (r.verdict || "").toString().toUpperCase();
+              if (verdict === "PASS") { bump(rid, "pass"); matched = true; }
+              else if (verdict === "FAIL") { bump(rid, "fail"); matched = true; }
+              else if (verdict === "NOT_APPLICABLE" || verdict === "NA") { bump(rid, "na"); matched = true; }
+            }
+          }
+          if (matched) {
+            sourceFiles.push(path.relative(this._workspace.cwd, f.path) + " (fallback shape)");
+            break;
+          }
+        } catch { /* skip non-JSON */ }
+      }
+    }
+
     if (tally.size === 0) return null;
 
     const historical_accuracy = {};

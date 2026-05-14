@@ -1,0 +1,160 @@
+/**
+ * Regression test for v0.8 P0-C — H3 calibration aggregator new shapes.
+ *
+ * Background:
+ * Both v0.7.5 sessions (贷款话术 + 资管新规) shipped
+ * `confidence_calibration.json` with empty `{"historical_accuracy": {}}`
+ * despite having substantial QC data on disk:
+ *   - 贷款: output/qc_results_v1.json (16 docs, per-doc rollup list)
+ *   - 资管: output/results/production_qc_results.json (14 rules × 9 docs nested)
+ *
+ * The v0.7.2 aggregator only recognized rule_stats_v*.json + full_test_results_*.json
+ * shapes. v0.8 P0-C adds two more shapes + a catch-all fallback.
+ *
+ * This test runs the aggregator against synthetic versions of both shapes
+ * and asserts populated historical_accuracy.
+ *
+ * Run: `node tests/h3-calibration-aggregator.test.js`
+ */
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { ReleaseTool } from "../src/agent/tools/release.js";
+
+let failed = 0;
+let passed = 0;
+
+function assert(cond, msg) {
+  if (cond) { passed++; console.log(`  ✓ ${msg}`); }
+  else { failed++; console.error(`  ✗ ${msg}`); }
+}
+
+function makeTempWorkspace() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-h3-test-"));
+  fs.mkdirSync(path.join(dir, "output", "results"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "rules"), { recursive: true });
+  return dir;
+}
+
+function runAggregator(workspaceCwd) {
+  // Construct a minimal ReleaseTool stand-in to access _aggregateAccuracyFromOutput.
+  // The function only needs this._workspace.cwd.
+  const tool = new ReleaseTool({ cwd: workspaceCwd });
+  return tool._aggregateAccuracyFromOutput();
+}
+
+console.log("\nShape 3a: 资管-style nested rule-keyed map");
+{
+  const ws = makeTempWorkspace();
+  fs.writeFileSync(path.join(ws, "output", "results", "production_qc_results.json"), JSON.stringify({
+    batch: "production_qc_1",
+    total_docs: 3,
+    total_rules: 2,
+    results: {
+      "R01-01": {
+        "docA": { verdict: "PASS", evidence: "ok", confidence: 0.9 },
+        "docB": { verdict: "FAIL", evidence: "bad", confidence: 0.95 },
+        "docC": { verdict: "PASS", evidence: "ok", confidence: 0.8 },
+      },
+      "R02-01": {
+        "docA": { verdict: "PASS", confidence: 0.7 },
+        "docB": { verdict: "NOT_APPLICABLE", confidence: 1.0 },
+        "docC": { verdict: "WARNING", confidence: 0.6 },
+      },
+    },
+  }, null, 2));
+
+  const result = runAggregator(ws);
+  assert(result !== null, "aggregator returned non-null");
+  assert(result?.historical_accuracy, "historical_accuracy populated");
+  assert(result?.historical_accuracy?.["R01-01"]?.n_samples === 3, "R01-01 sees 3 samples");
+  assert(result?.historical_accuracy?.["R01-01"]?.pass_rate === 0.6667, `R01-01 pass_rate ~0.6667 (got ${result?.historical_accuracy?.["R01-01"]?.pass_rate})`);
+  assert(result?.historical_accuracy?.["R02-01"]?.n_passed === 1, "R02-01 sees 1 pass");
+  assert(result?.historical_accuracy?.["R02-01"]?.n_not_applicable === 2, "R02-01 NA + WARNING both count as NA");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 3b: 贷款-style per-doc rollup with failed_rules");
+{
+  const ws = makeTempWorkspace();
+  fs.writeFileSync(path.join(ws, "rules", "catalog.json"), JSON.stringify({
+    rules: [{ id: "R001" }, { id: "R002" }, { id: "R003" }],
+  }));
+  fs.writeFileSync(path.join(ws, "output", "qc_results_v1.json"), JSON.stringify({
+    timestamp: "2026-05-13T21:28:00",
+    qc_version: "v1",
+    total_tested: 4,
+    results: [
+      { filename: "doc1.md", correct: true, failed_rules: [] },
+      { filename: "doc2.md", correct: false, failed_rules: ["R001"] },
+      { filename: "doc3.md", correct: false, failed_rules: ["R001", "R002"] },
+      { filename: "doc4.md", correct: true, failed_rules: [] },
+    ],
+  }, null, 2));
+
+  const result = runAggregator(ws);
+  assert(result !== null, "aggregator returned non-null");
+  assert(result?.historical_accuracy?.["R001"]?.n_failed === 2, "R001 failed on 2 docs");
+  assert(result?.historical_accuracy?.["R001"]?.n_passed === 2, "R001 passed on 2 docs (4 total - 2 failed)");
+  assert(result?.historical_accuracy?.["R002"]?.n_failed === 1, "R002 failed on 1 doc");
+  assert(result?.historical_accuracy?.["R002"]?.n_passed === 3, "R002 passed on 3 docs");
+  assert(result?.historical_accuracy?.["R003"]?.n_passed === 4, "R003 passed on all 4 (no failed_rules entries)");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 4 (fallback): unfamiliar filename with rule-keyed verdicts");
+{
+  const ws = makeTempWorkspace();
+  // Future schema we haven't enumerated explicitly
+  fs.writeFileSync(path.join(ws, "output", "verdict_summary.json"), JSON.stringify({
+    "R01-01": { "doc1": { verdict: "PASS" }, "doc2": { verdict: "PASS" }, "doc3": { verdict: "FAIL" } },
+    "R02-02": { "doc1": { verdict: "PASS" } },
+  }));
+
+  const result = runAggregator(ws);
+  assert(result !== null, "fallback shape detected");
+  assert(result?.historical_accuracy?.["R01-01"]?.n_samples === 3, "R01-01 sees 3 samples via fallback");
+  assert(result?.source_files?.some((s) => /fallback shape/.test(s)), "source_files notes fallback");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nNegative: workspace with no QC artifacts returns null");
+{
+  const ws = makeTempWorkspace();
+  const result = runAggregator(ws);
+  assert(result === null, "returns null when no recognized QC files");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nRegression: real 资管 v0.7.5 workspace (if present)");
+{
+  const realWs = path.join(os.homedir(), ".kc_agent", "workspaces", "资管新规测试-075-002");
+  if (fs.existsSync(realWs)) {
+    const result = runAggregator(realWs);
+    assert(result !== null, "aggregator finds something in 资管 v0.7.5 workspace");
+    assert(result?.historical_accuracy && Object.keys(result.historical_accuracy).length > 0,
+           `historical_accuracy non-empty (got ${Object.keys(result?.historical_accuracy || {}).length} rules)`);
+    console.log(`    [info] 资管 aggregated rules: ${Object.keys(result?.historical_accuracy || {}).sort().join(", ")}`);
+  } else {
+    console.log("  (skipped — 资管 workspace not present)");
+  }
+}
+
+console.log("\nRegression: real 贷款 v0.7.5 workspace (if present)");
+{
+  const realWs = path.join(os.homedir(), ".kc_agent", "workspaces", "贷款话术测试-075-002");
+  if (fs.existsSync(realWs)) {
+    const result = runAggregator(realWs);
+    assert(result !== null, "aggregator finds something in 贷款 v0.7.5 workspace");
+    assert(result?.historical_accuracy && Object.keys(result.historical_accuracy).length > 0,
+           `historical_accuracy non-empty (got ${Object.keys(result?.historical_accuracy || {}).length} rules)`);
+    console.log(`    [info] 贷款 aggregated rules: ${Object.keys(result?.historical_accuracy || {}).sort().join(", ")}`);
+  } else {
+    console.log("  (skipped — 贷款 workspace not present)");
+  }
+}
+
+console.log(`\n${"=".repeat(60)}`);
+console.log(`Tests: ${passed} passed, ${failed} failed`);
+console.log("=".repeat(60));
+process.exit(failed > 0 ? 1 : 0);
