@@ -80,6 +80,22 @@ function readJsonSafe(p) {
   try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; }
 }
 
+// v0.8 P1-A: find the first existing file from a list of candidate relative
+// paths. Returns the absolute path of the first match, or null. Used for
+// "agent-might-have-written-it-anywhere" lookups where conventions vary.
+//
+// 资管 v0.7.5 wrote rule_skills/coverage_report.md; 贷款 v0.7.5 wrote
+// output/coverage_report.md or similar. Each derive function previously
+// hardcoded its own short list — extracting this helper keeps additions
+// centralized.
+function findFileAcrossKnownPaths(workspaceCwd, relPaths) {
+  for (const rel of relPaths) {
+    const abs = path.join(workspaceCwd, rel);
+    if (fileExists(abs)) return abs;
+  }
+  return null;
+}
+
 function readFileSafe(p) {
   try { return fs.readFileSync(p, "utf-8"); } catch { return ""; }
 }
@@ -197,15 +213,18 @@ export function deriveRuleExtractionMilestones(workspace) {
     }
   }
 
-  // coverageAudited: presence of rules/coverage_audit.{md,json} OR a
-  // rules/coverage_report.md / output/coverage_report.md. Loose criterion
-  // because agents pick different conventions; the spirit is "did the
+  // coverageAudited: presence of any coverage audit/report doc. Loose
+  // criterion — agents pick different conventions; the spirit is "did the
   // agent produce a coverage doc" not "did they put it in this exact file".
-  const coverageAudited =
-    fileExists(path.join(rulesDir, "coverage_audit.md")) ||
-    fileExists(path.join(rulesDir, "coverage_audit.json")) ||
-    fileExists(path.join(rulesDir, "coverage_report.md")) ||
-    fileExists(path.join(cwd, "output", "coverage_report.md"));
+  // v0.8 P1-A: use the same findFileAcrossKnownPaths helper as finalization.
+  const coverageAudited = !!findFileAcrossKnownPaths(cwd, [
+    path.join("rules", "coverage_audit.md"),
+    path.join("rules", "coverage_audit.json"),
+    path.join("rules", "coverage_report.md"),
+    path.join("output", "coverage_report.md"),
+    path.join("rule_skills", "coverage_report.md"),       // v0.8 P1-A
+    path.join("output", "qc", "coverage_report.md"),
+  ]);
 
   return {
     rulesExtracted,
@@ -613,10 +632,45 @@ export function deriveProductionQcMilestones(workspace) {
     }
   }
 
+  // v0.8 P1-A: per-doc QC review files at output/qc/reviews/doc_*.json
+  // (贷款 v0.7.5 shape). Each file is a single review object with
+  // {review_id, document, verdict}. Engine previously skipped these
+  // because they don't match the batch heuristic, causing
+  // `documents_reviewed: 0` despite 16 docs on disk.
+  const perDocReviewsDir = path.join(outputDir, "qc", "reviews");
+  if (dirExists(perDocReviewsDir)) {
+    for (const e of listChildFiles(perDocReviewsDir)) {
+      if (!e.name.endsWith(".json")) continue;
+      const data = readJsonSafe(path.join(perDocReviewsDir, e.name));
+      if (!data || typeof data !== "object" || !data.verdict) continue;
+      // Document identifier: prefer explicit fields, fall back to filename
+      const docKey = data.document || data.doc || data.file || data.path || e.name.replace(/\.json$/, "");
+      documentsReviewedSet.add(String(docKey));
+    }
+  }
+
+  // v0.8 P1-A: also read numeric `documents_reviewed: N` from any
+  // top-level batch file (贷款 review_001.json declares 16 directly).
+  // We use this only when the doc set is smaller than the claim — agents
+  // sometimes write summary batches without enumerating individual docs.
+  let declaredDocCount = 0;
+  for (const dir of candidateDirs) {
+    if (!dirExists(dir)) continue;
+    for (const e of listChildFiles(dir)) {
+      if (!e.name.endsWith(".json")) continue;
+      const data = readJsonSafe(path.join(dir, e.name));
+      if (!data || typeof data !== "object") continue;
+      const n = Number(data.documents_reviewed);
+      if (Number.isFinite(n) && n > declaredDocCount) declaredDocCount = n;
+    }
+  }
+  const documentsReviewed = Math.max(documentsReviewedSet.size, declaredDocCount);
+
   return {
     batchesProcessed,
-    documentsReviewed: documentsReviewedSet.size,
+    documentsReviewed,
     documentsReviewedKeys: [...documentsReviewedSet], // for describeState detail
+    documentsReviewedDeclared: declaredDocCount > documentsReviewedSet.size ? declaredDocCount : 0,
   };
 }
 
@@ -658,10 +712,18 @@ export function deriveFinalizationMilestones(workspace) {
     }
   }
 
-  // coverageReportWritten: rules/coverage_report.md OR output/coverage_report.md.
-  const coverageReportWritten =
-    fileExists(path.join(cwd, "rules", "coverage_report.md")) ||
-    fileExists(path.join(cwd, "output", "coverage_report.md"));
+  // coverageReportWritten: accept multiple known agent-write locations.
+  // v0.8 P1-A: added rule_skills/coverage_report.md (资管 v0.7.5 wrote here)
+  // and coverage_audit.md variants (贷款 v0.7.5 wrote rules/coverage_audit.md).
+  // The "coverage doc" concept covers both report-style + audit-style files.
+  const coverageReportWritten = !!findFileAcrossKnownPaths(cwd, [
+    path.join("rules", "coverage_report.md"),
+    path.join("rules", "coverage_audit.md"),                // 贷款 v0.7.5
+    path.join("rules", "coverage_audit.json"),
+    path.join("output", "coverage_report.md"),
+    path.join("rule_skills", "coverage_report.md"),         // 资管 v0.7.5
+    path.join("output", "qc", "coverage_report.md"),        // future-proofing
+  ]);
 
   // finalDashboardWritten: at least one dashboards/*.html that is NOT a
   // duplicate of any other. DS + GLM both shipped byte-identical
