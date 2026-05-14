@@ -1,0 +1,107 @@
+# Phase × skills registry — single source of truth for KC's skill scoping.
+#
+# v0.7.5: edit this file once; SkillLoader propagates to system-prompt
+# injection (always_loaded bodies inline), workspace skills/ population
+# (available set symlinked into <workspace>/skills/), and audit-script
+# comparison.
+#
+# Schema:
+#   phases:
+#     <phase_name>:
+#       always_loaded: [<skill_name>, ...]   # bodies injected into system prompt
+#       available: [<skill_name>, ...]       # consultable via consult_skill tool
+#
+# Always-loaded skills are auto-added to `available` at load time
+# (always_loaded ⊆ available conceptually). The list in `available`
+# below excludes already-always-loaded entries for readability.
+#
+# When adjusting: skill names must match a directory under
+# template/skills/{lang}/<name>/ containing a SKILL.md.
+
+phases:
+  bootstrap:
+    always_loaded:
+      - bootstrap-workspace
+    available:
+      - auto-model-selection
+      - data-sensibility
+      - document-parsing
+      - document-chunking
+      - version-control
+
+  rule_extraction:
+    always_loaded:
+      - rule-extraction
+    available:
+      - work-decomposition
+      - rule-graph
+      - data-sensibility
+      - document-parsing
+      - document-chunking
+      - version-control
+
+  skill_authoring:
+    always_loaded:
+      - skill-authoring
+      - work-decomposition
+    available:
+      - data-sensibility
+      - entity-extraction
+      - tree-processing
+      - compliance-judgment
+      - rule-graph
+      - corner-case-management
+      - evolution-loop
+      - skill-to-workflow
+      - skill-creator
+      - version-control
+
+  skill_testing:
+    always_loaded:
+      - evolution-loop
+    available:
+      - skill-authoring
+      - skill-to-workflow
+      - tree-processing
+      - corner-case-management
+      - compliance-judgment
+      - data-sensibility
+      - rule-graph
+      - version-control
+
+  distillation:
+    always_loaded:
+      - skill-to-workflow
+      - evolution-loop
+    available:
+      - skill-authoring
+      - task-decomposition
+      - corner-case-management
+      - confidence-system
+      - entity-extraction
+      - compliance-judgment
+      - version-control
+
+  production_qc:
+    always_loaded:
+      - quality-control
+      - evolution-loop
+    available:
+      - skill-authoring
+      - skill-to-workflow
+      - confidence-system
+      - cross-document-verification
+      - corner-case-management
+      - compliance-judgment
+      - dashboard-reporting
+      - version-control
+
+  finalization:
+    always_loaded:
+      - quality-control
+    available:
+      - skill-authoring
+      - skill-to-workflow
+      - dashboard-reporting
+      - version-control
+      - pdf-review-dashboard

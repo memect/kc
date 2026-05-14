@@ -1,6 +1,7 @@
 ---
 name: skill-creator
-description: Anthropic 官方 skill 脚手架工具——用于迭代/优化已有 skill 或对其运行 evaluation，不是构建 KC per-rule 核查 skill 的首选参考。要写 KC 规则 skill，先读 `meta-meta/skill-authoring`（规范目录结构 + 粒度规则 + KC 特定的 check.py 入口约定）和 `meta-meta/work-decomposition`（排序与分组决策）。本 skill 适用于：per-rule skill 已经存在、agent 想优化其 description/触发或跑正式 evaluation 时。
+tier: meta
+description: Anthropic 官方 skill 脚手架工具——用于迭代/优化已有 skill 或对其运行 evaluation，不是构建 KC per-rule 核查 skill 的首选参考。要写 KC 规则 skill，先 consult `skill-authoring`（规范目录结构 + 粒度规则 + KC 特定的 check.py 入口约定）和 `work-decomposition`（排序与分组决策）。本 skill 适用于：per-rule skill 已经存在、agent 想优化其 description/触发或跑正式 evaluation 时。
 ---
 
 # Skill Creator
