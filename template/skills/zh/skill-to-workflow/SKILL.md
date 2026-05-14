@@ -188,3 +188,16 @@ Worker LLM 通过 SiliconFlow API 访问。连接信息在 `.env` 里：
 - `TIER1` 到 `TIER4` —— 各层级的模型名称
 
 各模型当前的能力与上下文窗口大小，见 `references/worker-llm-catalog.md`。
+
+## sandbox_exec 超时设置（已知耗时长的命令）
+
+`sandbox_exec` 默认超时是 120 秒。对于你预期会跑得更久的命令 —— LLM 批处理、大型回归测试、文档解析 —— 显式传 `timeout_ms`（最大 600000ms = 10 分钟）。不要靠把任务切成不必要的小块来绕开默认值；那只会浪费回合数并模糊意图。
+
+```
+sandbox_exec({
+  command: "python scripts/v2_full_test.py",
+  timeout_ms: 480000   // 14 条规则 × 6 篇文档走 worker LLM，预留 8 分钟
+})
+```
+
+如果已经顶到 10 分钟上限还在超时，把工作拆成多次调用，或者交给子代理（子代理的超时和父进程相互独立）。

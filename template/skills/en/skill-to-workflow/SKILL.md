@@ -187,3 +187,16 @@ Worker LLMs are accessed via SiliconFlow API. Connection details are in `.env`:
 - Model names in `TIER1` through `TIER4`
 
 See `references/worker-llm-catalog.md` for current model capabilities and context window sizes.
+
+## sandbox_exec timeout for known-slow commands
+
+Default `sandbox_exec` timeout is 120 seconds. For commands you expect to take longer — LLM batch processing, large regression runs, document parsing — pass an explicit `timeout_ms` (up to 600000ms = 10 minutes). Don't fight the default by re-batching artificially small chunks; that wastes turns and obscures intent.
+
+```
+sandbox_exec({
+  command: "python scripts/v2_full_test.py",
+  timeout_ms: 480000   // 8 minutes for 14 rules × 6 docs through worker LLM
+})
+```
+
+If you're at the 10-minute ceiling and still timing out, split the work into multiple invocations OR delegate to a subagent (subagent timeouts are independent of the parent's).

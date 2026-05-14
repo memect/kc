@@ -542,7 +542,10 @@ export class AgentEngine {
     return {
       // Always available (BUILD + DISTILL)
       core: [
-        new SandboxExecTool(this.workspace, this.config.kcExecTimeout),
+        new SandboxExecTool(this.workspace, {
+          defaultTimeoutMs: this.config.kcExecDefaultTimeoutMs,
+          maxTimeoutMs: this.config.kcExecMaxTimeoutMs,
+        }),
         new WorkspaceFileTool(this.workspace, this.versionManager),
         new CopyToWorkspaceTool(this.workspace, {
           largeRefThresholdMB: this.config.largeRefThresholdMB ?? 10,

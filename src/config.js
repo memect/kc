@@ -114,7 +114,20 @@ export function loadSettings(workspacePath) {
 
     // Workspace (process.env wins — for parallel benchmark runs)
     kcWorkspaceRoot: penv.KC_WORKSPACE_ROOT || gc.workspace_root || path.join(os.homedir(), ".kc_agent", "workspaces"),
-    kcExecTimeout: parseInt(env.KC_EXEC_TIMEOUT || "30", 10),
+    // v0.8 P1-F sandbox_exec timeout model. Default 120s (Claude Code parity),
+    // max 600s (10 min) ceiling. Agent can pass per-call timeout_ms up to max.
+    // Legacy KC_EXEC_TIMEOUT (seconds) accepted as deprecation alias for default.
+    kcExecDefaultTimeoutMs: parseInt(
+      env.KC_EXEC_DEFAULT_TIMEOUT_MS ||
+      (env.KC_EXEC_TIMEOUT ? String(parseInt(env.KC_EXEC_TIMEOUT, 10) * 1000) : "") ||
+      "120000",
+      10,
+    ),
+    kcExecMaxTimeoutMs: parseInt(env.KC_EXEC_MAX_TIMEOUT_MS || "600000", 10),
+    // Legacy alias kept for any consumer reading it directly. Computed
+    // from the new ms-based field for consistency. New code should read
+    // kcExecDefaultTimeoutMs / kcExecMaxTimeoutMs.
+    kcExecTimeout: parseInt(env.KC_EXEC_TIMEOUT || "120", 10),
 
     // Accuracy thresholds
     skillAccuracy: parseFloat(env.SKILL_ACCURACY || gc.accuracy_threshold?.toString() || "0.9"),
