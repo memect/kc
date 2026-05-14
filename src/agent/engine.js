@@ -1196,6 +1196,29 @@ export class AgentEngine {
       // budget. Better to lose some history than crash with HTTP 400.
       messages = this._enforceTokenBudget(messages);
 
+      // v0.8 P3-A: skill usage counter — emit one skill_byte_send event
+      // per always-loaded skill per LLM send. Captures the cost of having
+      // a skill body inlined in the system prompt (Layer B per design doc).
+      // Agent-blind: events go to events.jsonl only; never surfaced to the
+      // agent's context. consult_skill tool results emit their own
+      // skill_invoked events with via_tool="consult_skill" (already in
+      // place since v0.7.5 G-C4), so we don't double-count those here.
+      try {
+        const { alwaysLoaded } = this._skillLoader.getPhaseSkillSet(this.currentPhase) || {};
+        if (Array.isArray(alwaysLoaded)) {
+          for (const skill of alwaysLoaded) {
+            const body = this._skillLoader.loadSkillBody(skill);
+            if (!body) continue;
+            this.eventLog.append("skill_byte_send", {
+              skill,
+              via: "system_prompt_always_loaded",
+              byte_count: body.length,
+              phase: this.currentPhase,
+            });
+          }
+        }
+      } catch { /* counter is best-effort; never break the turn */ }
+
       this.eventLog.append("llm_start", {
         model: this.config.kcModel,
         messageCount: messages.length,
