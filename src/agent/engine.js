@@ -367,11 +367,22 @@ export class AgentEngine {
   _startHeapSampler() {
     const logDir = path.join(this.workspace.cwd, "logs");
     const logPath = path.join(logDir, "heap.jsonl");
+    let stopped = false;
+    let lastSampleAt = 0;
+
     const sample = () => {
       try {
         const mem = process.memoryUsage();
+        const now = Date.now();
+        // v0.8 P1-C: track skipped intervals. If more than 90s elapsed
+        // since last sample on a 60s cadence, the previous tick was missed
+        // (event loop sleep, GC pause, etc.). Surface in the row so the
+        // post-mortem audit can detect gaps without needing to compare
+        // adjacent timestamps.
+        const skippedMs = lastSampleAt > 0 ? (now - lastSampleAt - 60_000) : 0;
+        lastSampleAt = now;
         const row = {
-          t: new Date().toISOString(),
+          t: new Date(now).toISOString(),
           seq: this.eventLog?.currentSeq ?? 0,
           phase: this.currentPhase,
           rssMB: Math.round(mem.rss / 1024 / 1024),
@@ -388,17 +399,36 @@ export class AgentEngine {
           // and the row gets `componentsErr` instead.
           components: this._sampleComponents(),
         };
+        if (skippedMs > 0) row.skippedMs = skippedMs;
         fs.mkdirSync(logDir, { recursive: true });
         fs.appendFileSync(logPath, JSON.stringify(row) + "\n", "utf-8");
       } catch { /* never fatal */ }
     };
+
+    // v0.8 P1-C: self-rescheduling setTimeout instead of setInterval. The
+    // 资管 v0.7.5 session shows only 2 heap.jsonl entries (12:39:40 start
+    // + 12:40:40 first tick) across an 18-hour run — the unref'd
+    // setInterval was somehow dropped between event-loop idle phases.
+    // setTimeout reschedules from inside the sample callback, so the
+    // timer is re-registered every tick. unref'd so we don't block exit.
+    let timeoutHandle = null;
+    const scheduleNext = () => {
+      if (stopped) return;
+      timeoutHandle = setTimeout(() => {
+        sample();
+        scheduleNext();
+      }, 60_000);
+      timeoutHandle.unref?.();
+    };
+
     // Record one sample at startup so we have a baseline even on short runs.
     sample();
-    const timer = setInterval(sample, 60_000);
-    timer.unref?.();
+    scheduleNext();
+
     return () => {
       try {
-        clearInterval(timer);
+        stopped = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         sample(); // one final sample on shutdown
       } catch { /* ignore */ }
     };
