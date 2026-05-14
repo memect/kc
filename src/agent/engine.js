@@ -2294,27 +2294,36 @@ export class AgentEngine {
   /** B1: original serial ralph-loop path — one task at a time, shared
    *  conversation history. Unchanged from pre-v0.6.0 behavior. */
   async *_runTaskLoopSerial(userMessage) {
-    // Run the initial turn (user's request)
+    // v0.8 P5-A: F5 re-enabled, conditional on marathon mode.
+    // - Interactive sessions (marathon NOT active): capture startingPhase
+    //   BEFORE the initial runTurn, and exit the loop on ANY phase change
+    //   (including within the initial runTurn). One user prompt = one
+    //   phase advance. Path (a) per design doc Q5 lean.
+    // - Marathon sessions: the kc-marathon driver provides per-phase
+    //   prompts via .kc_marathon/inbox.jsonl, so the engine doesn't need
+    //   F5's checkpoint — phase chaining is OK because each chained phase
+    //   STILL gets its own driver-emitted prompt next tick.
+    //
+    // v0.7.3 demonstrated why F5 matters interactively: auto-chained
+    // phase advances skip the user check-in cycle and broke phase
+    // control in team testing. v0.7.4 G0c first fixed it via
+    // post-initial-runTurn exit; v0.7.5 added the strict capture-BEFORE
+    // refinement; v0.8 P5-A preserves both with the marathon escape.
+    const marathonActive = this.marathonInput?.isActive() === true;
+    const startingPhase = this.currentPhase;
     yield* this.runTurn(userMessage);
 
-    // v0.7.5 G-F5 — TEMPORARILY DISABLED 2026-05-13 for overnight
-    // marathon test. The strict capture-BEFORE form lets every user
-    // prompt advance only one phase, which blocks unattended overnight
-    // sessions. v0.7.4-style capture-AFTER (below) allows the agent
-    // to chain multiple phase_advance calls within the initial runTurn,
-    // then exits the while loop on subsequent phase changes.
-    //
-    // TODO: after the overnight E2E results come in (2026-05-14), decide:
-    //   (a) re-enable F5 strict and build marathon as a separate mode
-    //       (external driver pattern, e.g., /loop-kc command) — locked
-    //       earlier decision per harness-research § 7
-    //   (b) keep capture-AFTER permanently and accept multi-phase prompts
-    //
-    // To re-enable F5: move `const startingPhase = this.currentPhase;`
-    // to BEFORE the `yield* this.runTurn(userMessage);` above, and add
-    // the matching `if (this.currentPhase !== startingPhase) { return; }`
-    // block between runTurn and the while loop.
-    const startingPhase = this.currentPhase;
+    // F5 strict gate: if interactive AND phase changed during initial
+    // runTurn, exit immediately (don't auto-continue tasks in the new
+    // phase). Marathon bypasses — driver decides pacing.
+    if (!marathonActive && this.currentPhase !== startingPhase) {
+      this.eventLog.append("ralph_loop_exit", {
+        reason: "f5_strict_initial_turn",
+        from: startingPhase,
+        to: this.currentPhase,
+      });
+      return;
+    }
 
     // Auto-continue through pending tasks (within current phase only)
     while (this.taskManager.getNextPending()) {
@@ -2433,14 +2442,25 @@ export class AgentEngine {
    * amortized against the 2-4× wall-clock speedup.
    */
   async *_runTaskLoopParallel(userMessage, parallelism) {
+    // v0.8 P5-A: F5 re-enabled, conditional on marathon mode.
+    // Mirror _runTaskLoopSerial — capture startingPhase BEFORE initial
+    // runTurn so phase advance during the initial turn exits the loop
+    // unless marathon is active.
+    const marathonActive = this.marathonInput?.isActive() === true;
+    const startingPhase = this.currentPhase;
+
     // Initial turn: main agent reads user request, creates tasks.
     yield* this.runTurn(userMessage);
 
-    // v0.7.5 G-F5 — TEMPORARILY DISABLED 2026-05-13 for overnight
-    // marathon test. See _runTaskLoopSerial above for full rationale.
-    // To re-enable F5: move `startingPhase` capture BEFORE the
-    // initial runTurn, add post-runTurn exit check matching serial.
-    const startingPhase = this.currentPhase;
+    if (!marathonActive && this.currentPhase !== startingPhase) {
+      this.eventLog.append("ralph_loop_exit", {
+        reason: "f5_strict_initial_turn",
+        from: startingPhase,
+        to: this.currentPhase,
+        mode: "parallel",
+      });
+      return;
+    }
 
     const agentTool = this._buildTools.core.find((t) => t?.name === "agent_tool");
     if (!agentTool) {
