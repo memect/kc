@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "build:meme": "node scripts/build-meme.js",
-    "prepublishOnly": "node scripts/build-meme.js"
+    "prepublishOnly": "node scripts/build-meme.js",
+    "test": "node scripts/run-tests.js"
   },
   "homepage": "https://github.com/kitchen-engineer42/kc-cli",
   "repository": {

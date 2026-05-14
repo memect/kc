@@ -63,6 +63,21 @@ export class ConsultSkillTool extends BaseTool {
     const name = (input?.name || "").trim();
     if (!name) return new ToolResult("name required (e.g. consult_skill({name: 'work-decomposition'}))", true);
 
+    // v0.8 P0-A: defensive null-check. v0.7.5 shipped with an init-order bug
+    // where ConsultSkillTool received undefined skillLoader and threw
+    // "Cannot read properties of undefined (reading 'getPhaseSkillSet')"
+    // on every invocation (资管 audit § 9.1, 5/5 failure rate). The init-order
+    // fix is in engine.js:238; this guard prevents an uncaught exception if
+    // the bug recurs from any future constructor reorder.
+    if (!this._skillLoader || typeof this._skillLoader.getPhaseSkillSet !== "function") {
+      return new ToolResult(
+        "consult_skill is misconfigured: skillLoader unavailable. This is an engine-side bug — " +
+        "surface to the developer user. The agent should fall back to reading skill bodies " +
+        "directly from <workspace>/skills/<name>/SKILL.md or the system prompt's always-loaded section.",
+        true,
+      );
+    }
+
     const phase = this._getCurrentPhase ? this._getCurrentPhase() : null;
     const { alwaysLoaded, available } = this._skillLoader.getPhaseSkillSet(phase);
 

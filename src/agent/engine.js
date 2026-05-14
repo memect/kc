@@ -216,8 +216,6 @@ export class AgentEngine {
     // so they don't get a TaskManager.
     this.taskManager = this._isSubagent ? null : new TaskManager(this.workspace.cwd);
 
-    // Build all tool instances (but register phase-appropriate ones)
-    this._buildTools = this._createAllTools();
     this._phaseSummaries = [];
 
     // Pipeline system (meta-meta skills as code)
@@ -233,7 +231,14 @@ export class AgentEngine {
     };
 
     // Skill discovery (Claude Code pattern: index in context, full content on demand)
+    // v0.7.5 — must initialize BEFORE _createAllTools() because ConsultSkillTool
+    // takes this._skillLoader as a constructor arg. Was a v0.7.5 init-order bug:
+    // _createAllTools ran first, passed undefined skillLoader to ConsultSkillTool,
+    // calls to consult_skill threw "Cannot read properties of undefined".
     this._skillLoader = new SkillLoader(config.language);
+
+    // Build all tool instances (but register phase-appropriate ones)
+    this._buildTools = this._createAllTools();
 
     // v0.7.5 G-D1: populate <workspace>/skills/ with the initial phase's
     // available skill set. Symlink with copy fallback. Re-populated on
