@@ -410,3 +410,29 @@ E2E history:
 - E2E #7 v071 neither DS nor GLM wrote PATTERNS.md, but GLM wrote 6 rich phase-completion logs and a comprehensive AGENT.md — the methodology WAS captured, just in different files. v0.7.2 blesses the broader principle: persist before you advance, format flexible.
 
 The engine's filesystem-derived milestones (Group A v0.7.0) verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract; the persistence file is your project's memory.
+
+## Subagent batch work: rolling-window writes
+
+When you dispatch N subagents to do batch work (regression tests, batch verification, parallel rule processing), DO NOT have them write to a shared coordination file. v0.7.5 audits found subagents racing on `tasks.json` / `rules/catalog.json` / `output/results/summary.json` — one took the workspace lock for 5+ minutes while others waited silently.
+
+The right pattern: each subagent writes to its OWN file under a known prefix. The parent aggregates after all subagents finish.
+
+```
+sub_agents/
+  batch-001-regression/
+    output/results/v2_regression.json       # ❌ shared — races other subagents
+  batch-002-regression/
+    output/results/v2_regression.json       # ❌ same path, race
+
+# vs:
+
+output/
+  batch_regression_001.json                 # ✓ each subagent owns one file
+  batch_regression_002.json                 # ✓
+  batch_regression_003.json                 # ✓
+# Parent agent reads all batch_regression_*.json and writes the aggregate.
+```
+
+Engine signal: if you see `lock_blocked` events in events.jsonl during subagent work, that's the symptom. v0.8 P4-C added the event emission so the parent has visibility into contention before the subagent times out. If the pattern shows up, refactor to rolling-window writes.
+
+Don't write a "coordinate via file locking" subagent batch. The locking primitives exist for safety against accidental concurrent writes, not as a queue. Use the filesystem layout as the coordination mechanism.

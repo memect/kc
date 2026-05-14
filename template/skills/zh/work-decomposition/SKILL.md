@@ -403,3 +403,29 @@ E2E 历史：
 - E2E #7 v071 DS 和 GLM 都没写 PATTERNS.md，但 GLM 写了 6 篇 phase 完成日志和一份内容详尽的 AGENT.md —— 方法论 *捕获了*，只是放在了不同文件里。v0.7.2 把更宽的原则写进 skill：推进之前先持久化，格式灵活。
 
 引擎从文件系统推导里程碑（v0.7.0 Group A）会按磁盘事实核验覆盖率，无论你怎么切分工作。TaskBoard 是你的草稿；磁盘才是契约；持久化文件是项目的记忆。
+
+## 子代理批处理：滚动窗口写入（rolling-window）
+
+当你派发 N 个子代理做批量工作（回归测试、批量核查、并行规则处理）时，**不要**让它们写同一个协调文件。v0.7.5 审计发现：子代理在 `tasks.json` / `rules/catalog.json` / `output/results/summary.json` 上互相抢锁 —— 一个占着工作区锁 5 分钟以上，其他在静默等待。
+
+正确的模式：每个子代理写到**自己**专属的、有已知前缀的文件。父代理在所有子代理完成后再做聚合。
+
+```
+sub_agents/
+  batch-001-regression/
+    output/results/v2_regression.json       # ❌ 多个子代理共用 — 抢锁
+  batch-002-regression/
+    output/results/v2_regression.json       # ❌ 同一路径，竞争
+
+# 改为：
+
+output/
+  batch_regression_001.json                 # ✓ 每个子代理一个文件
+  batch_regression_002.json                 # ✓
+  batch_regression_003.json                 # ✓
+# 父代理读所有 batch_regression_*.json，写汇总。
+```
+
+引擎信号：如果你在 events.jsonl 里看到 `lock_blocked` 事件出现在子代理工作期间，那就是症状。v0.8 P4-C 加了这个事件发射，让父代理在子代理超时之前就看见冲突。出现就立刻改成滚动窗口写。
+
+不要写"用文件锁协调"的子代理批处理。锁原语是用来防止意外并发写入的安全机制，不是队列。用文件系统布局作为协调机制。

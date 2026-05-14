@@ -4,7 +4,8 @@
   "description": "KC Agent — LLM document verification agent (pure Node.js CLI). Dual-licensed: PolyForm Noncommercial 1.0.0 for personal/noncommercial use; commercial license required for enterprise production. See LICENSE and LICENSE-COMMERCIAL.md.",
   "type": "module",
   "bin": {
-    "kc-beta": "bin/kc-beta.js"
+    "kc-beta": "bin/kc-beta.js",
+    "kc-marathon": "bin/kc-marathon.js"
   },
   "files": [
     "bin/",

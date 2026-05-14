@@ -7,6 +7,7 @@ import {
 } from "./pipelines/_milestone-derive.js";
 import { getPrescriptiveHint } from "./pipelines/_advance-hints.js";
 import { loadEnvFile } from "../config.js";
+import { MarathonInputWatcher } from "./marathon-input.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { findSafeSplitPoint } from "./message-utils.js";
@@ -220,6 +221,13 @@ export class AgentEngine {
     // fields where current config came from gc fallback (penv-set values
     // still win because loadSettings applied them).
     try { this._overlayWorkspaceEnv(); } catch { /* best-effort */ }
+
+    // v0.8 P4: marathon input watcher. Active iff
+    // <workspace>/.kc_marathon/active exists (created by kc-marathon
+    // CLI on startup). When active, the engine's main loop should
+    // consume prompts from <workspace>/.kc_marathon/inbox.jsonl as
+    // synthetic user messages.
+    this.marathonInput = new MarathonInputWatcher(this.workspace.cwd);
 
     // Context windowing
     this.contextWindow = new ContextWindow({
@@ -2384,6 +2392,26 @@ export class AgentEngine {
         });
         break;
       }
+    }
+
+    // v0.8 P4: marathon mode — if the kc-marathon driver is active for
+    // this workspace, keep consuming prompts from its inbox even past
+    // the F5 phase-boundary exit. The driver controls pacing; engine
+    // just runs the prompts it's handed. Loop exits when the driver
+    // removes its .kc_marathon/active marker (clean shutdown or stop
+    // condition hit).
+    if (this.marathonInput?.isActive()) {
+      this.eventLog.append("marathon_attach", { workspace: this.workspace.cwd });
+      while (this.marathonInput.isActive()) {
+        const nextPrompt = this.marathonInput.takeNext();
+        if (!nextPrompt) {
+          // Wait a bit for the driver to deposit more
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        yield* this.runTurn(nextPrompt);
+      }
+      this.eventLog.append("marathon_detach", { workspace: this.workspace.cwd });
     }
   }
 

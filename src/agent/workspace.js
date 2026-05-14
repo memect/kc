@@ -170,11 +170,12 @@ export class Workspace {
    * @param {{timeoutMs?: number, retryMs?: number, staleMs?: number}} [opts]
    * @returns {Promise<T>}
    */
-  async withFileLock(relPath, fn, { timeoutMs = 10_000, retryMs = 50, staleMs = 60_000 } = {}) {
+  async withFileLock(relPath, fn, { timeoutMs = 10_000, retryMs = 50, staleMs = 60_000, eventLog = null, blockedWarnMs = 5_000 } = {}) {
     const target = this.resolvePath(relPath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const lockPath = target + ".lock";
     const start = Date.now();
+    let blockedWarned = false;
 
     while (true) {
       let fd;
@@ -193,7 +194,24 @@ export class Workspace {
           // Lockfile vanished between EEXIST and stat — retry to acquire.
           continue;
         }
-        if (Date.now() - start > timeoutMs) {
+        // v0.8 P4-C: emit lock_blocked event once when wait crosses
+        // blockedWarnMs (default 5s). Lets parent see subagent contention
+        // before the call fails. 贷款 v0.7.5 audit: subagent burned 5 min
+        // on silent lock contention; parent only saw it as a long-running
+        // subagent. Now there's a visible signal.
+        const waited = Date.now() - start;
+        if (!blockedWarned && waited > blockedWarnMs && eventLog?.append) {
+          try {
+            eventLog.append("lock_blocked", {
+              path: relPath,
+              waited_ms: waited,
+              session_id: this.sessionId,
+              pid: process.pid,
+            });
+          } catch { /* best-effort */ }
+          blockedWarned = true;
+        }
+        if (waited > timeoutMs) {
           throw new Error(`Timeout acquiring lock on ${relPath} after ${timeoutMs}ms (held by another engine)`);
         }
         await new Promise((r) => setTimeout(r, retryMs));
@@ -221,8 +239,11 @@ export class Workspace {
    * Lets callsites uniformly wrap their writes without knowing which
    * paths are shared.
    */
-  async withSharedLockIfApplicable(relPath, fn) {
-    if (isSharedCoordinationPath(relPath)) return this.withFileLock(relPath, fn);
+  async withSharedLockIfApplicable(relPath, fn, opts = {}) {
+    // v0.8 P4-C: forward optional {eventLog, ...} through to withFileLock
+    // so lock_blocked events can fire from any call site (workspace_file,
+    // rule_catalog, etc.) once they pass their engine's eventLog.
+    if (isSharedCoordinationPath(relPath)) return this.withFileLock(relPath, fn, opts);
     return fn();
   }
 
