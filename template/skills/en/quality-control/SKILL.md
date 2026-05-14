@@ -121,6 +121,15 @@ There are two distinct dashboards in this system:
 
 When a release is built, point end users at the bundled dashboard, not the workspace one. Workspace dashboard stays your developer surface.
 
+## Re-release after substantive changes
+
+A release bundle is a snapshot of `workflows/` and `rule_skills/` at the moment the `release` tool ran. If you modify any `workflows/<rule>/workflow_v*.py`, `rule_skills/<id>/SKILL.md`, or `check.py` AFTER the release was built, the shipped artifact no longer reflects your actual work. Engine's milestone derivation will surface `releaseIsStale: true` with the divergent file list.
+
+When this fires:
+- **Substantive change** (new hybrid path, fixed verdict logic, added rule): re-run the `release` tool to produce a fresh bundle.
+- **Cosmetic edit only** (typo, comment, formatting): write `.accept_stale_release` into the release directory to acknowledge — `touch output/releases/<slug>/.accept_stale_release`.
+- **DON'T** declare finalization done while a stale release ships. Downstream consumers (other agents, deployed verification systems) read the bundled `parser_v*.py` / `workflows/`, not the workspace.
+
 ## Developer User Involvement
 
 The developer user should see QC results through the dashboard (see `dashboard-reporting`). Key metrics to surface:

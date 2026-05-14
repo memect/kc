@@ -694,11 +694,108 @@ export function deriveFinalizationMilestones(workspace) {
     }
   }
 
+  // v0.8 P0-D: stale-release detection. SOFT gate — surfaces a warning,
+  // doesn't refuse phase advance. 资管 audit § 9.1 finding 11 found both
+  // release bundles snapped BEFORE the user's "更激进 worker LLM" prompt
+  // drove 14 hybrid workflow_v2.py builds, but neither was re-released.
+  // We detect by comparing the most-recent release manifest's created_at
+  // against the mtimes of workflows/ and rule_skills/.
+  const staleRelease = _detectStaleRelease(cwd);
+
   return {
     readmeWritten,
     coverageReportWritten,
     finalDashboardWritten,
     dashboardDuplicatesDetected,
+    releaseIsStale: staleRelease.isStale,
+    staleReleaseDetail: staleRelease.detail,
+  };
+}
+
+// v0.8 P0-D: detect whether workflows/ or rule_skills/ contain files
+// modified after the most-recent release manifest was written. Returns
+// {isStale: bool, detail: {releaseTs?, releasePath?, newerFiles?: [...]}}.
+// SOFT semantics — the milestone is informational; phase advance still
+// works. The agent + downstream tooling (e2e-audit) decides what to do.
+function _detectStaleRelease(cwd) {
+  const releasesRoot = path.join(cwd, "output", "releases");
+  if (!dirExists(releasesRoot)) return { isStale: false, detail: null };
+
+  // Find most-recent release manifest (by created_at OR fs mtime as fallback).
+  let latestRelease = null; // {path, createdAt: Date}
+  for (const e of listChildDirs(releasesRoot)) {
+    const manifestPath = path.join(releasesRoot, e.name, "manifest.json");
+    try {
+      const stat = fs.statSync(manifestPath);
+      if (!stat.isFile()) continue;
+      let createdAt = stat.mtime;
+      try {
+        const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        if (m?.created_at) {
+          const parsed = new Date(m.created_at);
+          if (!Number.isNaN(parsed.getTime())) createdAt = parsed;
+        }
+      } catch { /* fall back to mtime */ }
+      if (!latestRelease || createdAt > latestRelease.createdAt) {
+        latestRelease = { path: manifestPath, createdAt, slug: e.name };
+      }
+    } catch { /* skip */ }
+  }
+
+  if (!latestRelease) return { isStale: false, detail: null };
+
+  // Walk workflows/ and rule_skills/ for files newer than latestRelease.createdAt.
+  // Cap to first 10 newer-than-release matches to bound report size.
+  const newerFiles = [];
+  const cutoff = latestRelease.createdAt.getTime();
+  const SCAN_DIRS = ["workflows", "rule_skills"];
+  for (const sub of SCAN_DIRS) {
+    const root = path.join(cwd, sub);
+    if (!dirExists(root)) continue;
+    const stack = [root];
+    while (stack.length && newerFiles.length < 10) {
+      const d = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+      for (const ent of entries) {
+        if (ent.name.startsWith(".") || ent.name === "__pycache__" || ent.name === "node_modules") continue;
+        const p = path.join(d, ent.name);
+        if (ent.isDirectory()) { stack.push(p); continue; }
+        if (!ent.isFile()) continue;
+        // Care about workflow_v*.py + check.py + SKILL.md/skill.md only —
+        // not __pycache__, not test artifacts, not .json.
+        if (!/(workflow_v\d+\.py|check\.py|SKILL\.md|skill\.md)$/.test(ent.name)) continue;
+        try {
+          const st = fs.statSync(p);
+          if (st.mtimeMs > cutoff) {
+            newerFiles.push({
+              path: path.relative(cwd, p),
+              mtime: new Date(st.mtimeMs).toISOString(),
+            });
+            if (newerFiles.length >= 10) break;
+          }
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  if (newerFiles.length === 0) return { isStale: false, detail: null };
+
+  // SOFT: accept_stale_release marker bypasses the warning. Agents that
+  // intentionally accept the older release write this file.
+  const acceptPath = path.join(cwd, "output", "releases", latestRelease.slug, ".accept_stale_release");
+  if (fileExists(acceptPath)) return { isStale: false, detail: { acceptedAt: latestRelease.slug } };
+
+  return {
+    isStale: true,
+    detail: {
+      releasePath: path.relative(cwd, latestRelease.path),
+      releaseSlug: latestRelease.slug,
+      releaseCreatedAt: latestRelease.createdAt.toISOString(),
+      newerFiles,
+      totalNewerCount: newerFiles.length,
+      hint: "Workspace artifacts modified after release was built. Either re-run the release tool or write .accept_stale_release into the release dir to acknowledge.",
+    },
   };
 }
 

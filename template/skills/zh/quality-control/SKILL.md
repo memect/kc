@@ -248,6 +248,15 @@ logs/qc/
 
 发布 release 后，把终端用户引导到 release 包内的仪表盘，不是工作区的那个。工作区仪表盘是你自己的开发者视图。
 
+## 实质性变更后必须重新发布
+
+release 包是某一时刻 `workflows/` 和 `rule_skills/` 的快照。如果在 release 构建之后修改了任何 `workflows/<rule>/workflow_v*.py`、`rule_skills/<id>/SKILL.md` 或 `check.py`，已发布的产物不再反映你的实际工作。引擎的里程碑推导会标记 `releaseIsStale: true` 并列出有差异的文件。
+
+触发后应当：
+- **实质性变更**（新增混合路径、修正判定逻辑、新增规则）：重新运行 `release` 工具生成新的包。
+- **仅美化编辑**（错别字、注释、格式化）：在 release 目录写入 `.accept_stale_release` 表示确认 —— `touch output/releases/<slug>/.accept_stale_release`。
+- **不要**在 release 已经过时的情况下宣告 finalization 完成。下游消费者（其他 agent、部署的核查系统）读的是 release 包内的 `parser_v*.py` / `workflows/`，不是工作区。
+
 ## 开发者用户参与
 
 质量监控不应该让开发者用户去读 JSON 文件。通过仪表盘技能生成可视化报告，开发者用户只需要关注：
