@@ -38,6 +38,7 @@ import { TierDowngradeTool } from "./tools/tier-downgrade.js";
 import { AgentTool } from "./tools/agent-tool.js";
 import { WebSearchTool } from "./tools/web-search.js";
 import { TaskCreateTool, TaskUpdateTool, TaskCompleteTool } from "./tools/task-board.js";
+import { ConsultSkillTool } from "./tools/consult-skill.js";
 import { SkillLoader } from "./skill-loader.js";
 import { TaskManager } from "./task-manager.js";
 import { Scheduler } from "./scheduler.js";
@@ -233,6 +234,18 @@ export class AgentEngine {
 
     // Skill discovery (Claude Code pattern: index in context, full content on demand)
     this._skillLoader = new SkillLoader(config.language);
+
+    // v0.7.5 G-D1: populate <workspace>/skills/ with the initial phase's
+    // available skill set. Symlink with copy fallback. Re-populated on
+    // every phase advance/retreat (see _advancePhase).
+    try {
+      const res = this._skillLoader.populateWorkspaceSkills(this.workspace.cwd, this.currentPhase);
+      this.eventLog?.append?.("skills_populated", {
+        phase: res.phase,
+        populated: res.populated,
+        failures: res.failures,
+      });
+    } catch { /* best-effort; skills/ population is not a critical-path failure */ }
 
     // Register tools for initial phase
     this.toolRegistry = new ToolRegistry();
@@ -486,6 +499,17 @@ export class AgentEngine {
           new TaskUpdateTool(this.workspace, this.taskManager),
           new TaskCompleteTool(this.workspace, this.taskManager),
         ] : []),
+        // v0.7.5: consult_skill loads a meta-skill body into conversation
+        // history on demand. Always-loaded skills are already in the
+        // system prompt via SkillLoader.formatForContext; this tool covers
+        // the "available" set for the current phase. Both main + subagents
+        // register their own — each has its own skillLoader + phase.
+        new ConsultSkillTool(
+          this.workspace,
+          this._skillLoader,
+          () => this.currentPhase,
+          this.eventLog,
+        ),
       ],
       // Distillation+ only (DISTILL mode)
       distill: [
@@ -1289,23 +1313,45 @@ export class AgentEngine {
 
           this.eventLog.append("tool_result", {
             name: tc.name,
+            input: inputData,
             output: result.content || "",
             isError: result.isError,
             traceId: offload?.traceId || null,
           });
 
-          // D3a: trace skill invocations. When the agent reads a SKILL.md via
-          // workspace_file (the canonical way KC "uses" a skill, since skills
-          // are progressively-disclosed markdown), emit a skill_invoked event.
-          // Makes "which skills did KC actually consult?" answerable in post-run
-          // analysis — before this, skills were opaque to the event log.
+          // v0.7.5 (G-F4): added `input` above so events.jsonl carries the
+          // tool inputs (v0.7.4 G1c only patched the AgentEvent yield path,
+          // missed the persistence path — audit confirmed 0/453 + 0/946
+          // tool_result events had `input` in v0.7.4 sessions).
+
+          // D3a: trace skill invocations. v0.7.5 (G-C6): only fire on
+          // READS of meta-skill paths. Writes to rule_skills/<id>/SKILL.md
+          // during skill_authoring are NOT skill invocations — they're the
+          // agent producing its own deliverable. The old "(unknown)" spam
+          // (100% of events in v0.7.1 + v0.7.4 sessions) is gone.
+          //
+          // Note: meta-skill body reads now happen via consult_skill, which
+          // emits skill_invoked itself (with the real skill name). This
+          // path-matching emission stays only as a fallback for any agent
+          // that reads a SKILL.md path directly (out of pattern).
           try {
+            const isRead =
+              (tc.name === "workspace_file" && inputData?.operation === "read") ||
+              (tc.name === "sandbox_exec" && /\b(cat|head|tail|less|grep|view|read)\b/.test(
+                String(inputData?.command || "")
+              ));
             if (
               !result.isError &&
+              isRead &&
               (tc.name === "workspace_file" || tc.name === "sandbox_exec")
             ) {
               const p = String(inputData?.path || inputData?.command || "");
-              const skillMatch = p.match(/(?:template\/)?skills\/[a-z-]+\/(?:meta-meta|meta|skill-creator)\/([a-zA-Z0-9_-]+)(?:\/SKILL\.md|\/)?|\bSKILL\.md\b/);
+              // v0.7.5 flat layout: skills/<name>/SKILL.md (workspace scope)
+              // OR template/skills/<lang>/<name>/SKILL.md (template scope, rare)
+              // Deep layout backward-compat preserved for any stragglers.
+              const skillMatch = p.match(
+                /(?:template\/)?skills\/(?:[a-z]+\/)?(?:(?:meta-meta|meta|skill-creator)\/)?([a-zA-Z0-9_-]+)\/SKILL\.md\b/
+              ) || p.match(/\bSKILL\.md\b/);
               if (skillMatch) {
                 const skillName = skillMatch[1] || "(unknown)";
                 this.eventLog.append("skill_invoked", {
@@ -1537,6 +1583,20 @@ export class AgentEngine {
     this._registerToolsForPhase(this.currentPhase);
     this.workspace.setPhase(this.currentPhase);
     this._createTasksForPhase(this.currentPhase);
+
+    // v0.7.5 G-D2: re-populate <workspace>/skills/ with the new phase's
+    // available set. Symlinks are wiped + recreated. Agent's `ls skills/`
+    // and any read-by-path reflects the current phase's allowlist.
+    try {
+      const res = this._skillLoader?.populateWorkspaceSkills(this.workspace.cwd, this.currentPhase);
+      if (res) {
+        this.eventLog.append("skills_populated", {
+          phase: res.phase,
+          populated: res.populated,
+          failures: res.failures,
+        });
+      }
+    } catch { /* best-effort */ }
 
     // v0.7.0 N (#94): give the entered pipeline a chance to do
     // phase-entry setup. Used by finalization to copy the release
@@ -2106,11 +2166,23 @@ export class AgentEngine {
     // Run the initial turn (user's request)
     yield* this.runTurn(userMessage);
 
-    // v0.7.4 G0c: capture phase at loop entry. If phase changes
-    // during the loop (agent calls phase_advance from inside a
-    // task), exit so user gets a checkpoint at the boundary.
-    // Restores the v0.7.2 "stops between phases" behavior that
-    // v0.7.3 broke by enabling cross-phase task chaining.
+    // v0.7.5 G-F5 — TEMPORARILY DISABLED 2026-05-13 for overnight
+    // marathon test. The strict capture-BEFORE form lets every user
+    // prompt advance only one phase, which blocks unattended overnight
+    // sessions. v0.7.4-style capture-AFTER (below) allows the agent
+    // to chain multiple phase_advance calls within the initial runTurn,
+    // then exits the while loop on subsequent phase changes.
+    //
+    // TODO: after the overnight E2E results come in (2026-05-14), decide:
+    //   (a) re-enable F5 strict and build marathon as a separate mode
+    //       (external driver pattern, e.g., /loop-kc command) — locked
+    //       earlier decision per harness-research § 7
+    //   (b) keep capture-AFTER permanently and accept multi-phase prompts
+    //
+    // To re-enable F5: move `const startingPhase = this.currentPhase;`
+    // to BEFORE the `yield* this.runTurn(userMessage);` above, and add
+    // the matching `if (this.currentPhase !== startingPhase) { return; }`
+    // block between runTurn and the while loop.
     const startingPhase = this.currentPhase;
 
     // Auto-continue through pending tasks (within current phase only)
@@ -2213,9 +2285,10 @@ export class AgentEngine {
     // Initial turn: main agent reads user request, creates tasks.
     yield* this.runTurn(userMessage);
 
-    // v0.7.4 G0c: capture phase at loop entry. Phase change mid-loop
-    // = user checkpoint. Same contract as serial path. Workers in
-    // flight finish; no new ones dispatched after the change.
+    // v0.7.5 G-F5 — TEMPORARILY DISABLED 2026-05-13 for overnight
+    // marathon test. See _runTaskLoopSerial above for full rationale.
+    // To re-enable F5: move `startingPhase` capture BEFORE the
+    // initial runTurn, add post-runTurn exit check matching serial.
     const startingPhase = this.currentPhase;
 
     const agentTool = this._buildTools.core.find((t) => t?.name === "agent_tool");

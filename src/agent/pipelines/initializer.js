@@ -9,7 +9,10 @@ import { deriveBootstrapMilestones } from "./_milestone-derive.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_MD_TEMPLATE = path.resolve(__dirname, "../../../template/AGENT.md");
 
-const REQUIRED_DIRS = ["rules", "samples", "input", "output", "logs", "workflows", "rule_skills"];
+// v0.7.5: `skills` added to required dirs. Populated by SkillLoader
+// .populateWorkspaceSkills() at bootstrap + on every phase transition
+// with the phase's `available` skill set (per phase_skills.yaml).
+const REQUIRED_DIRS = ["rules", "samples", "input", "output", "logs", "workflows", "rule_skills", "skills"];
 
 const DEFAULT_ENV = `# === KC Agent Project Configuration ===
 
