@@ -81,10 +81,56 @@ export class DashboardRenderTool extends BaseTool {
       metrics.evolution_iterations = fs.readdirSync(evoDir).filter((f) => f.endsWith(".json")).length;
     }
 
+    // v0.8 P1-G: QC counter now reads from multiple known agent-write
+    // locations + counts per-doc reviews. Pre-v0.8 read only output/qc/*.json
+    // top-level; 资管 v0.7.5 wrote output/results/production_qc_results.json
+    // so the dashboard showed `QC Batches: 0` despite 126 pairs of data.
+    let qcBatches = 0;
+    let qcDocsReviewed = 0;
+
+    // (a) Top-level batch files in output/qc/ (贷款 v0.7.5 shape)
     const qcDir = path.join(ws, "output", "qc");
     if (fs.existsSync(qcDir)) {
-      metrics.qc_batches = fs.readdirSync(qcDir).filter((f) => f.endsWith(".json")).length;
+      for (const f of fs.readdirSync(qcDir).filter((f) => f.endsWith(".json"))) {
+        qcBatches++;
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(qcDir, f), "utf-8"));
+          const n = Number(data?.documents_reviewed);
+          if (Number.isFinite(n) && n > qcDocsReviewed) qcDocsReviewed = n;
+        } catch { /* skip malformed */ }
+      }
     }
+
+    // (b) Per-doc reviews at output/qc/reviews/ (贷款 detail shape)
+    const reviewsDir = path.join(ws, "output", "qc", "reviews");
+    if (fs.existsSync(reviewsDir)) {
+      const reviewFiles = fs.readdirSync(reviewsDir).filter((f) => f.endsWith(".json"));
+      qcDocsReviewed = Math.max(qcDocsReviewed, reviewFiles.length);
+    }
+
+    // (c) production_qc_results.json shape (资管 v0.7.5)
+    const productionQc = path.join(ws, "output", "results", "production_qc_results.json");
+    if (fs.existsSync(productionQc)) {
+      qcBatches++;
+      try {
+        const data = JSON.parse(fs.readFileSync(productionQc, "utf-8"));
+        const totalDocs = Number(data?.total_docs);
+        if (Number.isFinite(totalDocs)) qcDocsReviewed = Math.max(qcDocsReviewed, totalDocs);
+        // Otherwise, dedup doc keys from nested results
+        if (!Number.isFinite(totalDocs) && data?.results && typeof data.results === "object") {
+          const docSet = new Set();
+          for (const docs of Object.values(data.results)) {
+            if (docs && typeof docs === "object") {
+              for (const k of Object.keys(docs)) docSet.add(k);
+            }
+          }
+          if (docSet.size > 0) qcDocsReviewed = Math.max(qcDocsReviewed, docSet.size);
+        }
+      } catch { /* skip */ }
+    }
+
+    metrics.qc_batches = qcBatches;
+    metrics.qc_docs_reviewed = qcDocsReviewed;
 
     return metrics;
   }
@@ -126,6 +172,7 @@ th { color: #737373; font-size: 0.85em; }
 <div class="metric"><span class="value">${total}</span><br><span class="label">Results</span></div>
 <div class="metric"><span class="value">${metrics.evolution_iterations}</span><br><span class="label">Evolution Cycles</span></div>
 <div class="metric"><span class="value">${metrics.qc_batches}</span><br><span class="label">QC Batches</span></div>
+<div class="metric"><span class="value">${metrics.qc_docs_reviewed || 0}</span><br><span class="label">Docs Reviewed</span></div>
 </div>
 <h2>Confidence Distribution</h2>
 <div class="card">
