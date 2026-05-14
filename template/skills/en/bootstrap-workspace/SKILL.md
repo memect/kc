@@ -73,6 +73,20 @@ Once a project is past bootstrap and into production, fresh documents often arri
 
 Discuss the cadence with the developer user during bootstrap — knowing the production input rhythm shapes how skills and workflows should be written (batch vs streaming, idempotency requirements, etc.).
 
+## Per-project memory: keep AGENT.md alive
+
+`AGENT.md` at the workspace root has per-project memory sections (`Project`, `Decisions`, `Domain Notes`, `User Preferences`). These are intentionally placeholder comments at bootstrap — they're for YOU to fill in as the work surfaces things worth remembering across phases or future sessions.
+
+What belongs there:
+- **Project**: corpus identity (regulation name + scope), language, primary vs auxiliary rules, sample doc set composition.
+- **Decisions**: design choices that aren't obvious from code — "non-标 35% limit is bank-level not per-product, so single-doc reports get WARNING not FAIL", "季报 not applicable for R02-06/R02-08 per regulation §39", etc.
+- **Domain Notes**: regulatory or business-domain nuance worth surfacing — "PT/RT/LZ are three distinct product types with different disclosure templates", terminology disambiguation.
+- **User Preferences**: how the developer user wants you to operate on THIS project — verbosity, naming conventions, when to ask vs proceed.
+
+Update AGENT.md at natural checkpoints: after the developer user gives you a substantive clarification, after you finish a phase, after you discover a design constraint that affects subsequent phases. Don't wait for a `/remember` instruction — the memory is yours to maintain.
+
+A future session resumes by reading AGENT.md first. The richer it is, the less re-explanation the developer user has to do.
+
 ## When to Re-Bootstrap
 
 Return to this skill when:
