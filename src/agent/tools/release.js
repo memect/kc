@@ -85,13 +85,19 @@ export class ReleaseTool extends BaseTool {
       return new ToolResult(`release template missing at ${TEMPLATE_DIR}`, true);
     }
 
-    // 1. Snapshot first — locks in commit + tag, regardless of whether bundle build succeeds
-    const snapResult = await this._snapshot.execute({
-      label: `release-${slug}`,
-      notes: `Release ${label} bundle source`,
-    });
-    if (snapResult.isError) return new ToolResult(`snapshot failed: ${snapResult.content}`, true);
-    const { tag: snapshotTag, commit: snapshotCommit } = this._readSnapshotMeta(`release-${slug}`);
+    // v0.8.1 P9-C: defer the snapshot (git tag) until AFTER the bundle
+    // is written + verified. v0.8.0 ordered snapshot-first to "lock in
+    // commit + tag regardless of bundle outcome," but E2E #11 资管 v0.8
+    // audit found `release-v1` tags with no corresponding bundle dir —
+    // tag without bundle confuses downstream consumers. New order:
+    //   1. Build bundle (catalog read, copy template, write fixtures, manifest, README)
+    //   2. Verify bundle (manifest.json + README.md exist + non-empty)
+    //   3. ONLY THEN snapshot (creates the git tag) + back-fill manifest
+    //      with snapshot tag/commit
+    // If verification fails, a `.failed_release` marker is written into
+    // the bundle dir and NO tag is created.
+    let snapshotTag = null;
+    let snapshotCommit = null;
 
     // 2. Read catalog and filter
     const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
@@ -293,6 +299,77 @@ export class ReleaseTool extends BaseTool {
         }
       }
     }
+
+    // v0.8.1 P9-C: bundle verification + transactional snapshot.
+    // The manifest + README were written above. Verify they exist with
+    // substance (≥200 bytes README, valid JSON manifest with `slug` field).
+    // If verification fails, write `.failed_release` marker and skip
+    // the git-tag step — no tag-without-bundle.
+    const manifestPath = path.join(bundleAbs, "manifest.json");
+    const readmePath = path.join(bundleAbs, "README.md");
+    let verifyError = null;
+    try {
+      const mStat = fs.statSync(manifestPath);
+      const rStat = fs.statSync(readmePath);
+      if (!mStat.isFile() || mStat.size < 50) verifyError = "manifest.json missing or too small";
+      else if (!rStat.isFile() || rStat.size < 200) verifyError = "README.md missing or too small";
+      else {
+        const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        if (m.slug !== slug) verifyError = `manifest.slug=${m.slug} doesn't match expected ${slug}`;
+      }
+    } catch (e) {
+      verifyError = `bundle verification threw: ${e.message}`;
+    }
+
+    if (verifyError) {
+      try {
+        fs.writeFileSync(
+          path.join(bundleAbs, ".failed_release"),
+          JSON.stringify({
+            failed_at: new Date().toISOString(),
+            reason: verifyError,
+            label,
+            slug,
+          }, null, 2),
+        );
+      } catch { /* best-effort */ }
+      return new ToolResult(
+        `Release bundle verification failed (${verifyError}). NO git tag created. ` +
+        `See .failed_release marker in ${bundleRel}/ for details. Fix the bundle issue and re-run.`,
+        true,
+      );
+    }
+
+    // Bundle verified. NOW snapshot — creates the durable git tag.
+    const snapResult = await this._snapshot.execute({
+      label: `release-${slug}`,
+      notes: `Release ${label} bundle source`,
+    });
+    if (snapResult.isError) {
+      // Bundle exists but tagging failed. Surface but don't roll back —
+      // the bundle is still usable; the user can manually tag later.
+      return new ToolResult(
+        `Release '${label}' bundled at ${bundleRel} but snapshot tag FAILED: ${snapResult.content}. ` +
+        `Bundle is valid; create the snapshot tag manually if needed.`,
+      );
+    }
+    const meta = this._readSnapshotMeta(`release-${slug}`);
+    snapshotTag = meta.tag;
+    snapshotCommit = meta.commit;
+
+    // Back-fill the manifest with the now-known snapshot tag/commit.
+    try {
+      const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      m.snapshot_tag = snapshotTag;
+      m.snapshot_commit = snapshotCommit;
+      fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + "\n");
+      // Also back-fill the README's snapshot placeholders if still placeholder.
+      const readme = fs.readFileSync(readmePath, "utf-8");
+      const updated = readme
+        .replace(/\(no tag — git unavailable\)/g, snapshotTag || "")
+        .replace(/\(unknown\)/g, snapshotCommit || "(unknown)");
+      if (updated !== readme) fs.writeFileSync(readmePath, updated);
+    } catch { /* best-effort back-fill */ }
 
     // Bundle dir is in output/ (gitignored). Snapshot manifest in snapshots/ IS tracked.
     const lines = [
