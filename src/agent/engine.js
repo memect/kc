@@ -594,7 +594,12 @@ export class AgentEngine {
           mineruApiKey: this.config.mineruApiKey,
           llmApiKey: workerApiKey,
           llmBaseUrl: workerBaseUrl,
+          // v0.8.1 P9-B: live-read vlmTier1 so workspace_env_overlay
+          // changes after tool construction (or mid-run .env edits)
+          // reach document_parse. The static `ocrModel` is the
+          // construction-time fallback; getOcrModel takes precedence.
           ocrModel: vlmModel,
+          getOcrModel: () => this.config.vlmTier1 || vlmModel,
         }),
         new DocumentSearchTool(this.workspace),
         // Group C — chunker/RAG infrastructure ported from AMC app. Core

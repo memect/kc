@@ -12,14 +12,43 @@ const MIN_CHARS_PER_PAGE = 50;
  * Level 3: OCR models via SiliconFlow — fallback via vision models
  */
 export class DocumentParseTool extends BaseTool {
-  constructor(workspace, { mineruApiUrl, mineruApiKey, llmApiKey, llmBaseUrl, ocrModel } = {}) {
+  /**
+   * @param {object} workspace
+   * @param {object} opts
+   * @param {string} [opts.mineruApiUrl]
+   * @param {string} [opts.mineruApiKey]
+   * @param {string} [opts.llmApiKey]
+   * @param {string} [opts.llmBaseUrl]
+   * @param {string} [opts.ocrModel] — static fallback (legacy)
+   * @param {() => string} [opts.getOcrModel] — v0.8.1 P9-B: live-read
+   *   callback. If provided, takes precedence over `ocrModel`. The
+   *   constructor used to capture vlmTier1 once at engine startup, but
+   *   workspace_env_overlay (P1-B) fires AFTER tool construction in
+   *   some flows (e.g. agent edits .env mid-run, OR overlay applies on
+   *   a subagent's engine but parent already cached the gc default).
+   *   E2E #11 资管 v0.8 audit found document_parse errors quoting
+   *   Qwen3-VL-235B-A22B-Instruct (gc default) even though .env set
+   *   OCR_MODEL_TIER1=zai-org/GLM-4.6V — the overlay applied 5 min
+   *   after first failed call. Live-read fixes the race.
+   */
+  constructor(workspace, { mineruApiUrl, mineruApiKey, llmApiKey, llmBaseUrl, ocrModel, getOcrModel } = {}) {
     super();
     this._workspace = workspace;
     this._mineruApiUrl = mineruApiUrl || "";
     this._mineruApiKey = mineruApiKey || "";
     this._vlmApiKey = llmApiKey || "";
     this._vlmBaseUrl = (llmBaseUrl || "").replace(/\/+$/, "");
-    this._ocrModel = ocrModel || "";
+    this._ocrModelStatic = ocrModel || "";
+    this._getOcrModel = typeof getOcrModel === "function" ? getOcrModel : null;
+  }
+
+  /** Read ocrModel live (P9-B) or fall back to the static value captured at construction. */
+  get _ocrModel() {
+    if (this._getOcrModel) {
+      try { return this._getOcrModel() || this._ocrModelStatic; }
+      catch { return this._ocrModelStatic; }
+    }
+    return this._ocrModelStatic;
   }
 
   get name() { return "document_parse"; }

@@ -133,6 +133,44 @@ console.log("\nCase 6: loadEnvFile parses 资管-style .env correctly");
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 
+console.log("\nv0.8.1 P9-B: DocumentParseTool live-reads ocrModel via getOcrModel callback");
+{
+  const { DocumentParseTool } = await import("../src/agent/tools/document-parse.js");
+  // Mutable holder that simulates engine.config.vlmTier1 changing over time
+  const cfg = { vlmTier1: "Qwen/Qwen3-VL-235B-A22B-Instruct" };
+  const tool = new DocumentParseTool({}, {
+    llmApiKey: "fake",
+    llmBaseUrl: "https://example.com/v1",
+    ocrModel: cfg.vlmTier1, // static fallback (legacy capture)
+    getOcrModel: () => cfg.vlmTier1, // live-read
+  });
+
+  // Initial: matches the gc default
+  assert(tool._ocrModel === "Qwen/Qwen3-VL-235B-A22B-Instruct", "initial value matches static + live");
+
+  // Simulate workspace_env_overlay updating engine.config.vlmTier1 AFTER tool construction
+  cfg.vlmTier1 = "zai-org/GLM-4.6V";
+  assert(tool._ocrModel === "zai-org/GLM-4.6V", "live-read picks up post-construction overlay");
+
+  // Simulate getOcrModel returning empty → fall back to static
+  cfg.vlmTier1 = "";
+  assert(tool._ocrModel === "Qwen/Qwen3-VL-235B-A22B-Instruct", "falls back to static when live returns empty");
+
+  // Simulate getOcrModel throwing → fall back to static
+  const throwingTool = new DocumentParseTool({}, {
+    ocrModel: "static-default",
+    getOcrModel: () => { throw new Error("config not ready"); },
+  });
+  assert(throwingTool._ocrModel === "static-default", "throwing getOcrModel falls back to static");
+}
+
+console.log("\nv0.8.1 P9-B: legacy constructor without getOcrModel still works");
+{
+  const { DocumentParseTool } = await import("../src/agent/tools/document-parse.js");
+  const tool = new DocumentParseTool({}, { ocrModel: "legacy-model" });
+  assert(tool._ocrModel === "legacy-model", "static-only path still returns the value");
+}
+
 console.log(`\n${"=".repeat(60)}`);
 console.log(`Tests: ${passed} passed, ${failed} failed`);
 console.log("=".repeat(60));
