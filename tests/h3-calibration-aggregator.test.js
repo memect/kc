@@ -161,6 +161,46 @@ console.log("\nRegression: real 资管 v0.7.5 workspace (if present)");
   }
 }
 
+console.log("\nv0.8.1 P9-D: scope filter — drops rule_ids not in current catalog");
+{
+  const ws = makeTempWorkspace();
+  // Catalog lists only R001 + R002
+  fs.writeFileSync(path.join(ws, "rules", "catalog.json"), JSON.stringify({
+    rules: [{ id: "R001" }, { id: "R002" }],
+  }));
+  // QC report mentions 5 rules (R001-R005)
+  fs.mkdirSync(path.join(ws, "output", "qc"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "output", "qc", "production_qc_report.json"), JSON.stringify({
+    fail_by_rule: { R001: 1, R002: 1, R003: 1, R004: 1, R005: 1 },
+    pass_by_rule: { R001: 9, R002: 9, R003: 9, R004: 9, R005: 9 },
+  }));
+
+  const result = runAggregator(ws);
+  assert(result !== null, "aggregator returned non-null");
+  const ruleIds = Object.keys(result.historical_accuracy).sort();
+  assert(ruleIds.length === 2, `historical_accuracy has 2 rules (got ${ruleIds.length})`);
+  assert(ruleIds[0] === "R001" && ruleIds[1] === "R002", "only catalog rules remain");
+  assert(Array.isArray(result.dropped_off_catalog), "dropped_off_catalog surfaced");
+  assert(result.dropped_off_catalog.length === 3, "3 off-catalog rules dropped");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nv0.8.1 P9-D: no filter when catalog absent (backward compat)");
+{
+  const ws = makeTempWorkspace();
+  fs.mkdirSync(path.join(ws, "output", "qc"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "output", "qc", "production_qc_report.json"), JSON.stringify({
+    fail_by_rule: { R001: 1 },
+    pass_by_rule: { R001: 5 },
+  }));
+  // No rules/catalog.json
+  const result = runAggregator(ws);
+  assert(result !== null, "still aggregates without catalog");
+  assert(Object.keys(result.historical_accuracy).includes("R001"), "R001 present");
+  assert(typeof result.dropped_off_catalog === "undefined", "no dropped_off_catalog key when no filter");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
 console.log("\nRegression: real 贷款 v0.8 workspace (if present — Shape 4 must fire)");
 {
   const realWs = path.join(os.homedir(), ".kc_agent", "workspaces", "贷款话术测试-080-001");

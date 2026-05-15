@@ -797,8 +797,31 @@ export class ReleaseTool extends BaseTool {
 
     if (tally.size === 0) return null;
 
+    // v0.8.1 P9-D: filter tally to rule_ids in the current catalog.
+    // E2E #11 资管 v0.8 audit: confidence_calibration aggregated from
+    // an abandoned 39-rule pipeline included only 2 of 4 final samples.
+    // Filtering to catalog.json keeps the calibration scoped to the
+    // rules that actually ship in the release.
+    let catalogRuleIds = null;
+    try {
+      const catalogPath = path.join(this._workspace.cwd, "rules", "catalog.json");
+      if (fs.existsSync(catalogPath)) {
+        const cat = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+        const list = Array.isArray(cat) ? cat : Array.isArray(cat?.rules) ? cat.rules : [];
+        catalogRuleIds = new Set(
+          list.map((r) => r?.id || r?.rule_id).filter((x) => isRuleId(x))
+        );
+        if (catalogRuleIds.size === 0) catalogRuleIds = null;
+      }
+    } catch { /* skip filter if catalog missing/malformed */ }
+
     const historical_accuracy = {};
+    const droppedRules = [];
     for (const [rid, t] of tally.entries()) {
+      if (catalogRuleIds && !catalogRuleIds.has(rid)) {
+        droppedRules.push(rid);
+        continue;
+      }
       const fired = t.pass + t.fail;
       historical_accuracy[rid] = {
         pass_rate: fired > 0 ? +(t.pass / fired).toFixed(4) : null,
@@ -812,6 +835,7 @@ export class ReleaseTool extends BaseTool {
       historical_accuracy,
       computed_at: new Date().toISOString(),
       source_files: sourceFiles,
+      ...(droppedRules.length > 0 ? { dropped_off_catalog: droppedRules } : {}),
     };
   }
 
