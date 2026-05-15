@@ -279,6 +279,15 @@ export class AgentEngine {
       });
     } catch { /* best-effort; skills/ population is not a critical-path failure */ }
 
+    // v0.8.1 P10-A: auto-populate <workspace>/workflows/common/llm_client.py
+    // from the template. Idempotent (skips if file already exists). Covers
+    // the bench-corpus flow where `kc-beta init` was bypassed. v0.8.0
+    // shipped this shim as embedded source in skill-to-workflow teaching;
+    // E2E #11 audits found BOTH agents ignored the teaching and wrote
+    // their own (non-canonical) llm_client.py. Shipping it as a template
+    // file the agent finds via filesystem walk is more robust.
+    try { this._populateWorkspaceCommonShims(); } catch { /* best-effort */ }
+
     // Register tools for initial phase
     this.toolRegistry = new ToolRegistry();
     this._registerToolsForPhase(this.currentPhase);
@@ -312,6 +321,47 @@ export class AgentEngine {
    * alias fix landed at the config layer but never reached the runtime
    * because loadSettings() is called without a workspace path.
    */
+  /**
+   * v0.8.1 P10-A: copy canonical `workflows/common/*.py` shims from the
+   * bundled template if they're missing in the workspace. Provides
+   * `llm_client.py` (worker LLM HTTP shim, provider-agnostic) and
+   * `utils.py` (strip_annotations + helpers). Idempotent — never
+   * overwrites existing files (agent edits stay intact).
+   *
+   * Runs at engine init. Covers bench-corpus mode where `kc-beta init`
+   * doesn't run; init-flow workspaces already have these from copyDir.
+   */
+  _populateWorkspaceCommonShims() {
+    const __dirname = path.dirname(new URL(import.meta.url).pathname);
+    const templateRoot = path.resolve(__dirname, "..", "..", "template", "workflows", "common");
+    if (!fs.existsSync(templateRoot)) return;
+
+    const targetRoot = path.join(this.workspace.cwd, "workflows", "common");
+    fs.mkdirSync(targetRoot, { recursive: true });
+
+    const copied = [];
+    const skipped = [];
+    for (const entry of fs.readdirSync(templateRoot)) {
+      if (!entry.endsWith(".py") || entry.startsWith(".")) continue;
+      const srcPath = path.join(templateRoot, entry);
+      const dstPath = path.join(targetRoot, entry);
+      if (fs.existsSync(dstPath)) {
+        skipped.push(entry);
+        continue;
+      }
+      try {
+        fs.copyFileSync(srcPath, dstPath);
+        copied.push(entry);
+      } catch { /* best-effort */ }
+    }
+
+    if (copied.length > 0) {
+      try {
+        this.eventLog?.append?.("workflows_common_populated", { copied, skipped });
+      } catch { /* best-effort */ }
+    }
+  }
+
   _overlayWorkspaceEnv() {
     if (!this.workspace?.cwd) return;
     const envPath = path.join(this.workspace.cwd, ".env");

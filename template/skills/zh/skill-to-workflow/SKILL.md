@@ -204,90 +204,30 @@ worker_llm_call({
 
 返回 `{n_total, n_succeeded, n_failed, total_tokens_in, total_tokens_out, results: [...]}` 摘要。部分失败不会让整批失败。
 
-### 什么时候自己写 llm_client.py（以及它应该长什么样）
+### 规范的 `workflows/common/llm_client.py`（v0.8.1 起作为模板文件随包发布）
 
-对于一个 **独立运行** 的 workflow（没有 KC 会话 —— 比如客户把 release 包部署后跑 `python run.py doc.pdf`），workflow 拿不到 `worker_llm_call`。这时 workflow 需要自己的薄 HTTP 客户端。**不要从零造轮子**。在 `workflows/common/llm_client.py` 用下面这份规范化的 shim：
+对于一个 **独立运行** 的 workflow（没有 KC 会话 —— 比如客户把 release 包部署后跑 `python run.py doc.pdf`），workflow 拿不到 `worker_llm_call`。规范的 HTTP 客户端 shim 现在作为模板文件随 kc-beta 一起发布；引擎初始化时会自动把它写入工作区的 `workflows/common/llm_client.py`。**不要自己重写**。直接用这个已经放好的文件：
 
 ```python
-"""Worker LLM client for distilled workflows.
+from workflows.common.llm_client import call
 
-When this file runs inside a KC session, KC's `worker_llm_call` tool
-is the preferred path — but distilled workflows are designed to run
-standalone too (in deployed release bundles). This shim provides a
-direct-HTTP fallback that also writes to `output/llm_ledger.jsonl`
-so a KC audit can reconstruct LLM usage even when calls bypassed
-the engine's tool surface.
-"""
-import json
-import os
-import time
-import urllib.request
-
-_LEDGER_PATH = os.path.join("output", "llm_ledger.jsonl")
-
-
-def call(tier="tier2", prompt="", system_prompt=None, max_tokens=4096):
-    """Single-prompt call. Returns {response, model_used, tier, tokens_in, tokens_out}."""
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("SILICONFLOW_API_KEY", "")
-    base_url = (os.environ.get("LLM_BASE_URL") or os.environ.get("SILICONFLOW_BASE_URL")
-                or "https://api.siliconflow.cn/v1").rstrip("/")
-    if not api_key:
-        raise RuntimeError("LLM_API_KEY not configured")
-
-    tier_models = _load_tier_models(tier)
-    if not tier_models:
-        raise RuntimeError(f"No models configured for {tier}; check .env TIER1-TIER4")
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    body = json.dumps({"model": tier_models[0], "messages": messages, "max_tokens": max_tokens}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-    )
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    usage = data.get("usage") or {}
-    result = {
-        "response": data["choices"][0]["message"]["content"],
-        "model_used": tier_models[0],
-        "tier": tier,
-        "tokens_in": usage.get("prompt_tokens", 0),
-        "tokens_out": usage.get("completion_tokens", 0),
-    }
-    _write_ledger({**result, "duration_s": round(time.time() - t0, 3), "ts": time.time()})
-    return result
-
-
-def _load_tier_models(tier):
-    env_key = tier.upper()  # TIER1 / TIER2 / ...
-    raw = os.environ.get(env_key, "")
-    if not raw and os.path.exists(".env"):
-        with open(".env", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith(f"{env_key}="):
-                    raw = line.split("=", 1)[1].strip()
-                    break
-    return [m.strip() for m in raw.split(",") if m.strip()]
-
-
-def _write_ledger(record):
-    try:
-        os.makedirs(os.path.dirname(_LEDGER_PATH), exist_ok=True)
-        with open(_LEDGER_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass  # ledger is best-effort
+result = call(
+    tier="tier2",
+    prompt=user_prompt,
+    system_prompt="你是合规助手。返回 JSON。",
+    max_tokens=2048,
+)
+# result = {"response": "...", "model_used": "...", "tier": "tier2",
+#          "tokens_in": N, "tokens_out": N}
 ```
 
-开始 distillation 时把这份 shim 放到 `workflows/common/llm_client.py`。独立运行场景能拿到 LLM 访问；KC 会话通过 ledger 也能看到（引擎会在阶段推进与 finalization 时读 `output/llm_ledger.jsonl`）。
+shim 做的事：
+- 从 `.env` 读 `LLM_API_KEY` + `LLM_BASE_URL` + `TIER1..4`（多 provider 友好 —— SiliconFlow、OpenAI、Anthropic、阿里、火山等都能用）
+- 以 OpenAI 兼容的 chat completions 格式发请求到配置好的 base URL
+- 每次调用往 `output/llm_ledger.jsonl` 写一行，KC 审计即使在你没走 worker_llm_call 时也能还原成本
+- 如果 `LLM_BASE_URL` 缺失，会显式抛错（不会偷偷回退到某个写死的 vendor URL）
 
-**不要自己从零写 llm_client.py**。资管 v0.7.5 会话里的智能体就这么干了，结果完全绕过了 `worker_llm_call` —— 引擎对 distillation 之后 100+ 次 LLM 调用一无所知。上面这份 shim 给你同样的路径但不绕过审计。
+**不要自己从零写 llm_client.py**。v0.7.x → v0.8 的三个连续会话里都出现过 agent 自己造轮子 —— 拼出来的版本要么模型 ID 过期、要么写死 SiliconFlow、要么不写 ledger，且对引擎不可见。优先用规范化版本；如果因为某种原因没有，从 kc-beta 安装目录的 `template/workflows/common/llm_client.py` 复制过来（引擎也会在 init 时自动写入 —— 检查 events.jsonl 里的 `workflows_common_populated` 事件）。
 
 ## sandbox_exec 超时设置（已知耗时长的命令）
 
