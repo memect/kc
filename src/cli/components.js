@@ -89,7 +89,7 @@ function truncateVisual(s, maxCells) {
   return head + "…" + tail;
 }
 
-export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
+export function StatusBar({ sessionId, phase, contextTokens, contextLimit, marathonActive }) {
   const samplesRef = useRef([]);
   const peakRef = useRef(0);
 
@@ -136,6 +136,9 @@ export function StatusBar({ sessionId, phase, contextTokens, contextLimit }) {
     h(Text, { dimColor: true, wrap: "truncate-end" }, "  ⏵⏵  KC "),
     h(Text, { dimColor: true, wrap: "truncate-end" }, displaySessionId ? `[${displaySessionId}]` : ""),
     phase ? h(Text, { color: "cyan", wrap: "truncate-end" }, ` ${phase.toUpperCase()}`) : null,
+    // v0.8.1 P8-A: marathon-mode indicator. Only renders when active —
+    // normal interactive mode shows no indicator (avoid clutter).
+    marathonActive ? h(Text, { color: "magenta", bold: true, wrap: "truncate-end" }, "  🏃 MARATHON") : null,
     h(Text, { color: "green", wrap: "truncate-end" }, "  ●  "),
     h(Text, { color: ctxColor, wrap: "truncate-end" }, `CTX: ${ctxLabel}/${limitLabel} (${pct}%)`),
     showPeak ? h(Text, { dimColor: true, wrap: "truncate-end" }, ` · peak ${fmt(peak)}`) : null,

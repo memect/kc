@@ -59,6 +59,8 @@ function App({ engine, config }) {
   const [spinnerStatus, setSpinnerStatus] = useState(null);
   const [contextTokens, setContextTokens] = useState(0);
   const [contextLimit, setContextLimit] = useState(config.kcContextLimit || 200000);
+  // v0.8.1 P8-A: marathon-mode indicator for StatusBar.
+  const [marathonActive, setMarathonActive] = useState(false);
   const [taskList, setTaskList] = useState([]);
   const [taskProgress, setTaskProgress] = useState(null);
 
@@ -124,6 +126,11 @@ function App({ engine, config }) {
             setCurrentTool(null);
             setSpinnerStatus(null);
             updateContextStats();
+            // v0.8.1 P8-A: refresh marathon indicator. If the driver
+            // self-terminated (max_wallclock / finalization_settled),
+            // engine clears marathonDriver on next decideNext loop;
+            // we sync the TUI state here.
+            setMarathonActive(engineRef.current.isMarathonActive());
             break;
 
           case "tool_start":
@@ -221,6 +228,9 @@ function App({ engine, config }) {
             "  /sessions            List all sessions\n" +
             "  /resume <name>       Resume a previous session\n" +
             "  /rename <name>       Rename current session\n" +
+            "  /marathon <goal>     Activate marathon mode (chains turns automatically)\n" +
+            "  /marathon off        Deactivate marathon (return to interactive)\n" +
+            "  /marathon status     Show marathon driver state\n" +
             "  /exit                Quit",
         });
         return true;
@@ -593,6 +603,84 @@ function App({ engine, config }) {
         }
         return true;
 
+      case "/marathon": {
+        // v0.8.1 P8-A: inline marathon mode. `/marathon <goal>` activates;
+        // `/marathon off` deactivates; `/marathon status` shows snapshot.
+        const sub = arg.split(/\s+/)[0]?.toLowerCase();
+        if (sub === "off" || sub === "stop") {
+          const final = engineRef.current.exitMarathonMode("user_off");
+          setMarathonActive(false);
+          if (final) {
+            addMessage({
+              role: "system",
+              content: `Marathon mode OFF.\n  decisions: ${final.decisionCount}\n  runtime: ${Math.round(final.runtimeMs / 1000)}s\n  last phase: ${final.currentPhase}`,
+            });
+          } else {
+            addMessage({ role: "system", content: "Marathon was not active." });
+          }
+          return true;
+        }
+        if (sub === "status") {
+          if (!engineRef.current.isMarathonActive()) {
+            addMessage({ role: "system", content: "Marathon mode is OFF." });
+            return true;
+          }
+          const s = engineRef.current.marathonDriver.getStatus();
+          const lines = [
+            `Marathon mode ON`,
+            `  goal: ${s.goal.slice(0, 100)}${s.goal.length > 100 ? "..." : ""}`,
+            `  language: ${s.language}`,
+            `  started: ${s.startedAt}  (${Math.round(s.runtimeMs / 60000)} min ago)`,
+            `  current_phase: ${s.currentPhase}`,
+            `  turns this phase: ${s.turnsThisPhase}`,
+            `  total decisions: ${s.decisionCount}`,
+          ];
+          if (s.recentDecisions?.length) {
+            lines.push(`  recent decisions:`);
+            for (const d of s.recentDecisions.slice(-3)) {
+              lines.push(`    ${d.ts.slice(11, 19)} [${d.template}] ${d.reason}`);
+            }
+          }
+          addMessage({ role: "system", content: lines.join("\n") });
+          return true;
+        }
+        // `/marathon <goal>` — activate
+        if (!arg) {
+          addMessage({
+            role: "system",
+            content:
+              "Usage:\n" +
+              "  /marathon <goal description>   Activate marathon mode with the given goal\n" +
+              "  /marathon off                  Deactivate (return to interactive)\n" +
+              "  /marathon status               Show current driver state\n\n" +
+              "Marathon mode chains turns automatically using templated continuation prompts.\n" +
+              "F5 strict one-phase-per-prompt is bypassed while active. /resume after a crash\n" +
+              "does NOT auto-restore marathon — re-type /marathon to re-engage.",
+          });
+          return true;
+        }
+        try {
+          const status = engineRef.current.enterMarathonMode(arg);
+          setMarathonActive(true);
+          addMessage({
+            role: "system",
+            content:
+              `🏃 Marathon mode ON.\n` +
+              `  goal: ${arg.slice(0, 200)}${arg.length > 200 ? "..." : ""}\n` +
+              `  language: ${status.language}\n` +
+              `  stop conditions: ${Math.round(status.maxWallclockMs / 3600000)}h wall-clock OR 5 turns settled in finalization\n\n` +
+              `Next turn will use the marathon initial prompt. Type /marathon off to disengage.`,
+          });
+          // Immediately trigger a turn with the initial prompt
+          const initialPrompt = engineRef.current.marathonDriver.getInitialPrompt();
+          // Hand the initial prompt to the same runTurn path as a user message
+          runTurn(initialPrompt);
+        } catch (e) {
+          addMessage({ role: "system", content: `Marathon activation failed: ${e.message}` });
+        }
+        return true;
+      }
+
       case "/exit":
       case "/quit":
         // Save state + stop diagnostics before exit
@@ -752,7 +840,7 @@ function App({ engine, config }) {
       placeholderRight: queueSize > 0 ? `(${queueSize} queued)` : null,
     }),
     h(HRule),
-    h(StatusBar, { sessionId, phase, contextTokens, contextLimit }),
+    h(StatusBar, { sessionId, phase, contextTokens, contextLimit, marathonActive }),
   );
 }
 

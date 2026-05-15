@@ -7,7 +7,7 @@ import {
 } from "./pipelines/_milestone-derive.js";
 import { getPrescriptiveHint } from "./pipelines/_advance-hints.js";
 import { loadEnvFile } from "../config.js";
-import { MarathonInputWatcher } from "./marathon-input.js";
+import { MarathonDriver } from "../marathon/driver.js";
 import { ContextAssembler } from "./context.js";
 import { ConversationHistory } from "./history.js";
 import { findSafeSplitPoint } from "./message-utils.js";
@@ -222,12 +222,13 @@ export class AgentEngine {
     // still win because loadSettings applied them).
     try { this._overlayWorkspaceEnv(); } catch { /* best-effort */ }
 
-    // v0.8 P4: marathon input watcher. Active iff
-    // <workspace>/.kc_marathon/active exists (created by kc-marathon
-    // CLI on startup). When active, the engine's main loop should
-    // consume prompts from <workspace>/.kc_marathon/inbox.jsonl as
-    // synthetic user messages.
-    this.marathonInput = new MarathonInputWatcher(this.workspace.cwd);
+    // v0.8.1 P8-A: inline marathon driver. v0.8.0's separate-process
+    // kc-marathon CLI + filesystem-watcher IPC died silently when the
+    // launching terminal closed (E2E #11 audit). Redesigned as an inline
+    // state machine activated via /marathon slash command. No filesystem
+    // marker, no inbox.jsonl. Driver instance set by enterMarathonMode(),
+    // cleared by exitMarathonMode(). Query via this.marathonDriver.
+    this.marathonDriver = null;
 
     // Context windowing
     this.contextWindow = new ContextWindow({
@@ -2308,8 +2309,10 @@ export class AgentEngine {
     // phase advances skip the user check-in cycle and broke phase
     // control in team testing. v0.7.4 G0c first fixed it via
     // post-initial-runTurn exit; v0.7.5 added the strict capture-BEFORE
-    // refinement; v0.8 P5-A preserves both with the marathon escape.
-    const marathonActive = this.marathonInput?.isActive() === true;
+    // refinement; v0.8 P5-A preserves both with the marathon escape;
+    // v0.8.1 P8-A switched marathon-active source from filesystem
+    // marker to inline driver instance.
+    const marathonActive = this.isMarathonActive();
     const startingPhase = this.currentPhase;
     yield* this.runTurn(userMessage);
 
@@ -2403,25 +2406,85 @@ export class AgentEngine {
       }
     }
 
-    // v0.8 P4: marathon mode — if the kc-marathon driver is active for
-    // this workspace, keep consuming prompts from its inbox even past
-    // the F5 phase-boundary exit. The driver controls pacing; engine
-    // just runs the prompts it's handed. Loop exits when the driver
-    // removes its .kc_marathon/active marker (clean shutdown or stop
-    // condition hit).
-    if (this.marathonInput?.isActive()) {
-      this.eventLog.append("marathon_attach", { workspace: this.workspace.cwd });
-      while (this.marathonInput.isActive()) {
-        const nextPrompt = this.marathonInput.takeNext();
-        if (!nextPrompt) {
-          // Wait a bit for the driver to deposit more
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-        yield* this.runTurn(nextPrompt);
+    // v0.8.1 P8-A: marathon mode — inline driver. After the F5 phase-
+    // boundary exit, if marathon is active, query the driver for the
+    // next continuation prompt and run additional turns until the driver
+    // signals stop (null return). State machine logic unchanged from
+    // v0.8.0; the I/O wrapper just shifted from filesystem-watcher to
+    // direct method calls.
+    while (this.marathonDriver) {
+      const turnsSnapshot = this.marathonDriver.turnsThisPhase;
+      const phaseChanged = this.currentPhase !== this.marathonDriver.currentPhase;
+      const milestones = this._buildEngineCountsBlock(this.currentPhase) || {};
+      const decision = this.marathonDriver.decideNext({
+        currentPhase: this.currentPhase,
+        milestones,
+        phaseChanged,
+        errorSeen: false, // engine surfaces errors via tool_result.isError; not propagated here for v0.8.1 MVP
+        turnsThisPhase: turnsSnapshot + 1,
+      });
+      if (!decision) {
+        // Stop condition met — driver returned null
+        this.eventLog.append("marathon_detach", {
+          reason: this.marathonDriver.stopReason || "unknown",
+          decisions: this.marathonDriver.decisionCount,
+        });
+        this.marathonDriver = null;
+        break;
       }
-      this.eventLog.append("marathon_detach", { workspace: this.workspace.cwd });
+      this.eventLog.append("marathon_decision", {
+        template: decision.template,
+        reason: decision.reason,
+        phase: this.currentPhase,
+      });
+      yield* this.runTurn(decision.prompt);
+      // Loop back: another turn just completed; driver gets another decideNext call.
     }
+  }
+
+  /**
+   * v0.8.1 P8-A: activate marathon mode with a goal-description.
+   * Called from cli/index.js's /marathon slash command handler.
+   * The engine's next runTaskLoop will use marathonDriver.getInitialPrompt()
+   * as the kickoff user message.
+   *
+   * @param {string} goal — the marathon goal description (user-typed)
+   * @param {object} [opts] — {maxWallclockMs?, stuckAfterMs?}
+   * @returns {object} {goal, language, startedAt} for confirmation
+   */
+  enterMarathonMode(goal, opts = {}) {
+    if (this.marathonDriver) {
+      throw new Error("Marathon already active — use /marathon off to disengage first");
+    }
+    this.marathonDriver = new MarathonDriver({
+      goal,
+      language: this.config.language || "en",
+      maxWallclockMs: opts.maxWallclockMs,
+      stuckAfterMs: opts.stuckAfterMs,
+    });
+    this.eventLog.append("marathon_attach", {
+      goal: goal.slice(0, 200),
+      language: this.config.language || "en",
+    });
+    return this.marathonDriver.getStatus();
+  }
+
+  /** v0.8.1 P8-A: deactivate marathon mode. Returns final status snapshot. */
+  exitMarathonMode(reason = "user_off") {
+    if (!this.marathonDriver) return null;
+    const status = this.marathonDriver.getStatus();
+    this.marathonDriver.stop(reason);
+    this.eventLog.append("marathon_detach", {
+      reason,
+      decisions: this.marathonDriver.decisionCount,
+    });
+    this.marathonDriver = null;
+    return status;
+  }
+
+  /** v0.8.1 P8-A: is marathon mode currently active? (for TUI status bar) */
+  isMarathonActive() {
+    return !!this.marathonDriver && !this.marathonDriver.stopped;
   }
 
   /**
@@ -2446,7 +2509,8 @@ export class AgentEngine {
     // Mirror _runTaskLoopSerial — capture startingPhase BEFORE initial
     // runTurn so phase advance during the initial turn exits the loop
     // unless marathon is active.
-    const marathonActive = this.marathonInput?.isActive() === true;
+    // v0.8.1 P8-A: marathon check now uses inline driver instance.
+    const marathonActive = this.isMarathonActive();
     const startingPhase = this.currentPhase;
 
     // Initial turn: main agent reads user request, creates tasks.

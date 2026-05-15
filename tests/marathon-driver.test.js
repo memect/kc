@@ -1,23 +1,16 @@
 /**
- * Regression test for v0.8 P4-A/B — marathon driver state machine + IPC.
+ * Regression test for v0.8.1 P8-A — inline marathon driver state machine.
  *
- * Tests the driver in isolation (no real engine). Simulates engine
- * events by appending to a temp events.jsonl, ticks the driver, and
- * verifies inbox.jsonl + decisions.jsonl outputs.
- *
- * Architecture under test:
- *   - Driver tails workspaceCwd/logs/events.jsonl
- *   - Writes prompts to workspaceCwd/.kc_marathon/inbox.jsonl
- *   - Writes decisions to ~/.kc_agent/marathons/<id>/decisions.jsonl
- *   - Creates/removes workspaceCwd/.kc_marathon/active marker
+ * v0.8.0 shipped a separate-process driver with filesystem-watcher IPC.
+ * E2E #11 found both drivers died silently within 10 min (terminal
+ * close → SIGHUP/SIGTERM unhandled). v0.8.1 redesigned the driver as
+ * an inline state machine activated via /marathon slash command. No
+ * polling loop, no inbox.jsonl, no active marker — pure state machine
+ * the engine queries on each turn boundary.
  *
  * Run: `node tests/marathon-driver.test.js`
  */
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
 import { MarathonDriver } from "../src/marathon/driver.js";
-import { MarathonInputWatcher } from "../src/agent/marathon-input.js";
 import { renderPrompt, PROMPT_TEMPLATES } from "../src/marathon/prompts.js";
 
 let failed = 0;
@@ -27,36 +20,7 @@ function assert(cond, msg) {
   else { failed++; console.error(`  ✗ ${msg}`); }
 }
 
-function tmpWs() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-marathon-test-"));
-  fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
-  return dir;
-}
-
-function makeDriver(ws, opts = {}) {
-  const sessionId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  return new MarathonDriver({
-    workspaceCwd: ws,
-    sessionId,
-    goal: "Test goal",
-    pollMs: 100,
-    log: () => {}, // silence
-    ...opts,
-  });
-}
-
-function readInbox(ws) {
-  const p = path.join(ws, ".kc_marathon", "inbox.jsonl");
-  if (!fs.existsSync(p)) return [];
-  return fs.readFileSync(p, "utf-8").split("\n").filter(Boolean).map(JSON.parse);
-}
-
-function appendEvent(ws, type, data) {
-  const p = path.join(ws, "logs", "events.jsonl");
-  fs.appendFileSync(p, JSON.stringify({ type, data, ts: new Date().toISOString() }) + "\n");
-}
-
-console.log("\nPrompts: all templates render for en + zh");
+console.log("\nPrompts: all 6 templates render in both languages");
 {
   const state = { goal: "test", currentPhase: "bootstrap", milestones: {}, idleSec: 0 };
   for (const tmpl of PROMPT_TEMPLATES) {
@@ -67,164 +31,153 @@ console.log("\nPrompts: all templates render for en + zh");
   }
 }
 
-console.log("\nFirst tick: sends initial prompt + creates active marker");
+console.log("\nConstructor requires goal");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  const inbox = readInbox(ws);
-  assert(inbox.length === 1, `1 prompt in inbox (got ${inbox.length})`);
-  assert(inbox[0].template === "initial", `template=initial (got ${inbox[0].template})`);
-  assert(/Test goal/.test(inbox[0].content), "goal embedded in prompt");
-  assert(fs.existsSync(path.join(ws, ".kc_marathon", "active")), "active marker exists");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  let threw = null;
+  try { new MarathonDriver({}); } catch (e) { threw = e; }
+  assert(threw !== null, "throws on missing goal");
+
+  const d = new MarathonDriver({ goal: "test goal" });
+  assert(d.goal === "test goal", "goal stored");
+  assert(d.language === "en", "default language en");
+  assert(d.maxWallclockMs === 12 * 60 * 60 * 1000, "default 12h wall-clock");
+  assert(d.stuckAfterMs === 30 * 60 * 1000, "default 30 min stuck");
 }
 
-console.log("\nTeardown: removes active marker");
+console.log("\ngetInitialPrompt: first decision is the 'initial' template");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  d._teardown();
-  assert(!fs.existsSync(path.join(ws, ".kc_marathon", "active")), "active marker removed");
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "Verify regulation against samples" });
+  const p = d.getInitialPrompt();
+  assert(typeof p === "string" && p.length > 10, "returns a substantive prompt");
+  assert(/Verify regulation against samples/.test(p), "goal embedded in initial prompt");
+  assert(d.initialDelivered === true, "marks initialDelivered");
+  assert(d.decisionCount === 1, "decisionCount=1");
+  assert(d.decisions[0].template === "initial", "decision history shows initial");
 }
 
-console.log("\nturn_complete event → continue_phase prompt");
+console.log("\ndecideNext: same phase + turn_complete → continue_phase");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick(); // initial
-  appendEvent(ws, "turn_complete", {});
-  await d.tick();
-  const inbox = readInbox(ws);
-  assert(inbox.length === 2, `2 prompts (got ${inbox.length})`);
-  assert(inbox[1].template === "continue_phase", `2nd is continue_phase (got ${inbox[1].template})`);
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  const r = d.decideNext({ currentPhase: "bootstrap", milestones: {} });
+  assert(r !== null, "returns a decision");
+  assert(r.template === "continue_phase", `template=continue_phase (got ${r.template})`);
+  assert(typeof r.prompt === "string" && r.prompt.length > 10, "prompt is non-empty");
 }
 
-console.log("\nphase_transition → continue_phase nudge for next phase");
+console.log("\ndecideNext: phase change → continue_phase for next phase");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick(); // initial
-  appendEvent(ws, "phase_transition", { to: "rule_extraction" });
-  await d.tick();
-  const inbox = readInbox(ws);
-  assert(inbox[1].template === "continue_phase", "phase_transition fires continue_phase");
-  assert(d.currentPhase === "rule_extraction", "driver tracks current phase");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  d.currentPhase = "bootstrap";
+  const r = d.decideNext({ currentPhase: "rule_extraction", phaseChanged: true });
+  assert(r.template === "continue_phase", "continue_phase for non-finalization phase");
+  assert(d.currentPhase === "rule_extraction", "driver updates currentPhase");
 }
 
-console.log("\nphase_transition to finalization → finalize prompt");
+console.log("\ndecideNext: phase change to finalization → finalize template");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  appendEvent(ws, "phase_transition", { to: "finalization" });
-  await d.tick();
-  const inbox = readInbox(ws);
-  assert(inbox[1].template === "finalize", "finalization → finalize prompt");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  d.currentPhase = "production_qc";
+  const r = d.decideNext({ currentPhase: "finalization", phaseChanged: true });
+  assert(r.template === "finalize", "finalize template fires");
 }
 
-console.log("\nerror event → unstick prompt");
+console.log("\ndecideNext: errorSeen → unstick");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  appendEvent(ws, "error", { message: "fake error" });
-  await d.tick();
-  const inbox = readInbox(ws);
-  assert(inbox[1].template === "unstick", "error → unstick");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  const r = d.decideNext({ currentPhase: "skill_authoring", errorSeen: true });
+  assert(r.template === "unstick", "unstick on error");
 }
 
-console.log("\nmax_wallclock stop condition fires stop prompt + exits");
+console.log("\ndecideNext: stop conditions — max_wallclock");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws, { maxWallclockMs: 50 });
-  d._setup();
-  await d.tick(); // initial
-  await new Promise((r) => setTimeout(r, 100));
-  const keepRunning = await d.tick();
-  assert(keepRunning === false, "tick returns false after max_wallclock");
-  assert(d.stopReason === "max_wallclock", "stopReason recorded");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g", maxWallclockMs: 50 });
+  d.getInitialPrompt();
+  // simulate wall-clock past max
+  d.startedAt = Date.now() - 100;
+  const r = d.decideNext({ currentPhase: "bootstrap" });
+  assert(r !== null, "returns a stop prompt (not null)");
+  assert(r.template === "stop", "stop template");
+  assert(d.stopReason === "max_wallclock", "stop reason recorded");
+  // subsequent decideNext returns null
+  const r2 = d.decideNext({ currentPhase: "bootstrap" });
+  assert(r2 === null, "subsequent decideNext returns null");
 }
 
-console.log("\ndecisions.jsonl + KC events.jsonl both receive marathon_decision");
+console.log("\ndecideNext: stop conditions — finalization_settled after 5 turns in finalization");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  // Read decisions log
-  const dec = fs.readFileSync(d.decisionsPath, "utf-8").trim().split("\n").map(JSON.parse);
-  assert(dec.length >= 1, "decisions.jsonl has entry");
-  assert(dec[0].template === "initial", "decision template recorded");
-  // Read KC events
-  const ev = fs.readFileSync(path.join(ws, "logs", "events.jsonl"), "utf-8")
-    .trim().split("\n").map(JSON.parse);
-  const marathonEvents = ev.filter((e) => e.type === "marathon_decision");
-  assert(marathonEvents.length >= 1, "events.jsonl carries marathon_decision");
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  d.currentPhase = "finalization";
+  for (let i = 0; i < 4; i++) {
+    d.decideNext({ currentPhase: "finalization" });
+  }
+  // 5th call should trigger stop
+  const r = d.decideNext({ currentPhase: "finalization" });
+  // turnsThisPhase was 0 initial then 1/2/3/4 → after 5 calls turnsThisPhase=5
+  assert(r?.template === "stop", `stop fires on 5th finalization turn (got ${r?.template})`);
+  assert(d.stopReason === "finalization_settled", "reason=finalization_settled");
 }
 
-console.log("\nMarathonInputWatcher: isActive + takeNext");
+console.log("\nstop(): manual user-off");
 {
-  const ws = tmpWs();
-  const watcher = new MarathonInputWatcher(ws);
-  assert(watcher.isActive() === false, "inactive without marker");
-  assert(watcher.takeNext() === null, "no prompts when inactive");
-
-  // Driver active
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  assert(watcher.isActive() === true, "active after driver setup");
-  const first = watcher.takeNext();
-  assert(typeof first === "string" && first.length > 10, "takeNext returns prompt");
-  assert(/Test goal/.test(first), "prompt content correct");
-  assert(watcher.takeNext() === null, "no more pending after drain");
-
-  d._teardown();
-  assert(watcher.isActive() === false, "inactive after teardown");
-  fs.rmSync(ws, { recursive: true, force: true });
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  d.stop("user_off");
+  assert(d.stopped === true, "stopped flag set");
+  assert(d.stopReason === "user_off", "reason recorded");
+  const r = d.decideNext({ currentPhase: "bootstrap" });
+  assert(r === null, "decideNext returns null after stop");
 }
 
-console.log("\nMarathonInputWatcher: pendingCount surveys without consuming");
+console.log("\ngetStatus(): returns snapshot for /marathon status command");
 {
-  const ws = tmpWs();
-  const d = makeDriver(ws);
-  d._setup();
-  await d.tick();
-  appendEvent(ws, "turn_complete", {});
-  await d.tick();
+  const d = new MarathonDriver({ goal: "verify rules" });
+  d.getInitialPrompt();
+  d.decideNext({ currentPhase: "rule_extraction", phaseChanged: true });
+  const s = d.getStatus();
+  assert(s.active === true, "active=true while running");
+  assert(s.goal === "verify rules", "goal preserved");
+  assert(s.decisionCount === 2, "2 decisions made");
+  assert(s.currentPhase === "rule_extraction", "currentPhase reflected");
+  assert(Array.isArray(s.recentDecisions), "recentDecisions is array");
+  assert(s.recentDecisions.length === 2, "all 2 decisions in recent");
+  d.stop();
+  assert(d.getStatus().active === false, "active=false after stop");
+}
 
-  const watcher = new MarathonInputWatcher(ws);
-  assert(watcher.pendingCount() === 2, `2 pending (got ${watcher.pendingCount()})`);
-  // pendingCount drains the file into memory but doesn't consume
-  // (takeNext does that). So a second pendingCount returns same.
-  assert(watcher.pendingCount() === 2, "pendingCount stable when not consumed");
-  watcher.takeNext();
-  assert(watcher.pendingCount() === 1, "drops to 1 after takeNext");
+console.log("\ntoJSON(): serializable for session-state.json");
+{
+  const d = new MarathonDriver({ goal: "g", language: "zh", maxWallclockMs: 60000 });
+  d.getInitialPrompt();
+  const j = d.toJSON();
+  assert(j.goal === "g", "goal serialized");
+  assert(j.language === "zh", "language serialized");
+  assert(j.maxWallclockMs === 60000, "maxWallclockMs serialized");
+  assert(j.initialDelivered === true, "state serialized");
+  // recentDecisions should NOT be in toJSON (in-memory only)
+  assert(typeof j.decisions === "undefined", "decisions array not in toJSON");
+}
 
-  d._teardown();
-  fs.rmSync(ws, { recursive: true, force: true });
+console.log("\nLanguage propagation: zh goal renders zh prompts");
+{
+  const d = new MarathonDriver({ goal: "测试目标", language: "zh" });
+  const p = d.getInitialPrompt();
+  assert(/测试目标/.test(p), "goal in zh appears in prompt");
+  // zh template "initial" has "marathon 模式" while en has "marathon mode"
+  assert(/marathon|模式/.test(p), "zh prompt references marathon (any form)");
+}
+
+console.log("\nDecision history bounded to 100 entries");
+{
+  const d = new MarathonDriver({ goal: "g" });
+  d.getInitialPrompt();
+  for (let i = 0; i < 150; i++) d.decideNext({ currentPhase: "bootstrap" });
+  assert(d.decisions.length === 100, `decisions capped at 100 (got ${d.decisions.length})`);
+  assert(d.decisionCount === 151, "decisionCount still counts all (151 = initial + 150)");
 }
 
 console.log(`\n${"=".repeat(60)}`);
