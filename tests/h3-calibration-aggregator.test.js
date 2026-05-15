@@ -102,7 +102,28 @@ console.log("\nShape 3b: 贷款-style per-doc rollup with failed_rules");
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
-console.log("\nShape 4 (fallback): unfamiliar filename with rule-keyed verdicts");
+console.log("\nShape 4 (v0.8.1 P9-A): top-level fail_by_rule + pass_by_rule maps (贷款 v0.8 shape)");
+{
+  const ws = makeTempWorkspace();
+  fs.mkdirSync(path.join(ws, "output", "qc"), { recursive: true });
+  fs.writeFileSync(path.join(ws, "output", "qc", "production_qc_report.json"), JSON.stringify({
+    accuracy: 1.0,
+    total_checks: 192,
+    avg_confidence: 0.8351,
+    fail_by_rule: { R001: 11, R002: 10, R003: 4, R004: 2 },
+    pass_by_rule: { R001: 5, R002: 6, R003: 12, R004: 14 },
+    low_confidence_count: 17,
+  }));
+  const result = runAggregator(ws);
+  assert(result !== null, "Shape 4 detected");
+  assert(result?.historical_accuracy?.["R001"]?.n_failed === 11, "R001 fail count");
+  assert(result?.historical_accuracy?.["R001"]?.n_passed === 5, "R001 pass count");
+  assert(result?.historical_accuracy?.["R004"]?.n_failed === 2, "R004 fail count");
+  assert(result?.historical_accuracy?.["R004"]?.n_passed === 14, "R004 pass count");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 5 (fallback): unfamiliar filename with rule-keyed verdicts");
 {
   const ws = makeTempWorkspace();
   // Future schema we haven't enumerated explicitly
@@ -137,6 +158,20 @@ console.log("\nRegression: real 资管 v0.7.5 workspace (if present)");
     console.log(`    [info] 资管 aggregated rules: ${Object.keys(result?.historical_accuracy || {}).sort().join(", ")}`);
   } else {
     console.log("  (skipped — 资管 workspace not present)");
+  }
+}
+
+console.log("\nRegression: real 贷款 v0.8 workspace (if present — Shape 4 must fire)");
+{
+  const realWs = path.join(os.homedir(), ".kc_agent", "workspaces", "贷款话术测试-080-001");
+  if (fs.existsSync(realWs)) {
+    const result = runAggregator(realWs);
+    assert(result !== null, "aggregator finds something in 贷款 v0.8 workspace");
+    const ruleCount = Object.keys(result?.historical_accuracy || {}).length;
+    assert(ruleCount >= 12, `贷款 v0.8 aggregates ≥12 rules (got ${ruleCount})`);
+    console.log(`    [info] 贷款 v0.8 aggregated rules: ${Object.keys(result?.historical_accuracy || {}).sort().slice(0, 6).join(", ")}...`);
+  } else {
+    console.log("  (skipped — 贷款 v0.8 workspace not present)");
   }
 }
 

@@ -648,7 +648,45 @@ export class ReleaseTool extends BaseTool {
       }
     }
 
-    // 4) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
+    // 4) v0.8.1 P9-A: top-level fail_by_rule + pass_by_rule maps (贷款
+    // v0.8 production_qc_report.json shape). Direct per-rule counts —
+    // no per-doc rollup, no verdict literals to scan.
+    //   {accuracy, total_checks, fail_by_rule: {<rid>: N}, pass_by_rule: {<rid>: N}}
+    if (tally.size === 0) {
+      for (const f of files) {
+        if (!/qc|prod|report|result/i.test(f.name)) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          const failMap = d?.fail_by_rule;
+          const passMap = d?.pass_by_rule;
+          if (
+            failMap && typeof failMap === "object" && !Array.isArray(failMap) &&
+            passMap && typeof passMap === "object" && !Array.isArray(passMap)
+          ) {
+            const allRules = new Set([...Object.keys(failMap), ...Object.keys(passMap)]);
+            let matched = false;
+            for (const rid of allRules) {
+              if (!isRuleId(rid)) continue;
+              const fails = Number(failMap[rid]) || 0;
+              const passes = Number(passMap[rid]) || 0;
+              if (fails + passes === 0) continue;
+              const t = tally.get(rid) || { pass: 0, fail: 0, na: 0, n: 0 };
+              t.pass += passes;
+              t.fail += fails;
+              t.n += passes + fails;
+              tally.set(rid, t);
+              matched = true;
+            }
+            if (matched) {
+              sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+              break;
+            }
+          }
+        } catch { /* skip non-JSON */ }
+      }
+    }
+
+    // 5) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
     // walk any output/*.json with a top-level rule_id-keyed shape that has
     // verdict-like leaf objects. Catches future schema drift before the
     // next audit cycle.
