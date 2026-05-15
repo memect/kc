@@ -22,10 +22,12 @@ kc-beta onboard      # configure provider + API key
 cd my-project        # a folder containing rules/ and samples/
 kc-beta              # launch the agent
 
-# v0.8+ unattended runs:
-kc-marathon --workspace ~/.kc_agent/workspaces/<id> \
-            --goal "Verify the new regulation against samples/" \
-            --max-wall-clock 6h
+# v0.8.1+ unattended runs: type the slash command inside the kc-beta TUI
+> /marathon Verify the new regulation against samples/. Iterate twice. If
+  most workflows work with regex, build another version using tier1+tier2
+  worker LLMs more aggressively.
+# Marathon mode chains turns automatically. /marathon off disengages.
+# /marathon status shows the driver state.
 ```
 
 Requires **Node.js 20+**. See [QUICKSTART.md](./QUICKSTART.md) for the full setup walkthrough.
@@ -34,11 +36,15 @@ Requires **Node.js 20+**. See [QUICKSTART.md](./QUICKSTART.md) for the full setu
 
 ## v0.8 Highlights
 
-- **`kc-marathon` driver** — separate-process unattended-run mode. The
-  driver tails KC's events.jsonl and writes continuation prompts to the
-  workspace's `.kc_marathon/inbox.jsonl`. F5 strict one-phase-per-prompt
-  stays enabled for interactive sessions and bypasses cleanly when
-  marathon is attached.
+- **`/marathon <goal>` slash command** (v0.8.1; replaces the v0.8.0
+  separate-process `kc-marathon` CLI). Activates an inline driver inside
+  the running kc-beta TUI. Goal embedded in the command. `/marathon off`
+  to disengage manually; `/marathon status` to inspect. F5
+  one-phase-per-prompt stays enabled for interactive sessions and
+  bypasses cleanly when marathon is active. Status-bar shows
+  `🏃 MARATHON` only when active — no clutter in normal mode. v0.8.0's
+  separate-process driver was scrapped after E2E #11 found drivers
+  died silently when their parent terminal closed (SIGHUP unhandled).
 - **Skill usage counter** — passive Layer-B measurement of which skills
   the engine actually ships to the LLM. `skill_byte_send` events go to
   events.jsonl; the audit script aggregates per-phase × per-skill.
