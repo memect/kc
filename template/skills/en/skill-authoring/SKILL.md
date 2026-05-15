@@ -123,6 +123,24 @@ Scripts should be self-contained Python files that can be imported or executed. 
 
 Do not put LLM prompts in scripts. LLM interactions belong in the SKILL.md body or in the workflow (later phase).
 
+### Strip reviewer annotations before keyword matching
+
+Sample documents often carry reviewer-annotation footers (`预期命中点: ...`, `标注: ...`, `Expected: ...`) that mark the ground-truth verdict for testing. If your check.py uses keyword/regex matching against the document body, these annotations will leak into the match — producing false-positive PASS on violation samples (your rule "finds" the disclosure keyword inside the annotation itself, not the actual document content).
+
+The canonical helper ships at `workflows/common/utils.py` and is auto-populated into every workspace at engine init:
+
+```python
+from workflows.common.utils import strip_annotations
+
+def check(document_text):
+    text = strip_annotations(document_text)
+    # ... your real check logic against `text`, not document_text
+```
+
+Recognized prefixes (Chinese + English variants): 预期命中点, 预期结果, 预期判定, 预期验证, 标注, 审核标注, Expected, expected, EXPECTED, Annotation, annotation. Pass `extra_prefixes=("..."、"...")` if your project uses different labels.
+
+E2E #11 贷款 v0.8 audit: 4/14 rules had standalone check.py false-positive PASS on violation samples because they matched the `预期命中点: ...年化利率` footer instead of the document body. v0.8.1 ships the helper as a template file so this trap is one import away from being avoided.
+
 ## Writing References
 
 `references/` holds content that the coding agent reads on demand:

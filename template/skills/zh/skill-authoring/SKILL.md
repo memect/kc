@@ -123,6 +123,24 @@ Scripts should be self-contained Python files that can be imported or executed. 
 
 Do not put LLM prompts in scripts. LLM interactions belong in the SKILL.md body or in the workflow (later phase).
 
+### 关键字匹配前先剥除审核者注解
+
+样本文档常带有审核者写的注解尾注（`预期命中点: ...`、`标注: ...`、`Expected: ...`），用来标注测试时的真实判定。如果你的 check.py 是用关键字/正则去匹配文档正文，这些注解会漏进匹配 —— 在违规样本上反而 false-positive PASS（规则在注解里"找到了"披露关键字，而不是在真实文档内容里）。
+
+规范的清理工具在 `workflows/common/utils.py`，引擎初始化时会自动写入工作区：
+
+```python
+from workflows.common.utils import strip_annotations
+
+def check(document_text):
+    text = strip_annotations(document_text)
+    # 真正的核查逻辑用 `text`，不要用原始的 document_text
+```
+
+已识别的前缀（中英文）：预期命中点、预期结果、预期判定、预期验证、标注、审核标注、Expected、expected、EXPECTED、Annotation、annotation。如果你的项目用了别的标签，传 `extra_prefixes=("...", "...")`。
+
+E2E #11 贷款 v0.8 审计：14 条规则里有 4 条独立运行 check.py 时在违规样本上 false-positive PASS，因为匹配到的是 `预期命中点: ...年化利率` 尾注而不是文档正文。v0.8.1 把这个工具作为模板文件随包发布，import 一行就能避开这个坑。
+
 ## Writing References
 
 `references/` holds content that the coding agent reads on demand:
