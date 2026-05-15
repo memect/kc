@@ -909,6 +909,14 @@ export async function main({ languageOverride } = {}) {
   };
   process.on("SIGINT", saveOnExit);
   process.on("SIGTERM", saveOnExit);
+  // v0.8.1 P8-B: SIGHUP coverage. E2E #11 found macOS sends signals to
+  // descendant processes when a Terminal.app window closes or quits;
+  // nohup masks SIGHUP but not SIGTERM, and we already cover SIGTERM.
+  // Adding SIGHUP makes the kc-beta process robust against terminal
+  // teardown even if it's not nohup'd. Without this, a closed terminal
+  // can leave KC half-shut-down (events.jsonl flushed, but no
+  // marathon_detach event, no clean session-state save).
+  process.on("SIGHUP", saveOnExit);
 
   const instance = render(h(App, { engine, config }));
   await instance.waitUntilExit();
