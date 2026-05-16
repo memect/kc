@@ -1,107 +1,188 @@
 ---
 name: dashboard-reporting
 tier: meta-meta
-description: Generate HTML dashboards for developer users to visualize verification results, system progress, and quality metrics. Use when a testing round completes, when production batches finish processing, when the developer user wants to see the system's status, or at any point where visual reporting would help communicate progress. Dashboards should be self-contained HTML files that can be opened by double-clicking. Also use when the developer user asks about results, accuracy, or system health.
+description: Generate HTML dashboards for developer users to visualize verification results, system progress, and quality metrics. Use when a testing round completes, when production batches finish processing, when the developer user wants visual reporting, or when they explicitly ask for it. Dashboards are self-contained HTML files. Use this skill **when there's something visual worth showing** — not as a default deliverable. For routine status updates use KC's TUI. The dashboard is a complement to direct reporting, not a substitute.
 ---
 
 # Dashboard Reporting
 
-The dashboard is the developer user's window into the system. They should not need to read logs or parse JSON to understand what is happening. Give them a clear, visual summary that leads with what matters.
+The dashboard is one channel — and not always the most economical one
+— for letting the developer user see what's going on. KC already
+reports status directly in the TUI; the HTML dashboard exists for
+things that are **worth seeing visually**: distributions, timelines,
+heatmaps, side-by-side comparisons, drill-down tables.
 
-## Dashboard Types
+Don't treat dashboard generation as a checkbox to satisfy this skill.
+Treat it as a deliverable the developer user actually asked for, or
+where a picture genuinely saves them time over reading TUI output or
+JSON.
 
-### Results Dashboard
-Generated after each batch of documents is processed.
+## Minimum vs. nice-to-have
 
-Key elements:
-- **Summary bar**: Total documents, pass rate, fail rate, missing rate, error rate.
-- **Per-rule breakdown**: Table showing each rule's pass/fail counts, accuracy, and average confidence.
-- **Failed cases**: List of documents that failed, with the rule, extracted value, expected value, and comment. Sortable and filterable.
-- **Confidence distribution**: Histogram showing how many results fall in each confidence band.
+When the developer user asks for a dashboard, **start with the
+minimum and expand only if it adds real value**.
 
-### Progress Dashboard
-Generated on demand to show the system's evolution.
+### Minimum
 
-Key elements:
-- **Lifecycle status**: Which rules are in which phase (skill testing, workflow testing, production, stable).
-- **Rule catalog**: Table of all rules with their current status, accuracy, and version.
-- **Evolution timeline**: For each rule, how many iterations it took, what was the accuracy at each step.
-- **Model tier assignments**: Which model is being used for each step of each rule.
+A useful dashboard at the floor:
+- A summary header: total documents, top-line pass/fail/missing
+  counts.
+- A per-rule table: rule_id, accuracy, pass / fail / NA counts,
+  optional confidence column.
+- A list of failed cases the user can click into for details (rule,
+  extracted value, expected value, comment).
 
-### Quality Dashboard
-Generated after quality control reviews.
+That's enough to ship. If the user can answer "is this batch
+healthy and which rules failed" in 3 seconds, the minimum is done.
 
-Key elements:
-- **Accuracy over time**: Line chart showing per-rule and overall accuracy across batches.
-- **Sampling rate over time**: Showing how monitoring is decreasing (or not).
-- **Flagged issues**: Open issues that need developer user attention.
-- **Cost metrics**: LLM calls and tokens per document, per rule.
+### Nice-to-have
 
-## Feedback Collection
+Add these only when they're justified by the data on hand or the
+user's actual need:
+- Confidence distribution histogram (useful when confidence is
+  calibrated and the user cares about the distribution shape).
+- Accuracy-over-time line chart (useful only when there's enough
+  history to draw a meaningful curve).
+- Per-product-type / per-issuer breakdown (useful when the corpus
+  has meaningful segmentation).
+- Cost metrics (useful when cost is a live concern; otherwise
+  skip).
+- Drill-down navigation (summary → rule → document).
+- Inline feedback widgets (correction-on-click, flag-as-wrong).
 
-Every dashboard must include mechanisms for users to report errors and comment directly on verification results. This is not a nice-to-have — user feedback is the most valuable data source in the system.
+Don't add a section to look thorough. An empty "Confidence
+distribution" chart with no calibrated data is worse than no chart.
 
-### Developer User Feedback
+## Dashboard types (when to use which)
 
-Developer users see full result detail. Their feedback interface should support:
-- **Field-level correction**: Click on an extracted value, provide the correct value.
-- **Result override**: Change a pass to fail (or vice versa) with a reason.
-- **Rule re-evaluation request**: Flag a result for re-processing with a different approach.
-- **Comment**: Free-text annotation on any result.
+### Results dashboard
+After a batch of documents is processed. The minimum above usually
+covers it.
 
-### End User Feedback
+### Progress dashboard
+On demand, to show the system's evolution across phases. Lifecycle
+status per rule, rule catalog table, evolution timeline. Mostly
+useful when the developer user wants a "where are we" snapshot
+mid-build.
 
-End users of the verification app see simplified results. Their interface should support:
-- **Flag as wrong**: One-click to report a result they believe is incorrect.
-- **Add comment**: Brief text explaining what they think is wrong.
-- **Severity indicator**: How impactful is this error? (Critical / Important / Minor)
+### Quality dashboard
+After QC review cycles. Accuracy-over-time, sampling rate trend,
+flagged issues, cost. Useful when QC has accumulated enough cycles
+to show a trend.
 
-### Feedback as Ground Truth
+If only one of the three would actually help the developer user
+right now, build only that one. Don't generate all three by default.
 
-User-reported errors are ground truth. They override the coding agent's judgment and the worker LLM's output. The feedback data flow:
+## Feedback collection (optional but recommended when applicable)
 
-1. User submits feedback via dashboard → stored as structured record.
-2. Record schema: `{result_id, trace_id, reporter_role, feedback_type, original_result, corrected_value, comment, timestamp}`.
-3. Feedback records are fed into the `evolution-loop` as confirmed failures.
-4. Dashboard surfaces feedback trends: correction rate over time, most-reported issues, rules with highest user correction rates.
+When the dashboard is destined for an audience that's going to
+review the results (developer user, end user, domain expert),
+include feedback widgets. When the dashboard is purely for
+developer-user inspection mid-build, feedback widgets are usually
+overkill — they pretend at a workflow the user isn't going to
+follow.
 
-Build the feedback collection mechanism alongside the dashboard generation — they are not separate features. Every generated HTML dashboard should include the feedback UI, even if it initially writes to a local JSON file that the coding agent reads on the next iteration.
+### Developer-user feedback
+
+Full result detail visible. Useful widgets:
+- Field-level correction: click an extracted value, provide the
+  right one.
+- Result override: change pass to fail (or vice versa) with a
+  reason.
+- Comment: free-text annotation on any result.
+
+### End-user feedback
+
+Simplified results visible. Useful widgets:
+- Flag-as-wrong: one-click to report a result believed incorrect.
+- Comment: brief text explanation.
+- Severity indicator: critical / important / minor.
+
+### Feedback as ground truth
+
+User-reported errors are ground truth. They override agent judgment
+and worker-LLM output. Flow:
+
+1. Submit via dashboard → stored as structured record.
+2. Schema: `{result_id, trace_id, reporter_role, feedback_type,
+   original_result, corrected_value, comment, timestamp}`.
+3. Records feed into `evolution-loop` as confirmed failures.
+4. Surface feedback trends in subsequent dashboards (correction
+   rate over time, most-reported issues, rules with highest
+   correction rates).
 
 ## Technology
 
-Self-contained HTML with embedded CSS and JavaScript. Requirements:
-- **No external dependencies.** No CDN links, no npm packages, no server. Everything is inlined.
-- **No server required.** The developer user double-clicks the HTML file to open it in their browser.
-- **Responsive layout.** Should work on both desktop and mobile screens.
-- **Dark/light mode.** Respect the system preference or provide a toggle.
+Self-contained HTML with embedded CSS / JavaScript.
+- **No external dependencies.** No CDN links, no npm packages, no
+  server. Everything inlined.
+- **No server required.** Developer user double-clicks the HTML file.
+- **Responsive layout.** Should work on desktop and mobile.
+- **Dark/light mode** — respect system preference or provide a
+  toggle.
 
-For charts, use inline SVG or a lightweight chart library that can be embedded (e.g., Chart.js or lightweight alternatives, inlined as a script tag).
+For charts, use inline SVG or a lightweight chart library inlined as
+a `<script>` tag.
 
-## Data Sources
+## Data sources
 
 Dashboards read from:
 - `Output/` for verification results.
 - `logs/` for evolution and testing history.
-- `versions.json` for current system state.
-- QC review records (stored alongside Output/).
+- `versions.json` (or git log) for current system state.
+- QC review records (stored alongside `Output/`).
 
-The dashboard generation script should accept input paths and produce a single HTML file.
+The generation script should accept input paths and produce a single
+HTML file.
 
-## Generation Triggers
+## Generation triggers
 
-Generate dashboards automatically after:
-- Each testing round completes (skill testing or workflow testing).
-- Each production batch finishes processing.
-- Each quality control review cycle.
-- Developer user explicitly requests it.
+Generate dashboards when:
+- A testing round completes AND there's enough data to be worth
+  visualizing.
+- A production batch finishes AND the developer user wants a visual.
+- A QC review cycle completes.
+- The developer user explicitly requests one.
 
-Store generated dashboards in `Output/dashboards/` with timestamps in filenames for history.
+Don't auto-generate on every minor event — the dashboards pile up
+fast and the user won't open most of them. When unsure, ask the user
+("Want me to generate a dashboard?") instead of producing one
+unprompted.
 
-## Design Principles
+Store generated dashboards in `Output/dashboards/` with timestamped
+filenames for history.
 
-- **Lead with the summary.** The developer user should understand the system's health in 3 seconds.
-- **Drill down on demand.** Summary → rule-level → document-level. Do not overwhelm with details upfront.
-- **Color coding.** Green for pass/healthy, red for fail/critical, yellow for warning/attention. Simple and universal.
-- **Actionable.** Every flagged issue should suggest what to do next.
+## Design principles
 
-A starter script is available in `scripts/generate_dashboard.py`. Adapt it to the specific business scenario.
+- **Lead with the summary.** Developer user should understand health
+  in 3 seconds.
+- **Drill down on demand.** Summary → rule-level → document-level.
+  Don't overwhelm with details upfront.
+- **Color coding.** Green for pass/healthy, red for fail/critical,
+  yellow for warning/attention. Simple and universal.
+- **Actionable.** Every flagged issue should suggest a next step.
+
+A starter script is available in `scripts/generate_dashboard.py`.
+Adapt to the specific scenario — and feel free to trim the script
+when half its sections wouldn't have content. A small dashboard that
+answers the user's question beats a comprehensive one they don't
+need.
+
+## Relationship to TUI reporting
+
+KC's TUI already supports rich status reporting during the run.
+Use TUI for:
+- Ongoing progress narration.
+- Per-phase summaries.
+- Quick "what just happened" updates.
+- Anything that can be communicated in a few lines of text.
+
+Use HTML dashboards for:
+- Visual artifacts that wouldn't fit (distributions, charts,
+  filterable tables).
+- Hand-off to non-KC users (developer-user reviewing later,
+  end-user audience).
+- Persistent records the user wants to revisit.
+
+When in doubt, prefer the TUI. A short status message the user is
+already reading beats a dashboard they have to open.

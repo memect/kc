@@ -8,6 +8,40 @@ description: Design and execute quality control for production verification work
 
 Quality control is the Observer role. You are watching the worker LLMs perform and deciding whether they are doing it well enough. The goal is not to review every result — that would defeat the purpose of automation. The goal is to review just enough to maintain confidence that the system is working.
 
+## How this skill cooperates with the others
+
+Quality control is one part of a tightly-cooperating set of skills.
+Don't replicate content from a sibling skill here — point to it.
+Skills loaded together in the same phase are already accessible to
+the conductor; re-injecting their material into this skill just
+bloats both.
+
+The relationships:
+
+- `confidence-system` defines how confidence is composed and
+  calibrated. When QC uses confidence to triage which results need
+  more review, it consumes confidence — but the design of confidence
+  belongs there.
+- `evolution-loop` is the closed-loop machinery for turning QC
+  findings into improvements. QC produces signals (failures, drift,
+  recurring patterns); evolution-loop decides how to act on them.
+- `corner-case-management` is where exceptions discovered by QC live.
+  QC surfaces "this one didn't fit"; corner-case-management decides
+  whether it's a corner case to register, a systemic problem to
+  promote to mainline, or a data-quality issue to escalate.
+- `cross-document-verification` is its own check class. QC's job is
+  to verify those rules are running as designed, not to re-explain
+  how to build them.
+- `dashboard-reporting` is where QC results surface to the developer
+  user. QC produces the data; the dashboard renders it.
+
+Practical implication for authoring: if you find yourself writing in
+this file something that more naturally belongs to one of the skills
+above, write a one-sentence pointer here ("see `confidence-system`
+for how confidence is composed") and leave the depth in the right
+place. The conductor will have the other skill loaded when it needs
+the detail.
+
 ## Five-Layer QA Architecture
 
 Quality control is not one activity — it is five layers that build on each other. Lower layers must pass before higher layers run.

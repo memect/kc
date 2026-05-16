@@ -105,6 +105,44 @@ When something goes wrong — and it will — you can inspect each stage indepen
 
 Keep intermediates for at least the current iteration. Delete old iterations only when disk space becomes a real constraint.
 
+## Looking at the corpus when it doesn't fit in your head
+
+A foundational constraint to plan around: you have a finite context
+window. Reading dozens of sample documents in a row will push earlier
+observations out of your working memory before you finish, leaving
+you with the impression of having seen the corpus but not the
+ability to actually generalize from it.
+
+Treat the corpus the way a statistician would treat a population:
+sample, summarize, and don't try to keep the population in your head.
+A few approaches that work in practice:
+
+- **Use the file system as memory.** Write a `notes/data_observations.md`
+  (or per-rule `notes/<rule_id>_observations.md`) as you scan. Note
+  field name variants, format quirks, missing-section patterns,
+  surprising values. Re-read the notes file next session instead of
+  re-scanning the docs.
+- **Per-rule notepads / memory.md.** For each rule, keep a short
+  `memory.md` that captures "what I've seen across the sample set
+  for this rule" — which documents trigger it, what values appear,
+  what edge cases exist. Update incrementally rather than re-deriving
+  it each time you look at the rule.
+- **Dispatch subagents to explore samples.** When the corpus is
+  large, send a subagent (via the `agent_tool`) to scan a directory
+  and return summary statistics or a short markdown report. The
+  subagent's full reads stay in its own context; you receive only
+  the digest. This is the right tool when you'd otherwise spend
+  context budget reading dozens of files for a single observation.
+- **Statistical / meta views over individual reads.** Instead of
+  reading 20 income certificates, run a regex over all of them and
+  count format variants. Instead of opening every annual report,
+  list filenames and group by issuer / year. Build the meta view
+  first, then dive into representatives.
+
+The principle: aim for **enough samples to characterize the
+distribution**, not enough samples to memorize the corpus. The
+former fits in your head and in your notes. The latter doesn't.
+
 ## Integration
 
 Feed your observations into downstream skills:

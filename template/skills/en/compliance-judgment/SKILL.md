@@ -81,3 +81,32 @@ Map these dependencies in the rule catalog. Execute rules in dependency order. P
 - **Multiple values**: The document contains the entity in multiple places with different values. Flag as `uncertain`. Report all found values.
 - **Conditional rules**: "If the loan exceeds 1M, then collateral is required." Check the condition before applying the rule. If the condition is not met, the rule does not apply — result is `pass` (or `not_applicable` if you add that category).
 - **Negative results**: Some rules check for absence. "The document must NOT contain guarantees to related parties." Searching for absence is harder than searching for presence. Be thorough in the search, then be confident in the negative.
+
+## Cross-document consistency of confidence bars
+
+For a rule that judges multiple documents (which is the common case),
+**the confidence threshold for "pass" must be the same across all
+documents** for that rule. A rule that requires 0.85 confidence to
+pass on document A and 0.75 on document B isn't a rule — it's two
+rules pretending to be one.
+
+When the worker LLM is the judge, set the threshold in the prompt or
+in postprocessing, not "let the LLM decide" per call. Random variation
+between LLM calls means each call lands somewhere on a distribution;
+your job is to set the bar that distribution must clear.
+
+Two ways to enforce:
+- **In the prompt**: explicit "output 'PASS' only if confidence ≥ 0.85"
+  language. Cheap. Vulnerable to LLM drift between calls.
+- **In postprocessing**: ask the LLM for verdict + confidence
+  separately, then apply the threshold in a small Python wrapper.
+  More reliable. Engine sees the threshold as code, not prompt prose.
+
+For rules with stable patterns (formats, presence checks), prefer
+postprocessing. For rules with subjective judgment (adequacy,
+sufficiency), the prompt-level threshold is easier to write but worth
+auditing — sample a batch and check whether the LLM honored the bar.
+
+The `confidence-system` skill describes how to compose confidence
+from multiple signals; this section is about applying it consistently
+across documents for the same rule.

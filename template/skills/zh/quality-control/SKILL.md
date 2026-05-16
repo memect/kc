@@ -12,6 +12,34 @@ description: Design and execute quality control for production verification work
 
 质量监控的角色是「观察员」：用最少的复查量，维持对系统准确率的信心。当信心下降时，立即拉响警报、触发演化循环。
 
+## 与其他 skill 的协作
+
+质量监控是一组紧密协作的 skill 中的一员。不要把兄弟 skill 的内容
+搬过来在这里复述 —— 引用它即可。同一阶段同时加载的 skill 对
+conductor 已经可见，在本 skill 里再注入一遍它们的材料，只会把两边
+都撑胖。
+
+各自的关系：
+
+- `confidence-system` 定义置信度怎么合成、怎么校准。当 QC 用置信度
+  来分流"哪些结果需要更多复核"时，它**消费**置信度 —— 但置信度的
+  设计归在那边。
+- `evolution-loop` 是把 QC 发现转化为改进的闭环机器。QC 产出信号
+  （失败、漂移、反复出现的模式）；evolution-loop 决定怎么处理这些
+  信号。
+- `corner-case-management` 是 QC 发现的异常的归宿。QC 揭示"这一份
+  没合上"；corner-case-management 判断它是该登记为边缘案例、还是
+  系统性问题该上升到主流程、或者是数据质量问题需要升级。
+- `cross-document-verification` 是另一类规则。QC 的工作是核查那
+  类规则是否按设计在执行，而不是再讲一遍怎么构建它们。
+- `dashboard-reporting` 是 QC 结果向开发者用户呈现的地方。QC 产
+  数据，dashboard 来渲染。
+
+写作意义：如果你发现自己在本文件里写的东西更自然地归属于上面某个
+skill，就在这里留一句指向（"置信度的合成见 `confidence-system`"），
+把深度留在该去的地方。conductor 需要细节时，那个 skill 已经为它加载
+了。
+
 ## 五层质量保障架构
 
 质量控制不是单一活动——它由五个层级构成，逐层递进。低层级必须通过后，高层级才会执行。
