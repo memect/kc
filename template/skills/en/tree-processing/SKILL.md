@@ -58,7 +58,7 @@ Spend time here. The patterns you find determine whether the tree builder is a s
 - This is fast, deterministic, and reliable. Prefer this when it works.
 
 **If patterns are inconsistent or absent**:
-- Use the LLM-guided wedge-driving approach (see `rule-extraction/references/chunking-strategies.md` for the full algorithm: rolling context window, K-token quoting, Levenshtein fuzzy matching).
+- Use the LLM-guided wedge-driving approach (see the `document-chunking` skill for the full algorithm: rolling context window, K-token quoting, Levenshtein fuzzy matching).
 - This is slower and costs LLM calls, but handles unstructured documents. The rolling window means even very large unstructured leaf nodes can be chunked incrementally.
 
 **If the document has a table of contents**:

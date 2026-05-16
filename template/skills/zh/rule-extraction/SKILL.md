@@ -4,81 +4,83 @@ tier: meta
 description: Extract and organize business verification rules from regulation documents into discrete, testable units. Use when processing documents in Rules/ to identify individual verification rules, when decomposing a regulation into atomic checks, or when the developer user adds new regulation files. Covers reading regulation text, identifying rule boundaries, determining granularity, handling cross-references, and producing a rule catalog. Also use when rules are provided in structured formats like xlsx or csv.
 ---
 
-# Rule Extraction
+# 规则抽取（Rule Extraction）
 
-Rules are the atoms of verification. Each rule you extract will become its own skill folder, its own workflow, and its own production pipeline.
+规则是核查的最小单元。每条抽出的规则将拥有自己的 skill 目录、自己的 workflow、自己的生产管道。
 
-## How This Differs from Data Extraction
+## 与数据抽取（data extraction）的区别
 
-Rule extraction is a **one-off task** at the start of a project. You read regulation documents and decompose them into discrete, testable rules. This is fuzzy, agile work — rules are read by you (a SOTA agent), so the schema can be messy and evolve freely.
+规则抽取是项目启动时**一次性**的工作：你阅读源文档，把它拆成离散、可测试的规则。这件事是模糊、敏捷的——规则是由你（SOTA agent）来读的，所以 schema 可以乱、可以自由演化。
 
-Data/entity extraction (`entity-extraction`) is the **repeating task** that runs on every document being verified. It must fit a unified, stable schema because it feeds into automated workflows.
+数据/实体抽取（`entity-extraction`）是**重复性**任务，针对每一份被核查的文档都会跑一遍。它必须符合统一、稳定的 schema，因为下游是自动化 workflow。
 
-Don't conflate the two. Rule extraction happens once; data extraction happens on every document.
+不要把两者混为一谈。规则抽取只发生一次；数据抽取每一份文档都发生。
 
-## Rule Structure: Location → Extraction → Judgment
+## 源文先行（Source-first sequencing）
 
-Every verification rule decomposes into three parts:
+抽取规则时，**先把源文档读透**。只有当你基于源文本身完成第一遍完整的规则编目后，才打开样本文档。早期偷瞄样本"看看哪些规则重要"的诱惑很大——但这会让你的规则集向"样本恰好触及的部分"偏移，并默默丢掉样本未覆盖的规则。
 
-1. **Location**: Where in the document to look (which chapter, section, table, or full document).
-2. **Extraction**: What data to pull from that location (a number, a date, a clause, a description).
-3. **Judgment**: How to determine pass/fail (threshold comparison, semantic assessment, cross-field check).
+领域专家的工作顺序是：先读源文、建立理解，再用样本验证——而不是反过来。KC 相对通用 Agent 的差异化优势在于"长上下文下的系统性准确性"；这种优势只有在你以**原文为锚**而不是以**样例为锚**时才能复利。
 
-When extracting a rule, explicitly note all three parts. This determines the downstream pipeline structure:
-- Full-document rules need no location step.
-- Single-section rules need one location step.
-- Cross-section rules (comparing values across chapters) need multiple location steps.
+## 规则结构：Location → Extraction → Judgment
 
-Classify each rule's scope accordingly — it affects how the verification workflow is structured.
+每条核查规则都可以拆成三部分：
 
-## Philosophy
+1. **Location（定位）**：在文档的哪里去看（哪一章、哪一节、哪张表，或整份文档）。
+2. **Extraction（抽取）**：从那个位置取什么数据（数字、日期、条款、描述）。
+3. **Judgment（判断）**：怎么判定通过/失败（阈值比较、语义评估、跨字段核对）。
 
-A well-extracted rule is:
-- **Atomic**: it checks one thing. "The borrower's debt-to-income ratio must not exceed 50%" is one rule. "The loan agreement must comply with Regulation X" is not — it is a container for many rules.
-- **Testable**: given a document, you can definitively say whether the rule passes or fails (or is not applicable).
-- **Self-contained**: the rule's meaning does not require reading ten other rules to understand. Cross-references should be resolved into the rule's description.
-- **Scoped**: you know WHERE in the document to look. "Chapter 3, Section 2" or "the risk disclosure section" or "the signature page."
+抽取规则时显式写明三部分。它们决定了下游 pipeline 的结构：
+- 整篇文档级别的规则不需要 location 步骤。
+- 单段级别的规则需要一步 location。
+- 跨段对比的规则（跨章节比较数值）需要多步 location。
 
-But perfection is the enemy of progress. Extract rules at the granularity that feels right for the regulation and the business scenario. You will iterate. The developer user will tell you if rules are too coarse or too fine.
+按这个口径给每条规则的 scope 分类——它会影响 verification workflow 的结构。
 
-## Rule Schema Design Principles
+## 哲学
 
-Individual rules should be atomic and testable (above). The rule catalog as a whole must also satisfy system-level properties:
+一条抽取得当的规则应当是：
+- **原子的（Atomic）**：它只核查一件事。"借款人的债务收入比不得超过 50%"是一条规则；"贷款合同必须符合 X 法规"不是——它是一堆规则的容器。
+- **可测试的（Testable）**：给定一份文档，你能明确说出这条规则是 PASS、FAIL，还是 NOT_APPLICABLE。
+- **自包含的（Self-contained）**：理解这条规则不需要再读另外十条规则。交叉引用应当在规则描述里被解析掉。
+- **有范围的（Scoped）**：你知道**在文档的哪里**去看。"第 3 章第 2 节"、"风险揭示段"、"签字页"。
 
-### Coverage Target
-Extracted rules should cover at least 95% of the regulation's checkable requirements. After initial extraction, perform a coverage audit: read the source regulation end-to-end and mark which paragraphs are covered by at least one rule. Uncovered paragraphs are either non-checkable (definitions, context) or gaps to close.
+但是完美是进步的敌人。在源文与业务场景所适合的颗粒度上抽取规则即可。后面会迭代。开发者用户会告诉你哪些规则太粗、哪些太细。
 
-### Atomicity Test
-One rule = one pass/fail outcome. If a rule can produce two independent pass/fail results, it should be two rules. Ask: "Can this rule partially pass?" If yes, decompose further.
+## 规则 schema 的设计原则
 
-### Ambiguity Minimization
-No two rules should produce contradictory results on the same document. After extraction, review rule pairs that touch overlapping scope. If Rule A says pass and Rule B says fail for the same entity, their scope boundaries are unclear — fix them.
+单条规则要原子、要可测（见上一节）。规则集合作为一个整体，还要满足系统级的属性：
 
-### Downstream Anticipation
-Rules will be distilled into workflows (see `skill-to-workflow`). Design with distillation in mind: clear input/output boundaries, explicit judgment criteria, minimal reliance on implicit domain knowledge. If a rule requires reading between the lines, make the interpretation explicit. Use `task-decomposition` to identify natural boundaries between rules.
+### 覆盖率目标
+抽出的规则应当覆盖源文中至少 95% 的可核查要求。首轮抽取完成后做一次覆盖审计：把源文从头到尾读一遍，标记哪些段落至少被某一条规则覆盖。未覆盖的段落要么是不可核查（定义、背景），要么就是要补的缺口。
 
-### Catalog Versioning
-When rules change (additions, modifications, deprecations), version the entire rule catalog as a unit. Individual rule versions track specific rules; the catalog version tracks the coherent set. Record the catalog version in `versions.json` alongside individual rule versions.
+### 原子性测试
+一条规则 = 一个 PASS/FAIL 结果。如果一条规则能产生两个互相独立的 PASS/FAIL 判定，那它应该是两条规则。问自己："这条规则有没有可能'部分通过'？"如果有，继续拆。
 
-## Granularity Calibration (read before extracting)
+### 歧义最小化
+两条规则不应在同一份文档上得出互相矛盾的结果。抽完之后回头看看那些 scope 有重叠的规则对：如果同一对象 A 说 PASS、B 说 FAIL，说明它们的 scope 边界不清楚——把边界补清楚。
 
-A well-extracted rule catalog has **10-20 rules per typical regulation PDF**
-(2025 banking/insurance disclosure regs, 30-80 pages). Over-extraction into
-60-100 rules per regulation signals you're treating every clause as its own
-rule — which downstream consumers (skill-authoring, workflow-run) can't
-distinguish meaningful checks from boilerplate.
+### 下游预设
+规则会被蒸馏为 workflow（见 `skill-to-workflow`）。设计时就要把蒸馏放在脑子里：清晰的输入/输出边界、显式的判定标准、尽量不依赖隐式领域知识。如果某条规则需要"读出言外之意"，就把那层意思显式写出来。用 `task-decomposition` 来识别规则之间自然的边界。
 
-If your first pass produces more than ~25 rules for a single regulation:
-- **Merge rules that share evidence and fail together** (e.g., "must disclose
-  X" and "must disclose Y" where both come from the same required-fields
-  table → one rule: "must disclose the required-fields list including X, Y").
-- **Drop procedural language** that isn't checkable against a report
-  (definitions, scope statements, references to other regs that just
-  transitively apply).
-- **Keep only checkable obligations, prohibitions, and thresholds** — the
-  things where you can read a sample report and say pass or fail.
+### 目录版本化
+规则发生变化（新增、修改、废止）时，把整个规则目录作为一个整体来版本化。单条规则的版本号跟踪具体规则；目录版本号跟踪整体一致的集合。把目录版本号和各规则版本号一起记到 `versions.json`。
 
-### Sample "good" rule
+## 颗粒度校准（开抽前先读这一节）
+
+规则目录的素材千差万别——正式法规、内部手册、判决/裁定汇编、法律意见、专家整理的规则表、监管问答。**不存在一个普适的"每页 N 条规则"的标准**。用逻辑而非数字来校准：
+
+- **原子性才是真正的判据**。一条规则如果能产生两个互相独立的 PASS/FAIL 结果，那就是两条规则。一条规则的判定如果需要核对源文里三段不同的内容，那大概率应该是三条规则。
+- **样板文字不是规则**。定义条款、适用范围说明、纯粹引用其他规则的"传递性"条款、无法对目标文档做核查的程序性条款——这些都不应当变成规则。
+- **只保留可核查的义务、禁止与阈值** —— 你能拿着目标文档说出 PASS / FAIL / NOT_APPLICABLE 的那些。
+
+如果你的第一遍抽取感觉太粗（一章一条，忽略了章内多个独立义务）—— 拆细。如果感觉太细（定义章节里每一句都成规则）—— 合并或删。然后：
+
+- **把共享证据、一同失败的规则合并**（例如："必须披露 X"和"必须披露 Y"都来自同一张必填字段表 → 合成一条："必须披露包括 X、Y 的必填字段列表"）。
+- **删掉无法对目标文档进行核查的程序性条款**。
+- **把每条留下来的规则改写成"可证伪陈述"** —— 如果你说不出"什么情况下这条规则会失败"，你还没真正抽出一条规则。
+
+### 一条"好规则"的样例
 
 ```json
 {
@@ -93,151 +95,120 @@ If your first pass produces more than ~25 rules for a single regulation:
 }
 ```
 
-Note: one pass/fail outcome, a single `source_ref` to a specific clause,
-clear applicability scope. Skill-authoring can write `check_r014.py` from
-this alone.
+注意：一个 PASS/FAIL 结果、一个 `source_ref` 指向具体条款、清晰的适用范围。skill-authoring 仅凭这一条 JSON 就能写出 `check_r014.py`。
 
-### Cross-regulation dedup (when working across multiple PDFs)
+### 跨源文档去重（处理多份源文档时）
 
-If the developer user provides N regulations, rules from later regs often
-duplicate cross-cutting requirements already captured by earlier ones
-(e.g., 资管新规 2018 generic disclosure rule vs. 信披办法 2025's specific
-version). Before emitting a rule from reg-N:
+开发者用户给出 N 份源文档时，后面文档里的规则常常和前面已经抽出的规则在内容上重叠（比如较新版本的具体规定 vs. 较老版本的通用规定）。在为第 N 份源文档生成规则前：
 
-1. **Check the existing catalog.** Use `rule_catalog` (operation: list) to
-   see what's already there. Skip if a rule with equivalent scope + intent
-   exists.
-2. **Prefer the newer / more specific source_ref** when rules overlap.
-3. **If you merged rules**, record the consolidated sources in `source_ref`:
-   e.g., `"信披办法 §15.2 + 资管新规 §24"`.
+1. **先看现有目录**。用 `rule_catalog`（operation: list）查现状。如果已存在等价 scope + 意图的规则，就跳过。
+2. **冲突时优先用更新、更具体的 `source_ref`**。
+3. **如果合并了规则**，在 `source_ref` 里写明合并后的来源，例如 `"信披办法 §15.2 + 资管新规 §24"`。
 
-### Delegation to sub-agents
+### 派发给子代理
 
-If you dispatch extraction to sub-agents (one per regulation), the sub-agent
-inherits ONLY its `task_description` — it cannot see your conversation or
-existing catalog. Therefore, when composing the brief:
+如果你把抽取工作派发给子代理（每份源文档一个），子代理只继承它自己的 `task_description` —— 它看不到你的对话也看不到现有目录。所以在写 brief 时：
 
-- **Specify the target count band** explicitly: "Extract 10-20 atomic
-  rules from this regulation."
-- **Include a sample rule** in the brief body (paste the JSON above
-  verbatim) so the sub-agent's calibration matches yours.
-- **Name every regulation the sub-agent should process.** If AGENT.md
-  lists 10 core regulations, the brief must list all 10 by name, not
-  "the core regs" as a pronoun — LLMs composing long structured briefs
-  frequently drop items (observed in session 6304673afaa0 where reg 02
-  was silently omitted).
-- **State the dedup contract**: "Rules already in the parent's catalog
-  (R001–Rnnn) should NOT be re-extracted. If a requirement is already
-  covered, skip it." Then pass the current catalog's ID ranges.
-- **Prefer `rule_catalog` create operations over sandbox_exec writes to
-  catalog.json.** rule_catalog uses workspace file locking (B9);
-  sandbox_exec bypasses it and races with other writers.
+- **用一条具体的样例规则锚定校准**。把上面的 JSON 原样贴进 brief 正文，让子代理在原子性上的判断和你对齐。
+- **逐字列出子代理需要处理的每一份源文档**。如果 AGENT.md 里列了 10 份核心源文档，brief 也要把这 10 份逐一列出来，不要用"那几份核心法规"这种代词 —— LLM 在写较长的结构化 brief 时频繁会把列表元素静悄悄漏掉。
+- **明确去重契约**："父级目录中已有的规则（R001–Rnnn）**不要**重抽。如果某条要求已被覆盖，跳过。"然后把当前目录的 ID 范围传过去。
+- **优先用 `rule_catalog` 的 create 操作，而不是 `sandbox_exec` 直接写 catalog.json**。`rule_catalog` 走工作区文件锁；`sandbox_exec` 绕过它，会和其他写入方抢锁。
 
-## 如何读取规则文件 (默认整本读取)
+## 如何读取源文档（默认整本读取）
 
-法规文件是审核的权威依据。你为每条规则记录的 `source_ref` 都要能在
-原文中复核。对于绝大多数规则文件 (单个文件 < 50 KB / < ~100 页),
-**用 `workspace_file` (operation=read) 一次性整本读取**:
+源文档是规则目录的权威依据。你为每条规则记录的 `source_ref` 都要能在原文中复核。对于绝大多数源文档（单个文件 < 50 KB / < ~100 页），**用 `workspace_file`（operation=read）一次性整本读取**：
 
 ```js
 workspace_file({ operation: "read", scope: "project", path: "Rules/01_某某办法.md" })
 ```
 
-`workspace_file.read` 单次上限 50,000 字符, 足以覆盖几乎所有单个法规
-文件。这是默认行为: **在抽取规则之前, 把每一份法规文件都整本读一遍。**
+`workspace_file.read` 单次上限 50,000 字符，足以覆盖几乎所有单个源文档。这是默认行为：**在抽取规则之前，把每一份源文档都整本读一遍。**
 
 ### 工具选择 — `workspace_file` 还是 `sandbox_exec`
 
 | 工具 | 单次上限 | 适用 |
 |---|---:|---|
-| `workspace_file` (read) | 50,000 字符 | **整本读取法规/规则文件** |
-| `sandbox_exec` (cat/head) | 10,000 字符 | 短命令, 不适合整文件读取 |
+| `workspace_file` (read) | 50,000 字符 | **整本读取源/规则文件** |
+| `sandbox_exec` (cat/head) | 10,000 字符 | 短命令，不适合整文件读取 |
 
-`sandbox_exec` 是为执行 shell 命令设计的, 10K 上限对绝大多数法规太小。
-`cat rules/01_*.md` 只会返回前 ~10 KB, 后面被截断为 `\n[truncated]`。
-反复用 `head -N` / `tail -M` 滑动窗口会丢失行号位置信息, 也浪费交互
-回合。**遇到截断, 别和上限较劲——换工具。**
+`sandbox_exec` 是为执行 shell 命令设计的，10K 上限对绝大多数源文档太小。`cat rules/01_*.md` 只会返回前 ~10 KB，后面被截断为 `\n[truncated]`。反复用 `head -N` / `tail -M` 滑动窗口会丢失行号位置信息，也浪费交互回合。**遇到截断，别和上限较劲 —— 换工具。**
 
-### 法规与样本的不对称 — 法规整本读, 样本按需抽样
+### 源文档与样本的不对称 —— 源文整本读，样本按需抽样
 
-法规通常只有 1–10 份, 权威性强, 只需读一次。每一份法规都整本读取,
-作为后续所有规则抽取与引用的基础。
+源文档通常只有 1–10 份，权威性强，只需读一次。每一份都整本读取，作为后续所有规则抽取与引用的基础。
 
-样本文档可能 30 份甚至 1000+ 份, 异质性强, 在测试阶段会被多次读取。
-**不要试图把每个样本都整本读一遍**——用规则适用性过滤、抽样子集来
-聚焦注意力。
+样本文档可能 30 份甚至 1000+ 份，异质性强，在测试阶段会被多次读取。**不要试图把每个样本都整本读一遍** —— 用规则适用性过滤、抽样子集来聚焦注意力。
 
-### 例外 — 单个法规超过 200K 字符时
+### 例外 —— 单个源文档超过 200K 字符时
 
-实践中极少见。test_data_4 中最大的法规 42 KB; 银行业 资管新规 +
-信披办法 等典型法规也都在 50 KB 以内。但如果你确实遇到一份超大法规,
-读取整本会挤压上下文窗口 (启发式: 单文件超过 ~200,000 字符 或超过你
-上下文预算的 ~25%), 此时由你判断:
+实践中极少见。绝大多数法规、手册或规则表类源文档都能舒服地放进 50 KB 之内。但如果你确实遇到一份超大源文档，读取整本会挤压上下文窗口（启发式：单文件超过 ~200,000 字符 或超过你上下文预算的 ~25%），此时由你判断：
 
-- 按章 (`第X章`) 分段读, 用 `document_parse` 或分页的 `workspace_file`
-- 或建立工作区内的索引文件, 标注每章的偏移位置, 抽取规则时按需读取
+- 按章（`第X章`）分段读，用 `document_parse` 或分页的 `workspace_file`
+- 或建立工作区内的索引文件，标注每章的偏移位置，抽取规则时按需读取
 
-50 KB 的上限已经足够高, 上述例外情形几乎不会触发。**默认就是整本读;
-只有当文件确实太大时才偏离这一默认。**
+50 KB 的上限已经足够高，上述例外情形几乎不会触发。**默认就是整本读；只有当文件确实太大时才偏离这一默认。**
 
-## Extraction Strategies
+## 抽取策略
 
-### Strategy 1: Structured Input (Developer User Provides Rules)
+### 策略 1：结构化输入（开发者用户提供规则）
 
-When the developer user provides rules in xlsx, csv, or a structured document where each row/entry is a distinct rule with clear scope:
-- Follow their structure exactly. Do not re-decompose.
-- Map each row to a rule, preserving the developer user's identifiers.
-- Ask clarifying questions only if entries are ambiguous.
+当开发者用户以 xlsx、csv 或某种结构化文档提供规则、每一行/条目都是一条边界清晰的独立规则时：
+- 严格按对方的结构来，不要再拆。
+- 把每一行映射成一条规则，保留开发者用户的标识符。
+- 只在条目本身有歧义时才回问澄清。
 
-### Strategy 2: Hierarchical Extraction from Regulation Text
+### 策略 2：从源文中按层级抽取
 
-For raw regulation documents (PDF, DOCX, legal text):
+针对原始源文档（PDF、DOCX、法律文本、内部手册等）：
 
-1. **Survey the document structure.** Read the table of contents or scan headers. Understand the hierarchy: parts, chapters, sections, articles, clauses.
-2. **Identify rule-bearing sections.** Not every section contains a verification rule. Some are definitions, some are procedural, some are context. Focus on sections that impose obligations, prohibitions, thresholds, or requirements.
-3. **Peel the onion.** Start at the highest structural level and work downward:
-   - Level 1: What major areas does the regulation cover? (e.g., capital adequacy, risk disclosure, governance)
-   - Level 2: Within each area, what are the specific chapters or sections?
-   - Level 3: Within each section, what are the individual requirements?
-   - Stop peeling when you reach atomic rules.
-4. **Handle cross-references.** Regulations love to say "as defined in Section X" or "subject to the conditions in Article Y." Resolve these by including the referenced content in the rule's description, not just the reference.
-5. **Handle compound rules.** "The report must include (a) risk factors, (b) financial projections, and (c) management discussion" — this is three rules, not one. Decompose unless the developer user specifically wants them grouped.
+1. **先通览文档结构**。读目录或扫一遍标题，理解层级：编、章、节、条、款。
 
-For long documents (100+ pages), use the onion-peeler approach described in `references/chunking-strategies.md`. Do not try to read the entire document in one pass.
+   在抽取任何一条规则之前，**先把目录与章节标题从头到尾走一遍**。勾勒出"承载规则的层级结构"：哪些章节施加义务，哪些是定义/背景。一种常见失败模式：一份很长、条款很多的源文最终只产出非常少的规则——几乎可以肯定你是在"高密度章节"读完之后就停止了通览。先把你的"含规则章节跨度"显式定下来，然后用这个跨度作为参照去解释偏离，而不是用一个全局的目标数字去校准。
 
-### Strategy 3: Expert Notes
+2. **识别承载规则的章节**。并非每个章节都包含核查规则。有些是定义、有些是程序性、有些是背景。聚焦在那些设定义务、禁止、阈值或要求的章节。
+3. **像剥洋葱一样自顶向下**：
+   - Level 1：源文覆盖哪些大主题？（例如资本充足、风险披露、治理）
+   - Level 2：每个主题下面具体是哪些章节？
+   - Level 3：每个章节里又是哪些独立要求？
+   - 一直剥到原子规则为止。
+4. **处理交叉引用**。源文喜欢说"按第 X 节的定义"或"在第 Y 条的条件下"。把被引用的内容解析进规则的描述里，不要只留一个引用。
+5. **处理复合规则**。"报告必须包括（a）风险因素、（b）财务预测、（c）管理层讨论"——这是三条规则，不是一条。除非开发者用户明确要求合并，否则拆开。
 
-Sometimes rules come from the developer user's domain expertise rather than formal regulations:
-- "We always check that the guarantor's signature matches the name on page 1."
-- "If the collateral value is below 120% of the loan amount, flag it."
+对很长的文档，用"剥洋葱"做法 —— 完整策略和针对无清晰标题段落的"楔入法"兜底见 `document-chunking` skill。不要试图一遍读完整篇。
 
-Capture these with the same rigor as formal regulation rules. They are equally important in the verification app.
+### 策略 3：专家笔记
 
-## Rule Catalog
+有时候规则不来自正式源文，而来自开发者用户的领域经验：
+- "我们一直会核对担保人签字与第 1 页姓名是否一致。"
+- "如果抵押物估值低于贷款金额的 120%，就要 flag。"
 
-Maintain a lightweight catalog of all extracted rules. This is your index, not the rules themselves (those live in skill folders). The catalog should track:
+用同样的严谨度去捕获这些规则。在 verification app 里，它们与正式源文规则同等重要。
 
-- Rule ID (simple sequential: R001, R002, ...)
-- Rule title (one line)
-- Source (which regulation document, which section)
-- Status (extracted / skill-written / skill-tested / workflow-written / workflow-tested / production)
-- Dependencies (rules that must be checked before this one)
+## 规则目录（Rule Catalog）
 
-Format: a simple markdown table or JSON file. Do not over-engineer this. The catalog exists to give you and the developer user an overview of progress.
+为所有抽出的规则维护一份轻量目录。这是索引，不是规则本身（规则本身住在 skill 目录里）。目录应当跟踪：
 
-## Project Glossary
+- 规则 ID（顺序递增：R001、R002、…）
+- 规则标题（一行）
+- 来源（哪份源文档、哪一节）
+- 状态（extracted / skill-written / skill-tested / workflow-written / workflow-tested / production）
+- 依赖（必须先核查的前置规则）
 
-Alongside the rule catalog, build a project glossary — a living vocabulary of the entities, terms, and patterns the verification system encounters. The glossary is what keeps entity names consistent across rules: without it, the same balance-sheet item might be named "注册资本", "registered capital", and "paid-in capital" by three different rule skills, breaking shared-entity matching and producing inconsistent extraction outputs.
+格式：一张简单的 markdown 表或一份 JSON 文件即可。不要过度工程。目录的作用是让你和开发者用户对进度有一个总览。
 
-The glossary is not frozen at the end of extraction. It is a living document. Update it when you discover new aliases in samples, when a worker LLM extraction reveals a variant phrasing, when corner cases surface unfamiliar terminology. Both the coding agent and any operator can edit it.
+## 项目术语表（Glossary）
 
-### When to seed it
+在规则目录之外，建一份项目术语表 —— 一份活的词汇表，记录核查系统会遇到的实体、术语、模式。术语表的作用是在规则间保持实体名称一致：没有它，同一个资产负债表项目可能被三个不同的 rule skill 分别叫成"注册资本"、"registered capital"、"实收资本"，shared-entity 匹配会因此断裂，抽取输出也会不一致。
 
-During rule extraction. As you decompose each rule, note the entities the rule references — capital ratios, signature pages, related-party transactions, dates, parties, monetary values. Seed the glossary with the canonical name and any aliases already visible in the source documents.
+术语表在抽取阶段结束后并不冻结。它是活文档。当你在样本中发现新的别名、当一次 worker LLM 抽取暴露出一种变体表述、当边缘案例引出陌生术语时，都该更新它。coding agent 和运营人员都可以编辑。
 
-### Storage and shape
+### 何时开始填
 
-Save as `rules/glossary.json` next to `catalog.json`. Each entry is small:
+在规则抽取期间。当你拆解每条规则时，把它引用的实体记下来——资本比率、签字页、关联交易、日期、当事人、金额。先把规范名（canonical）和源文中已经可见的别名播种进去。
+
+### 存储和形状
+
+存为 `rules/glossary.json`，与 `catalog.json` 并列。每条条目很小：
 
 ```json
 {
@@ -250,48 +221,80 @@ Save as `rules/glossary.json` next to `catalog.json`. Each entry is small:
 }
 ```
 
-Status field tracks maturity: `extracted` (from rules), `validated` (confirmed in samples), `production` (used by deployed workflows). Add or drop fields as the project demands — same JIT philosophy as the rule schema.
+`status` 字段跟踪成熟度：`extracted`（来自规则）、`validated`（在样本中已确认）、`production`（已被部署的 workflow 使用）。需要时增删字段——和规则 schema 一样是 JIT 哲学。
 
-### How it integrates
+### 与下游怎么衔接
 
-- `rule-graph` consumes the glossary so `shares_entity` edges reference canonical labels rather than free-text strings.
-- `entity-extraction` references the glossary for canonical names and known aliases when designing extraction logic.
-- Skills authored under `skill-authoring` should use canonical names in their schemas.
+- `rule-graph` 用 glossary，让 `shares_entity` 边引用规范标签而不是自由文本。
+- `entity-extraction` 在设计抽取逻辑时参考 glossary 拿到规范名和已知别名。
+- `skill-authoring` 写出的 skill 在自己的 schema 中使用规范名。
 
-How the glossary is used downstream is a per-project judgment. A mature glossary may enable cheap pattern-based matching for some entities; for others it just keeps naming consistent. Let the cost-accuracy logic in `entity-extraction` decide per case.
+下游怎么用 glossary 是每个项目自行判断的事。一份成熟的 glossary 可能让某些实体的廉价模式匹配成为可能；另一些情况下它只是保证命名一致。由 `entity-extraction` 的成本-精度逻辑按 case 决定。
 
-## Handling Ambiguity
+## 处理歧义
 
-Regulations are often ambiguous. When you encounter ambiguity:
-1. Extract the rule as you understand it.
-2. Note the ambiguity explicitly in the rule description.
-3. Ask the developer user for clarification.
-4. Update the rule after receiving clarification.
+源文经常是模糊的。遇到歧义时：
+1. 按你的理解先把规则抽出来。
+2. 在规则描述里**显式**标注歧义点。
+3. 向开发者用户回问澄清。
+4. 拿到澄清后更新规则。
 
-Do not skip ambiguous rules. They are often the most important ones.
+不要跳过模糊规则。它们往往是最重要的那些。
 
-## Sanity-check applicability against the sample corpus
+## 用样本语料做适用性的健康检查
 
-After extracting your rule catalog and before authoring skills, do this 5-minute check: project each rule's applicability filter against the sample corpus.
+> 这是一次**验证扫描**，不是**发现扫描**。不要看到"0 样本规则"就急着删 —— 先回头问：源文是否要求这条规则？若是，把它标为"future scope"保留，而不是丢弃。
 
-For every rule:
-1. Walk `samples/`, classify each by product type / report type / document format
-2. For each rule, count how many samples it would apply to (per the rule's `applicability` field, scope filter, or whatever shape your catalog uses)
-3. Flag rules that apply to **0 samples** — they're either genuinely test-corpus-irrelevant (acceptable) or over-constrained (bug)
+抽完规则目录、写 skill 之前，做这个 5 分钟检查：把每条规则的适用性过滤投影到样本语料上。
 
-E2E #7 GLM produced a 97-rule catalog where 36 rules (37%) had `PASS=0 FAIL=0 NOT_APPLICABLE=90` across all 90 documents — they never fired. Some were legit (rules for cash-management products with no cash-management samples in corpus), but 36 inactive of 97 was high enough to suggest scope-too-narrow drift.
+对每条规则：
+1. 走一遍 `samples/`，把每一份按产品类型 / 报告类型 / 文档格式分类。
+2. 对每条规则，按它的 `applicability` 字段、scope 过滤或目录里对应的形状，数它可能适用于多少份样本。
+3. 标记适用样本数为 **0** 的规则 —— 它们要么是真正"在本测试语料中不相关"（可接受），要么是 scope 过紧（bug）。
 
-If many rules are 0-sample, either:
-- **Reframe their applicability** — broaden product types, look for evidence in headers/footers not just body, relax the scope filter
-- **Document them as "future scope"** and remove from this iteration's catalog (still capture them in a `rules/future_scope.md` so they're not forgotten)
-- **Update the test corpus** to include matching samples (work with the developer user)
+一种值得警惕的失败模式：目录里相当大比例（比如 30-40%）的规则在整批样本上都返回 `PASS=0 FAIL=0 NOT_APPLICABLE=all`。其中部分确实合法（源文要求核查的产品类型恰好不在本批样本中），但只要这个比例偏高，几乎总意味着 scope-too-narrow drift —— 适用性过滤过度具体化了。
 
-Catching this in `rule_extraction` is much cheaper than authoring 36 skills that then test as inactive in `skill_testing`. The cheap projection here is worth the time it saves later.
+如果很多规则都是 0 样本，要么：
+- **改写它们的适用性** —— 放宽产品类型、不仅在正文也在页眉页脚里找证据、松一下 scope 过滤
+- **把它们记作"future scope"** 并从本轮目录中移走（仍然写到 `rules/future_scope.md` 里，避免遗忘）
+- **更新测试语料** 加入匹配的样本（和开发者用户协作）
 
-## When Rules Change
+在 `rule_extraction` 阶段就抓出来，比写 N 条 skill 再到 `skill_testing` 阶段发现它们都不触发要便宜得多。这里花的廉价投影时间，后面能省很多。
 
-Regulations evolve. When the developer user adds new or updated regulation documents:
-1. Identify which existing rules are affected.
-2. Extract new rules or update existing ones.
-3. Mark affected workflows for re-testing.
-4. Use `version-control` to track the change.
+## 判断类型分类（覆盖率诊断）
+
+第一遍抽取完成后，按判断类型为每条规则打标签：
+
+- **Threshold（阈值型）** —— 数值比较（"年化利率 ≥ 15.4%"）
+- **Decision-Tree（决策树型）** —— 多分支（"若产品类型 ∈ {A, B} 则…"）
+- **Heuristic（语义判断型）** —— 语义评估（"营销话术是否暗示保本"）
+- **Process（过程合规型）** —— 流程合规（"是否在规定时限内发布"）
+
+如果你的规则集中 90% 都是 Threshold 型，那么"无法归约为数字"的语义/过程类义务很可能被漏掉了。**回头重新通览那些被你略过的章节**。在大多数规则语料中这四种类型的占比通常相对均衡；一旦严重偏斜，就是"漏读章节"的信号。
+
+## 保留细节（拒绝平滑化）
+
+在撰写规则的 `description` 与 `falsifiability_statement` 时，**原文中出现的每一个阈值、百分比、时限、命名实体都必须保留**。"在合理期限内披露"是一条模糊规则，下游写不出 check.py 一定会失败——原文几乎肯定写的是"15 个工作日内披露"。如果原文确实模糊（例如只写"及时"而无数字时限），就在规则中**显式标注模糊性**（例如 `notes: "原文使用'及时'，无数值时限"`），而不是用自己的判断去平滑掉。下游 skill-authoring 需要这些细节才能写出可执行的检查逻辑。
+
+## 样本访问的"软纪律"
+
+KC 不会硬性限制你访问样本的次数——工具调用是开放的。这里的纪律是**流程性纪律**：先走完"源文抽取"阶段，再进入"样本验证"阶段。在源文抽取阶段中，样本只是"术语澄清的兜底参考"，而不是"发现规则的入口"。如果你发现自己正在打开第 3 份样本来决定"下一条要抽什么规则"——你已经把方法论倒过来用了，**关掉样本，回到源文**。可以接受的窄例外：
+- 源文中的术语需要靠样本中的实例消歧
+- 验证一条规则的 `description` 字段套用到真实文档时表述是否通顺
+
+## 覆盖率追踪表（推荐交付物）
+
+抽取完成后，**逐段走一遍源文档**，为每一段打标：
+
+- `covered_by: [Rxxx, Ryyy]` —— 该条款的义务被哪些规则覆盖
+- `non_checkable: definition | context | cross_ref | scope` —— 该条款因属于定义/背景/纯引用/适用范围说明而被显式排除，并标注原因
+
+把结果写进 `rules/coverage_trace.md`（或合并到 `coverage_audit.md` 的一个章节）。这张表是已有的"样本侧适用性扫描"的**源文一侧的镜像**，能直接命中"长源文 → 规则少得可疑"这种失败模式。Engine 后续可以读取这张表来校验完整性。
+
+## 规则发生变化时
+
+源文档会演化。当开发者用户新增或更新源文档时：
+1. 识别受影响的现有规则。
+2. 抽出新规则或更新现有规则。
+3. 把受影响的 workflow 标记为需要重测。
+4. 用 `version-control` 跟踪这次变更。

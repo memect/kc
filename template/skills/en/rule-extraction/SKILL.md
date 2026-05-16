@@ -16,6 +16,12 @@ Data/entity extraction (`entity-extraction`) is the **repeating task** that runs
 
 Don't conflate the two. Rule extraction happens once; data extraction happens on every document.
 
+## Source-first sequencing
+
+Extract rules from the source text FIRST. Only after you have a complete first-pass catalog from sources alone should you open sample documents. The temptation is to peek at samples early to "see what kinds of rules matter" — this biases you toward rules the samples happen to exercise and silently drops rules the samples don't cover.
+
+A domain professional reads the source material, builds an understanding, then validates on samples — not the reverse. KC's differentiator over general-purpose agents is systematic accuracy across long context; that advantage compounds when you ground in the SOURCE not the EXAMPLES.
+
 ## Rule Structure: Location → Extraction → Judgment
 
 Every verification rule decomposes into three parts:
@@ -62,22 +68,17 @@ When rules change (additions, modifications, deprecations), version the entire r
 
 ## Granularity Calibration (read before extracting)
 
-A well-extracted rule catalog has **10-20 rules per typical regulation PDF**
-(a 30-80 page disclosure regulation). Over-extraction into 60-100 rules per
-regulation signals you're treating every clause as its own rule — downstream
-consumers (skill-authoring, workflow-run) can't distinguish meaningful
-checks from boilerplate.
+Rule catalogs come from diverse source materials — formal regulations, internal handbooks, case law, legal opinions, expert rule tables, regulator Q&A. There is no universal "right number of rules per page". Calibrate by logic, not by count:
 
-If your first pass produces more than ~25 rules for a single regulation:
-- **Merge rules that share evidence and fail together** (e.g., "must
-  disclose X" and "must disclose Y" where both come from the same
-  required-fields table → one rule: "must disclose the required-fields
-  list including X, Y").
-- **Drop procedural language** that isn't checkable against a report
-  (definitions, scope statements, references to other regs that just
-  transitively apply).
-- **Keep only checkable obligations, prohibitions, and thresholds** —
-  things where you can read a sample report and say pass or fail.
+- **Atomicity is the real test.** A rule that can produce two independent pass/fail outcomes is two rules. A rule whose verdict requires verifying three different paragraphs of the source is probably three rules.
+- **Boilerplate is not a rule.** Definitions, scope statements, transitive references to other regulations, and procedural language that can't be checked against the target document do not become rules.
+- **Keep only checkable obligations, prohibitions, and thresholds** — things where you can read a target document and say pass / fail / not-applicable.
+
+If your first pass feels too coarse (one rule per chapter, ignoring multiple distinct obligations within) — go finer. If it feels too fine (every clause in a definitions section is its own rule) — merge or drop. Then:
+
+- **Merge rules that share evidence and fail together** (e.g., "must disclose X" and "must disclose Y" where both come from the same required-fields table → one rule: "must disclose the required-fields list including X, Y").
+- **Drop procedural language** that isn't checkable against a target document.
+- **Convert each surviving rule into a falsifiability statement** — if you can't state precisely what would make it fail, you don't have a rule yet.
 
 ### Sample "good" rule
 
@@ -94,104 +95,58 @@ If your first pass produces more than ~25 rules for a single regulation:
 }
 ```
 
-Note: one pass/fail outcome, a single `source_ref` to a specific clause,
-clear applicability scope. Skill-authoring can write `check_r014.py` from
-this alone.
+Note: one pass/fail outcome, a single `source_ref` to a specific clause, clear applicability scope. Skill-authoring can write `check_r014.py` from this alone.
 
-### Cross-regulation dedup (when working across multiple PDFs)
+### Cross-source dedup (when working across multiple documents)
 
-If the developer user provides N regulations, rules from later regs often
-duplicate cross-cutting requirements already captured by earlier ones
-(e.g., a 2018 generic disclosure rule vs. a 2025 specific version).
-Before emitting a rule from reg N:
+If the developer user provides N source documents, rules from later sources often duplicate cross-cutting requirements already captured by earlier ones (e.g., a generic disclosure rule from an older regulation vs. a newer specific version of the same obligation). Before emitting a rule from source N:
 
-1. **Check the existing catalog.** Use `rule_catalog` (operation: list)
-   to see what's already there. Skip if a rule with equivalent scope +
-   intent exists.
+1. **Check the existing catalog.** Use `rule_catalog` (operation: list) to see what's already there. Skip if a rule with equivalent scope + intent exists.
 2. **Prefer the newer / more specific source_ref** when rules overlap.
-3. **If you merged rules**, record the consolidated sources in
-   `source_ref`: e.g., `"New Reg §15.2 + Old Reg §24"`.
+3. **If you merged rules**, record the consolidated sources in `source_ref`: e.g., `"New Reg §15.2 + Old Reg §24"`.
 
 ### Delegation to sub-agents
 
-If you dispatch extraction to sub-agents (one per regulation), the
-sub-agent inherits ONLY its `task_description` — it cannot see your
-conversation or existing catalog. Therefore, when composing the brief:
+If you dispatch extraction to sub-agents (one per source document), the sub-agent inherits ONLY its `task_description` — it cannot see your conversation or existing catalog. Therefore, when composing the brief:
 
-- **Specify the target count band** explicitly: "Extract 10-20 atomic
-  rules from this regulation."
-- **Include a sample rule** in the brief body (paste the JSON above
-  verbatim) so the sub-agent's calibration matches yours.
-- **Name every regulation the sub-agent should process.** If AGENT.md
-  lists 10 core regulations, the brief must list all 10 by name, not
-  "the core regs" as a pronoun — LLMs composing long structured briefs
-  frequently drop items (observed in session 6304673afaa0 where reg 02
-  was silently omitted).
-- **State the dedup contract**: "Rules already in the parent's catalog
-  (R001–Rnnn) should NOT be re-extracted. If a requirement is already
-  covered, skip it." Then pass the current catalog's ID ranges.
-- **Prefer `rule_catalog` create operations over sandbox_exec writes to
-  catalog.json.** rule_catalog uses workspace file locking;
-  sandbox_exec bypasses it and races with other writers.
+- **Anchor calibration with a concrete sample rule.** Paste the JSON above verbatim into the brief body so the sub-agent's atomicity calibration matches yours.
+- **Name every source document the sub-agent should process.** If AGENT.md lists 10 core source documents, the brief must list all 10 by name, not "the core regs" as a pronoun — LLMs composing long structured briefs frequently drop items silently.
+- **State the dedup contract**: "Rules already in the parent's catalog (R001–Rnnn) should NOT be re-extracted. If a requirement is already covered, skip it." Then pass the current catalog's ID ranges.
+- **Prefer `rule_catalog` create operations over sandbox_exec writes to catalog.json.** rule_catalog uses workspace file locking; sandbox_exec bypasses it and races with other writers.
 
-## How to read regulation files (default: read whole)
+## How to read source files (default: read whole)
 
-Regulations are the audit's authoritative basis. Every `source_ref`
-in your extracted rules must be verifiable against the source text.
-For typical regulation documents (a single file under ~50 KB / under
-~100 pages), **read each regulation file whole using `workspace_file`
-(operation=read) in a single call**:
+Source documents are the catalog's authoritative basis. Every `source_ref` in your extracted rules must be verifiable against the source text. For typical source documents (a single file under ~50 KB / under ~100 pages), **read each source file whole using `workspace_file` (operation=read) in a single call**:
 
 ```js
-workspace_file({ operation: "read", scope: "project", path: "Rules/01_some_regulation.md" })
+workspace_file({ operation: "read", scope: "project", path: "Rules/01_some_source.md" })
 ```
 
-`workspace_file.read` is capped at 50,000 chars per call, which
-covers virtually every individual regulation document. This is the
-default. **Read every regulation file whole before you start
-extracting rules from any of them.**
+`workspace_file.read` is capped at 50,000 chars per call, which covers virtually every individual source document. This is the default. **Read every source file whole before you start extracting rules from any of them.**
 
 ### Tool choice — `workspace_file` vs `sandbox_exec`
 
 | Tool | Per-call cap | Use for |
 |---|---:|---|
-| `workspace_file` (read) | 50,000 chars | **full reads of regulation / rule documents** |
+| `workspace_file` (read) | 50,000 chars | **full reads of source / rule documents** |
 | `sandbox_exec` (cat/head/etc) | 10,000 chars | shell commands, **not** full file reads |
 
-`sandbox_exec` is designed for shell commands; its 10K cap is too
-small for most regulations. `cat rules/01_*.md` returns only the
-first ~10 KB followed by `\n[truncated]`. Re-issuing with `head -N` /
-`tail -M` to scroll the window loses positional precision and burns
-turns. **When you see truncation, don't fight the cap — switch
-tools.**
+`sandbox_exec` is designed for shell commands; its 10K cap is too small for most regulations. `cat rules/01_*.md` returns only the first ~10 KB followed by `\n[truncated]`. Re-issuing with `head -N` / `tail -M` to scroll the window loses positional precision and burns turns. **When you see truncation, don't fight the cap — switch tools.**
 
-### Asymmetry — regs read whole, samples sampled
+### Asymmetry — sources read whole, samples sampled
 
-Regulations are limited (typically 1-10 files), authoritative, and
-read once. Read every regulation whole.
+Source documents are limited (typically 1-10 files), authoritative, and read once. Read every source file whole.
 
-Sample documents may number 30 to 1000+, are heterogeneous, and get
-read many times during testing. **Don't try to read every sample
-whole.** Use rule-applicability filters or sampled subsets to focus
-attention.
+Sample documents may number 30 to 1000+, are heterogeneous, and get read many times during testing. **Don't try to read every sample whole.** Use rule-applicability filters or sampled subsets to focus attention.
 
-### Escape valve — when a single reg exceeds ~200K chars
+### Escape valve — when a single source exceeds ~200K chars
 
-Rare in practice. The largest regulation in `test_data_4` is 42 KB;
-typical Chinese banking regs (资管新规, 信披办法, etc.) all fit
-under 50 KB. But if you do encounter a single regulation so large
-that reading it whole would crowd the context window — heuristic:
-the file exceeds ~200,000 chars or ~25% of your context budget —
-use your own judgment:
+Rare in practice — most regulation, handbook, or rule-table documents fit comfortably under 50 KB. But if you do encounter a single source document so large that reading it whole would crowd the context window — heuristic: the file exceeds ~200,000 chars or ~25% of your context budget — use your own judgment:
 
-- Read by chapter (e.g., `第X章` / `Chapter X`) using `document_parse`
-  or paginated `workspace_file` reads
-- Or build an in-workspace index file pointing to chapter offsets and
-  read on-demand per rule being extracted
+- Read by chapter (e.g., `第X章` / `Chapter X`) using `document_parse` or paginated `workspace_file` reads
+- Or build an in-workspace index file pointing to chapter offsets and read on-demand per rule being extracted
 
-The 50 KB cap is high enough that this almost never triggers. **The
-default is read whole; deviate only when the file genuinely doesn't
-fit.**
+The 50 KB cap is high enough that this almost never triggers. **The default is read whole; deviate only when the file genuinely doesn't fit.**
 
 ## Extraction Strategies
 
@@ -202,11 +157,14 @@ When the developer user provides rules in xlsx, csv, or a structured document wh
 - Map each row to a rule, preserving the developer user's identifiers.
 - Ask clarifying questions only if entries are ambiguous.
 
-### Strategy 2: Hierarchical Extraction from Regulation Text
+### Strategy 2: Hierarchical Extraction from Source Text
 
-For raw regulation documents (PDF, DOCX, legal text):
+For raw source documents (PDF, DOCX, legal text, handbooks, case collections):
 
 1. **Survey the document structure.** Read the table of contents or scan headers. Understand the hierarchy: parts, chapters, sections, articles, clauses.
+
+   Before extracting any rule, traverse the table of contents and section headers end-to-end. Sketch the rule-bearing hierarchy: which chapters impose obligations, which are definitions / context. A common failure mode: a long source with many articles yields disproportionately few rules — almost always meaning you stopped surveying after the high-density chapters. Decide your rule-bearing chapter span explicitly, then justify deviations relative to that span rather than to a single global count target.
+
 2. **Identify rule-bearing sections.** Not every section contains a verification rule. Some are definitions, some are procedural, some are context. Focus on sections that impose obligations, prohibitions, thresholds, or requirements.
 3. **Peel the onion.** Start at the highest structural level and work downward:
    - Level 1: What major areas does the regulation cover? (e.g., capital adequacy, risk disclosure, governance)
@@ -216,7 +174,7 @@ For raw regulation documents (PDF, DOCX, legal text):
 4. **Handle cross-references.** Regulations love to say "as defined in Section X" or "subject to the conditions in Article Y." Resolve these by including the referenced content in the rule's description, not just the reference.
 5. **Handle compound rules.** "The report must include (a) risk factors, (b) financial projections, and (c) management discussion" — this is three rules, not one. Decompose unless the developer user specifically wants them grouped.
 
-For long documents (100+ pages), use the onion-peeler approach described in `references/chunking-strategies.md`. Do not try to read the entire document in one pass.
+For long documents, use the onion-peeler approach — see the `document-chunking` skill for the full strategy and the wedge-driving fallback for sections without clear headers. Do not try to read the entire document in one pass.
 
 ### Strategy 3: Expert Notes
 
@@ -285,6 +243,8 @@ Do not skip ambiguous rules. They are often the most important ones.
 
 ## Sanity-check applicability against the sample corpus
 
+> This is a validation pass, not a discovery pass. Do not let 0-sample rules tempt you to delete them at this stage — first ask whether the source requires them; if yes, keep them as "future scope" rather than drop.
+
 After extracting your rule catalog and before authoring skills, do this 5-minute check: project each rule's applicability filter against the sample corpus.
 
 For every rule:
@@ -292,14 +252,44 @@ For every rule:
 2. For each rule, count how many samples it would apply to (per the rule's `applicability` field, scope filter, or whatever shape your catalog uses)
 3. Flag rules that apply to **0 samples** — they're either genuinely test-corpus-irrelevant (acceptable) or over-constrained (bug)
 
-E2E #7 GLM produced a 97-rule catalog where 36 rules (37%) had `PASS=0 FAIL=0 NOT_APPLICABLE=90` across all 90 documents — they never fired. Some were legit (rules for cash-management products with no cash-management samples in corpus), but 36 inactive of 97 was high enough to suggest scope-too-narrow drift.
+A failure mode worth flagging: a catalog where a large fraction of rules (say 30-40%) return `PASS=0 FAIL=0 NOT_APPLICABLE=all` across the entire sample set. Some inactive rules are legitimate (the source requires checks for a product type the corpus doesn't happen to contain), but a high inactive ratio almost always signals scope-too-narrow drift — applicability filters that over-specify.
 
 If many rules are 0-sample, either:
 - **Reframe their applicability** — broaden product types, look for evidence in headers/footers not just body, relax the scope filter
 - **Document them as "future scope"** and remove from this iteration's catalog (still capture them in a `rules/future_scope.md` so they're not forgotten)
 - **Update the test corpus** to include matching samples (work with the developer user)
 
-Catching this in `rule_extraction` is much cheaper than authoring 36 skills that then test as inactive in `skill_testing`. The cheap projection here is worth the time it saves later.
+Catching this in `rule_extraction` is much cheaper than authoring N skills that then test as inactive in `skill_testing`. The cheap projection here is worth the time it saves later.
+
+## Logic-type taxonomy (coverage diagnostic)
+
+After first-pass extraction, classify each rule by judgment type:
+
+- **Threshold** — numeric comparison ("annualized rate ≥ 15.4%")
+- **Decision-Tree** — multi-branch ("if product type ∈ {A, B} then ...")
+- **Heuristic** — semantic judgment ("does marketing copy imply principal guarantee")
+- **Process** — procedural compliance ("published within the required deadline")
+
+If your catalog is 90% Threshold rules, you have likely missed the semantic / process obligations that don't reduce to a number. Re-survey for those. The four types are roughly comparable in frequency across most rule corpora; a heavy skew is a signal to look again at the chapters or sections you skimmed.
+
+## Preserve specifics (anti-summarize)
+
+When writing a rule's `description` and `falsifiability_statement`, preserve every threshold, percentage, deadline, and named entity from the source. "Disclose within a reasonable period" is a vague rule and will fail downstream — the source almost certainly says "within 15 business days." If the source IS genuinely vague, flag the ambiguity explicitly (e.g., `notes: "source uses '及时'; no numeric deadline"`) rather than smoothing it. Downstream skill-authoring will need the specifics to write check.py logic.
+
+## Soft sample-access discipline
+
+You have unlimited tool access to samples — KC does not cap you. The discipline is procedural: source-extraction phase first, then validation phase. Inside source-extraction phase, samples are a last-resort reference for clarifying terminology, not a discovery surface. If you find yourself opening sample N° 3 to figure out what to extract next, you have inverted the methodology — close the sample, return to the source. Acceptable narrow exceptions:
+- A jargon term in the source needs example resolution
+- Sanity-check that a rule's `description` field reads coherently when applied to a real document
+
+## Coverage trace (recommended deliverable)
+
+After extraction, walk the source document paragraph-by-paragraph and tag each as either:
+
+- `covered_by: [Rxxx, Ryyy]` — articles whose obligations became one or more rules
+- `non_checkable: definition | context | cross_ref | scope` — articles excluded with explicit reason
+
+Write this as `rules/coverage_trace.md` (or a section in `coverage_audit.md`). This is the source-side mirror of the existing sample-side applicability check, and catches the "long source → suspiciously few rules" failure mode directly. Engine derivation can read this trace to validate completeness later.
 
 ## When Rules Change
 
