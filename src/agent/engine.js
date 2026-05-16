@@ -229,6 +229,17 @@ export class AgentEngine {
     // marker, no inbox.jsonl. Driver instance set by enterMarathonMode(),
     // cleared by exitMarathonMode(). Query via this.marathonDriver.
     this.marathonDriver = null;
+    // v0.8.2 P12-A: marathon goal text. Pinned at system-prompt level via
+    // ContextAssembler so it survives context_windowed eviction (the v0.8.1
+    // regression). Stored alongside marathonDriver lifecycle.
+    this.marathonGoal = null;
+    // v0.8.2 P12-B: shared user-input queue between TUI and engine. The TUI
+    // queues mid-run typed messages here; the marathon decision loop drains
+    // this queue BEFORE asking the driver for a continuation, so user
+    // interrupts always win over driver autonomy. Fixes the v0.8.1 silent
+    // queue-starvation where /marathon mode kept the user message in a
+    // TUI-local queue that never reached the engine.
+    this.inputQueue = [];
 
     // Context windowing
     this.contextWindow = new ContextWindow({
@@ -798,6 +809,7 @@ export class AgentEngine {
       pipelineState: this.pipelines[this.currentPhase]?.describeState?.() || null,
       workspaceState: this._buildWorkspaceState(),
       projectMemory: this._readProjectMemory(),
+      marathonGoal: this.marathonGoal,
     });
     const systemTokens = estimateTokens(systemPrompt);
     const messageTokens = estimateMessagesTokens(this.history.messages);
@@ -1239,6 +1251,7 @@ export class AgentEngine {
       pipelineState,
       workspaceState: this._buildWorkspaceState(),
       projectMemory: this._readProjectMemory(),
+      marathonGoal: this.marathonGoal,
     });
     const tools = this.toolRegistry.schemasOpenai();
 
@@ -2468,6 +2481,18 @@ export class AgentEngine {
     // v0.8.0; the I/O wrapper just shifted from filesystem-watcher to
     // direct method calls.
     while (this.marathonDriver) {
+      // v0.8.2 P12-B: user-input queue priority. Drain queued user messages
+      // FIRST so mid-run nudges always win over driver autonomy. Fixes the
+      // v0.8.1 silent queue-starvation: the TUI used to queue messages in a
+      // local ref that only drained after runTurn() returned, but the
+      // marathon loop never returns while the driver is active. Now the
+      // engine owns the queue; TUI hands off via queueUserInput().
+      const queuedUserInput = this._drainNextQueuedUserInput();
+      if (queuedUserInput) {
+        yield* this.runTurn(queuedUserInput);
+        continue;
+      }
+
       const turnsSnapshot = this.marathonDriver.turnsThisPhase;
       const phaseChanged = this.currentPhase !== this.marathonDriver.currentPhase;
       const milestones = this._buildEngineCountsBlock(this.currentPhase) || {};
@@ -2485,6 +2510,7 @@ export class AgentEngine {
           decisions: this.marathonDriver.decisionCount,
         });
         this.marathonDriver = null;
+        this.marathonGoal = null;
         break;
       }
       this.eventLog.append("marathon_decision", {
@@ -2493,7 +2519,8 @@ export class AgentEngine {
         phase: this.currentPhase,
       });
       yield* this.runTurn(decision.prompt);
-      // Loop back: another turn just completed; driver gets another decideNext call.
+      // Loop back: another turn just completed; engine queue + driver both
+      // get another chance via the next iteration's drain-then-decide.
     }
   }
 
@@ -2511,6 +2538,7 @@ export class AgentEngine {
     if (this.marathonDriver) {
       throw new Error("Marathon already active — use /marathon off to disengage first");
     }
+    this.marathonGoal = goal;
     this.marathonDriver = new MarathonDriver({
       goal,
       language: this.config.language || "en",
@@ -2534,12 +2562,58 @@ export class AgentEngine {
       decisions: this.marathonDriver.decisionCount,
     });
     this.marathonDriver = null;
+    this.marathonGoal = null;
     return status;
   }
 
   /** v0.8.1 P8-A: is marathon mode currently active? (for TUI status bar) */
   isMarathonActive() {
     return !!this.marathonDriver && !this.marathonDriver.stopped;
+  }
+
+  /**
+   * v0.8.2 P12-B: queue a user-typed message for the engine to pick up at
+   * the next turn boundary. Called by the TUI when the user types during an
+   * in-flight marathon turn. The marathon decision loop drains this queue
+   * BEFORE asking the driver for a continuation, so user interrupts always
+   * win over driver autonomy.
+   *
+   * @param {string} text — user-typed message
+   */
+  queueUserInput(text) {
+    if (!text || typeof text !== "string") return;
+    this.inputQueue.push(text);
+    this.eventLog.append("user_input_queued", {
+      preview: text.slice(0, 100),
+      queueDepth: this.inputQueue.length,
+      marathonActive: this.isMarathonActive(),
+    });
+  }
+
+  /**
+   * v0.8.2 P12-B: drain the next queued user input, or null if empty.
+   * Internal helper for the marathon decision loop.
+   *
+   * @returns {string|null}
+   */
+  _drainNextQueuedUserInput() {
+    if (this.inputQueue.length === 0) return null;
+    const text = this.inputQueue.shift();
+    this.eventLog.append("user_input_drained", {
+      preview: text.slice(0, 100),
+      queueDepth: this.inputQueue.length,
+    });
+    return text;
+  }
+
+  /**
+   * v0.8.2 P12-B: query the queue depth without draining.
+   * Used by TUI to display "Queued (N waiting)" indicator.
+   *
+   * @returns {number}
+   */
+  getQueueDepth() {
+    return this.inputQueue.length;
   }
 
   /**

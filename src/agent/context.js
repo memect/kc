@@ -152,10 +152,26 @@ export class ContextAssembler {
    * @param {string} [opts.projectMemory] - v0.7.0 B3: rules/PATTERNS.md
    *   content. Capped at ~5 KB by the caller. Surfaced for phases the
    *   work-decomposition skill operates in (skill_authoring + skill_testing).
+   * @param {string} [opts.marathonGoal] - v0.8.2 P12-A: the active marathon
+   *   goal text. Pinned at the system-prompt layer (never windowed) for the
+   *   duration of the marathon session. Surfaced only when marathon mode is
+   *   active; absent otherwise. Fixes the v0.8.1 regression where the goal
+   *   user_message got evicted by context_windowed before distillation, so
+   *   agents reverted to default behavior mid-run.
    * @returns {string}
    */
-  build({ agentMd, pipelineState, workspaceState, skillIndex, projectMemory } = {}) {
+  build({ agentMd, pipelineState, workspaceState, skillIndex, projectMemory, marathonGoal } = {}) {
     const parts = [AGENT_IDENTITY];
+    if (marathonGoal) {
+      parts.push(
+        "## Marathon goal (pinned for the duration of this session)\n\n" +
+        marathonGoal.trim() + "\n\n" +
+        "You are running in marathon mode — no manual user check-ins between " +
+        "phases. This goal is your north star; keep returning to it as you " +
+        "advance through the pipeline. If a continuation prompt focuses on " +
+        "phase mechanics, the goal above tells you *why*.",
+      );
+    }
     if (agentMd) parts.push(agentMd);
     if (skillIndex) parts.push(skillIndex);
     if (projectMemory) {
