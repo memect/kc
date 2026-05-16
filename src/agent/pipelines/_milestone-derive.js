@@ -205,7 +205,18 @@ export function deriveRuleExtractionMilestones(workspace) {
       for (const r of items) {
         if (r && typeof r.id === "string" && r.id.length) {
           rulesExtracted.push(r.id);
-          if (Array.isArray(r.source_chunk_ids) && r.source_chunk_ids.length > 0) {
+          // v0.8.2 P13-C: accept any of three field names for chunk
+          // references. Engine historically looked only for
+          // `source_chunk_ids`, but 贷款 v0.8.1 + 资管 v0.8.1 catalogs
+          // wrote `chunk_ids` (the shorter form agents naturally pick
+          // from the rule-extraction skill examples). `chunk_refs` is
+          // a legacy alias from older audit docs. Any non-empty match
+          // counts.
+          const chunks = (Array.isArray(r.source_chunk_ids) && r.source_chunk_ids)
+            || (Array.isArray(r.chunk_ids) && r.chunk_ids)
+            || (Array.isArray(r.chunk_refs) && r.chunk_refs)
+            || null;
+          if (chunks && chunks.length > 0) {
             rulesWithChunkRefs.push(r.id);
           }
         }
@@ -331,6 +342,37 @@ export function deriveSkillAuthoringMilestones(workspace) {
         }
       } catch { /* best-effort */ }
     }
+
+    // v0.8.2 P13-D: also credit rule_ids declared in rule_mapping.json.
+    // 资管 v0.8.1 wrote 6 thematic-overlay dirs (R01_periodic_report,
+    // R02_custodian_core, etc.) each containing a rule_mapping.json that
+    // maps rule_ids to engine-level check function names. The dirs have
+    // no own check.py because the actual implementation lives in
+    // workspace-root verify_v*.py. Without recognizing rule_mapping.json,
+    // the engine treats them as orphan dirs.
+    //
+    // Rule-id formats in the wild include both bare-numeric (R01, R027)
+    // and compound (R01-05, R02-08). canonicalRuleId() only handles the
+    // bare form, so we accept either canonicalized form OR a raw key
+    // that looks like a rule id (matches R\d+ optionally followed by
+    // `-` or `_` and more digits).
+    try {
+      const mappingPath = path.join(skillPath, "rule_mapping.json");
+      if (fileExists(mappingPath)) {
+        const mapping = readJsonSafe(mappingPath);
+        if (mapping && typeof mapping === "object" && !Array.isArray(mapping)) {
+          for (const key of Object.keys(mapping)) {
+            const canon = canonicalRuleId(key);
+            if (canon) {
+              ruleIdsCovered.add(canon);
+            } else if (/^R0*\d+[-_]?\d*$/i.test(key.trim())) {
+              // Compound form like "R01-05" — preserve as-is
+              ruleIdsCovered.add(key.trim());
+            }
+          }
+        }
+      }
+    } catch { /* best-effort */ }
   }
 
   // v0.8 P2-F (item 22): count stub-shaped check.py files. Pairs with
