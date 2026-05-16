@@ -32,6 +32,16 @@ export class LLMClient {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.authType = authType;
     this.apiFormat = apiFormat;
+    // v0.8.2 P14-A: request-level timeout for fetch. SiliconFlow GLM-5.1
+    // streams hung 8h+ overnight in E2E #12 with no HTTP-level cutoff.
+    // 10 min ceiling (configurable via KC_LLM_REQUEST_TIMEOUT_MS) lets the
+    // marathon driver's `error: terminated` → recovery path kick in within
+    // minutes instead of hours when the upstream stalls a request without
+    // closing the TCP connection.
+    const envTimeout = parseInt(process.env.KC_LLM_REQUEST_TIMEOUT_MS || "0", 10);
+    this.requestTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0
+      ? envTimeout
+      : 10 * 60 * 1000;
   }
 
   /**
@@ -196,10 +206,15 @@ export class LLMClient {
     let resp;
     try {
       resp = await withRetry(async () => {
+        // v0.8.2 P14-A: AbortSignal.timeout for stream connect + per-chunk
+        // forward progress. Hung streams (SiliconFlow GLM-5.1 overnight,
+        // E2E #12) abort within requestTimeoutMs and surface as an error
+        // event the marathon driver can recover from.
         const r = await fetch(this._getEndpoint(), {
           method: "POST",
           headers: this._buildHeaders(),
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
         });
         if (!r.ok) {
           const text = await r.text();
@@ -215,7 +230,13 @@ export class LLMClient {
       // A8: Any pre-stream failure (network, auth, 4xx/5xx after retry) is
       // tagged and re-thrown. Engine's outer catch sees exactly one tagged
       // error event.
-      if (!err.streamTermination) err.streamTermination = "connect_error";
+      // v0.8.2 P14-A: AbortError from AbortSignal.timeout marks request_timeout
+      // distinctly so audits can count these vs. generic connect errors.
+      if (err.name === "TimeoutError" || err.name === "AbortError") {
+        err.streamTermination = "request_timeout";
+      } else if (!err.streamTermination) {
+        err.streamTermination = "connect_error";
+      }
       throw err;
     }
 
@@ -256,10 +277,12 @@ export class LLMClient {
     const body = this._buildNonStreamBody({ model, messages, maxTokens });
 
     const resp = await withRetry(async () => {
+      // v0.8.2 P14-A: same request-level timeout as streamChat for symmetry.
       const r = await fetch(this._getEndpoint(), {
         method: "POST",
         headers: this._buildHeaders(),
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
       if (!r.ok) {
         const text = await r.text();
