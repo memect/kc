@@ -164,3 +164,24 @@ Every evolution cycle (see `evolution-loop`) should:
 3. Log the version change with the evolution iteration number.
 
 The version history, combined with the evolution logs, gives you a complete timeline of how the system evolved and why.
+
+## Per-rule check.py — preserve v1 before v2 rewrite
+
+When iterating a rule's verification logic from a v1 baseline (often
+pure regex) to a v2 implementation (often LLM-augmented or hybrid),
+**copy the v1 file to a sibling before overwriting**:
+
+```bash
+cp rule_skills/Rxx/check.py rule_skills/Rxx/check_v1.py
+# now write the v2 version to check.py
+```
+
+Convention:
+- `check.py` always points at the current best version
+- `check_v1.py`, `check_v2.py`, ... preserve prior iterations
+
+This way the v1 lives alongside v2 in the same directory rather than
+relying on workspace git archaeology (`git log -- check.py` works but
+is friction). Engine-level `verify_engine_v1.py` / `verify_engine_v2.py`
+preserve the orchestrator separately; per-rule files need their own
+convention.

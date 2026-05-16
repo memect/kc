@@ -87,6 +87,19 @@ Update AGENT.md at natural checkpoints: after the developer user gives you a sub
 
 A future session resumes by reading AGENT.md first. The richer it is, the less re-explanation the developer user has to do.
 
+### Phase-transition cadence
+
+A recurring failure mode worth flagging: agents bootstrap AGENT.md richly, then never touch it again — many hours of phase work pass without a single AGENT.md commit. That defeats the long-term-memory purpose.
+
+Cadence to adopt: **append a one-line decision log to AGENT.md at each phase transition**. Format:
+
+```
+[<timestamp> | rule_extraction → skill_authoring]
+N rules extracted; coverage_audit complete; R03/R05/R07 flagged judgment-heavy.
+```
+
+Three lines of friction per phase transition; thirty lines of insight for the next auditor / next session. The format is loose — the cadence matters more than perfect prose.
+
 ## When to Re-Bootstrap
 
 Return to this skill when:
