@@ -1,76 +1,76 @@
-# Sampling Strategies for Quality Control
+# 质控抽样策略
 
-## Adaptive Sampling
+## 自适应抽样
 
-The core idea: review more when you are uncertain, less when you are confident. Confidence grows with evidence — consecutive batches of high accuracy.
+核心思想：不确定时多复核，有把握时少复核。把握随证据增长——也就是连续多个批次的高准确率。
 
-### Continuous Decay Model
+### 连续衰减模型
 
-Rather than cliff-edge transitions between phases, use a smooth exponential decay driven by observed accuracy:
+不要在阶段之间做悬崖式切换，而是用一条由实测准确率驱动的平滑指数衰减曲线：
 
 ```
 sampling_rate = max(floor_rate, exp(-λ × consecutive_successes))
 ```
 
-Where:
-- `consecutive_successes`: number of consecutive batches where accuracy meets or exceeds the threshold. **Resets to 0** whenever a batch's accuracy drops below the threshold. This is the self-correcting mechanism — quality drops immediately increase monitoring.
-- `λ` (decay speed): controlled by MONITOR_FREQUENCY in `.env`.
-- `floor_rate`: the minimum sampling rate, never goes below this.
+其中：
+- `consecutive_successes`：准确率达到或超过阈值的连续批次数。**任何一个批次的准确率跌破阈值，立即重置为 0**。这是系统的自纠正机制——质量一旦下滑就立即提高监控频率。
+- `λ`（衰减速度）：由 `.env` 中的 MONITOR_FREQUENCY 控制。
+- `floor_rate`：抽样率的下限，永远不低于此值。
 
-### MONITOR_FREQUENCY Mapping
+### MONITOR_FREQUENCY 映射
 
-| Setting | λ | floor_rate | Character |
+| 设置 | λ | floor_rate | 风格 |
 |---------|---|------------|-----------|
-| `high` | 0.1 | 0.10 | Slow decay, cautious — for high-stakes verification where errors are costly |
-| `mid` | 0.2 | 0.05 | Balanced decay — standard for most scenarios |
-| `low` | 0.3 | 0.05 | Fast decay — for well-understood domains with simple rules |
+| `high` | 0.1 | 0.10 | 衰减慢，谨慎——适用于高风险核查，错漏代价大 |
+| `mid` | 0.2 | 0.05 | 平衡衰减——多数场景的标准设置 |
+| `low` | 0.3 | 0.05 | 衰减快——适用于规则简单、域知识成熟的场景 |
 
-As a rough mental model of the curve shape (for `mid`):
-- After 1 success: ~82% sampling
-- After 3 successes: ~55%
-- After 5 successes: ~37%
-- After 10 successes: ~14%
-- After 15 successes: ~5% (floor)
+以下是该曲线形状的粗略心理模型（`mid` 配置下）：
+- 连续 1 次成功后：约 82% 抽样
+- 连续 3 次成功后：约 55%
+- 连续 5 次成功后：约 37%
+- 连续 10 次成功后：约 14%
+- 连续 15 次成功后：约 5%（下限）
 
-These numbers, the formula, and even the exponential shape are recommended defaults. The coding agent and developer user should discuss and calibrate based on the specific business scenario. If a different decay function (linear, sigmoid, or hand-tuned) works better, use it. The framework — accuracy-driven decay with reset on quality drop — matters more than the specific formula.
+这些数字、这个公式、乃至指数形状本身，都是推荐默认值。编程智能体应与开发者用户讨论后，根据具体业务场景做校准。如果其他衰减函数（线性、sigmoid 或人工调好的曲线）更合适，就用它。重要的是框架——"由准确率驱动、质量下滑立即重置"——而不是某条具体公式。
 
-## Priority Sampling
+## 优先级抽样
 
-Not all results are equally worth reviewing. Priority sampling ensures that the most informative results are always in the review set:
+不是所有结果都同样值得复核。优先级抽样确保信息量最高的结果始终进入复核集合：
 
-### Always Review
-- Results where the workflow reported low confidence (below the full-review threshold from `confidence-system`).
-- Results where the workflow produced an error or missing result.
-- Results from document types not seen during skill/workflow testing.
+### 必须复核
+- 工作流自报置信度偏低的结果（低于 `confidence-system` 中的全量复核阈值）。
+- 工作流报错或结果缺失的条目。
+- 来自技能/工作流测试中未出现过的文档类型的结果。
 
-### Usually Review
-- Results where the workflow's confidence is in the medium band.
-- Results from rules that historically have lower accuracy.
-- Results from the first occurrence of a new document format or variant.
+### 通常复核
+- 工作流置信度处于中段的结果。
+- 历史准确率较低的规则产出的结果。
+- 新文档格式或变体首次出现时的结果。
 
-### Spot-Check
-- Results with high confidence from rules that historically have high accuracy.
-- These are selected randomly from the high-confidence pool.
-- The purpose is regression detection, not active improvement.
+### 抽查
+- 来自历史准确率高的规则、且置信度高的结果。
+- 从高置信度池中随机挑选。
+- 目的在于回归检测，不在于主动改进。
 
-## Stratified Sampling
+## 分层抽样
 
-When documents vary significantly in complexity or type, stratify the sample:
+当文档在复杂度或类型上差异显著时，对样本进行分层：
 
-1. **Group documents** by type, complexity, or any relevant characteristic.
-2. **Sample proportionally** from each group, ensuring that minority groups are represented.
-3. **Over-sample** from groups that historically have lower accuracy.
+1. **分组**：按文档类型、复杂度或任何相关特征划分。
+2. **按比例抽样**：从每个分组按比例抽取，确保少数派分组也有代表。
+3. **过采样**：对历史准确率较低的分组提高采样比例。
 
-This prevents the random sample from being dominated by easy documents while missing systematic failures in hard documents.
+这样可以防止随机样本被简单文档主导，从而错过难文档中的系统性失败。
 
-## Confidence Calibration Check
+## 置信度校准检查
 
-Periodically (every N batches), run a calibration check:
+每 N 个批次定期做一次校准检查：
 
-1. Take a random sample of high-confidence results.
-2. Review them (LLM-as-Judge or human).
-3. Compare: are 90%+ of "high confidence" results actually correct?
-4. If not, the confidence system needs recalibration (see `confidence-system` skill).
-5. If yes, you can safely reduce the sampling rate for high-confidence results.
+1. 从高置信度结果中随机抽取样本。
+2. 复核（用 LLM-as-Judge 或人工）。
+3. 比对：是否 90%+ 的"高置信度"结果确实是正确的？
+4. 若不是，置信度系统需要重新校准（参见 `confidence-system` 技能）。
+5. 若是，则可放心降低高置信度结果的抽样率。
 
-This is a meta-check on the quality of the quality control system itself.
+这是对质控系统本身质量的一次元层级检查。

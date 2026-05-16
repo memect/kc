@@ -1,62 +1,62 @@
-# Convergence Guide
+# 收敛诊断指南
 
-Diagnostic procedures and real-world data for understanding when the evolution loop is converging, stalling, or regressing.
+用于判断演化循环是在收敛、停滞还是回退的诊断流程与真实数据。
 
-## Empirical Data
+## 实证数据
 
-### The Shiji Project — Event Dating Reflection
+### 史记项目——历史事件日期回顾
 
-A document verification project for historical event dating across regulatory filings. Five rounds of evolution:
+一个针对监管报送文档进行历史事件日期核查的项目。共进行了五轮演化：
 
-- **Round 1**: 1,010 corrections (first pass — many extraction and judgment errors across the board).
-- **Round 2**: 431 corrections (systematic fixes applied — regex patterns, prompt refinements).
-- **Round 3**: 465 corrections (regression — round 2 fix for date normalization introduced new failures on edge-case date formats).
-- **Round 4**: 167 corrections (stabilizing — round 3 regression diagnosed and resolved, remaining issues are corner cases).
-- **Round 5**: 46 corrections (converged — below 5% threshold, no new patterns, no regressions).
+- **第 1 轮**：1,010 项修正（首轮——抽取与判定环节都有大量错误）。
+- **第 2 轮**：431 项修正（系统性修复——调整正则模式、改写提示词）。
+- **第 3 轮**：465 项修正（回退——第 2 轮的日期标准化修复在边界日期格式上引发了新的失败）。
+- **第 4 轮**：167 项修正（趋于稳定——第 3 轮的回退已诊断并解决，剩余问题为长尾边界情况）。
+- **第 5 轮**：46 项修正（已收敛——低于 5% 阈值，无新模式，无回退）。
 
-**Key insight**: The round 3 spike was the most informative event. It revealed that the round 2 fix was too aggressive — it normalized dates that should not have been normalized. Without convergence tracking, this regression might have been masked by overall accuracy still improving on other cases.
+**核心洞察**：第 3 轮的反弹是最有价值的事件。它揭示第 2 轮的修复过激——把本不该标准化的日期也强行标准化了。如果不做收敛追踪，这一回退可能被整体准确率的提升所掩盖。
 
-## Diagnostic Flowchart
+## 诊断流程图
 
-### If correction volume increases between iterations:
+### 如果两次迭代之间的修正数量增加：
 
-1. **Check for regression**: Are previously passing cases now failing? If yes, the last fix is the likely cause. Compare the diff between iterations.
-2. **Check for fix conflicts**: Does the new fix contradict a prior fix? For example, broadening a regex in round N that was narrowed in round N-1.
-3. **Check for test set changes**: Did new documents enter the test set between iterations? New documents can inflate correction volume without indicating regression.
+1. **检查是否出现回退**：是否有原本通过的案例现在不通过了？若是，则上一次修复很可能是元凶。比对两次迭代之间的 diff。
+2. **检查修复之间是否冲突**：新的修复是否与之前的修复矛盾？例如第 N 轮放宽了在第 N-1 轮收紧的正则。
+3. **检查测试集是否变化**：两次迭代之间是否新增了文档？新文档可能在不代表回退的情况下抬高修正数量。
 
-### If correction volume stays flat (not decreasing):
+### 如果修正数量持平（未下降）：
 
-1. **Check for oscillation**: Are the same cases flipping between pass and fail across iterations? This indicates the fix is unstable — it solves one variant but breaks another.
-2. **Check if fix is too narrow**: The fix addresses the specific failing cases but does not generalize. The next iteration reveals similar cases the fix missed.
+1. **检查是否振荡**：是否有相同案例在不同迭代之间反复在通过与不通过之间切换？这说明修复不稳定——解决了一种变体却破坏了另一种。
+2. **检查修复是否过窄**：修复仅命中了具体失败的几条用例，没有泛化能力。下一次迭代会暴露出修复未覆盖的相似用例。
 
-## False Convergence
+## 虚假收敛
 
-Metrics look stable but underlying issues are masked. The system appears converged but will fail on production data.
+指标看起来稳定，但底层问题被掩盖了。系统貌似已收敛，可一上生产数据就出问题。
 
-### Common Causes
+### 常见成因
 
-- **Test set too small**: With fewer than 20 test cases, a single case changing can swing metrics by 5%. Convergence at this scale is statistically meaningless.
-- **Test set does not cover production variety**: The test set was curated from "clean" examples. Production documents include scanned PDFs, handwritten annotations, multi-language content, and formatting variations the test set never saw.
-- **Corner cases excluded from metrics**: If difficult cases are moved to `corner_cases.json` and excluded from accuracy calculation, the remaining "easy" cases converge quickly but the real problem is hidden.
+- **测试集过小**：测试用例少于 20 条时，单条用例的状态切换就能让指标波动 5%。在这种规模下的收敛在统计上没有意义。
+- **测试集未覆盖生产环境的多样性**：测试集是从"干净"样本中精选出来的。而生产文档包含扫描件 PDF、手写批注、多语种内容、各种格式变体——这些都未出现在测试集中。
+- **难例被从指标中剔除**：如果将难例移入 `corner_cases.json` 并从准确率统计中排除，剩余的"简单"用例会很快收敛，但真正的问题被隐藏了。
 
-### Detection
+### 检测方法
 
-Compare test set distribution to production distribution on key dimensions: document type, length, format, source. If they diverge significantly, convergence on the test set does not guarantee production quality.
+在文档类型、长度、格式、来源等关键维度上对比测试集与生产数据的分布。若两者偏差显著，测试集上的收敛并不能保证生产质量。
 
-## Estimating Remaining Rounds
+## 估计剩余轮次
 
-### Simple Heuristic
+### 简单启发式
 
-If corrections approximately halve each round, expect `log2(current_corrections / threshold)` more rounds.
+如果每轮修正数大致减半，预期还需要 `log2(当前修正数 / 阈值)` 轮。
 
-Example: current round has 200 corrections, threshold is 5% of 1000 cases = 50 corrections.
-- Estimated remaining rounds: log2(200/50) = log2(4) = 2 rounds.
+示例：当前轮有 200 项修正，阈值为 1000 个案例的 5% = 50 项修正。
+- 预计剩余轮次：log2(200/50) = log2(4) = 2 轮。
 
-### When the Heuristic Fails
+### 启发式失效时
 
-If corrections do not halve between rounds, the current approach may have hit its ceiling. Consider:
-- Escalating the fix strategy (prompt tweak → logic rewrite → architecture change).
-- Expanding the test set to reveal hidden patterns.
-- Consulting the developer user for domain insight on stubborn failures.
+如果每轮修正数没有减半，意味着当前方法可能已经触及天花板。可考虑：
+- 升级修复策略（提示词微调 → 逻辑重写 → 架构调整）。
+- 扩充测试集以暴露隐藏模式。
+- 就顽固失败案例向开发者用户咨询领域见解。
 
-Do not grind through more iterations expecting different results. If three consecutive rounds show similar correction volumes, stop and reassess.
+不要寄望于继续硬磨多轮能换来不同结果。如果连续三轮的修正数都接近，停下来重新评估。

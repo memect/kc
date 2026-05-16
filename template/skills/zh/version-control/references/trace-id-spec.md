@@ -1,63 +1,63 @@
-# Trace ID Specification
+# Trace ID 规范
 
-Trace IDs embed source evidence pointers directly inside verification results. This document defines the format, generation rules, and integration points.
+Trace ID 把源头证据指针直接嵌入核查结果中。本文档定义其格式、生成规则与集成点。
 
-## Format
+## 格式
 
 ```
 {rule_id}-{document_id}-P{page}-S{section}-C{char_start}:{char_end}
 ```
 
-| Segment | Description | Example |
+| 段 | 说明 | 示例 |
 |---------|-------------|---------|
-| `rule_id` | The rule that produced this result. Matches the ID in `rule-catalog.json`. | `R001` |
-| `document_id` | A short identifier for the source document. Derived from filename or batch assignment. | `DOC042` |
-| `P{page}` | The 1-indexed page number where the source evidence appears. | `P3` |
-| `S{section}` | The section number within the page, following the document's own numbering. | `S2` |
-| `C{char_start}:{char_end}` | Character offset range within the extracted text block that constitutes the evidence. | `C120:180` |
+| `rule_id` | 产出此结果的规则。匹配 `rule-catalog.json` 中的 ID。 | `R001` |
+| `document_id` | 源文档的简短标识。来自文件名或批次内的指派。 | `DOC042` |
+| `P{page}` | 源证据所在页码（从 1 开始）。 | `P3` |
+| `S{section}` | 页内的小节编号，沿用文档自身的编号体系。 | `S2` |
+| `C{char_start}:{char_end}` | 抽取文本块中构成证据的字符偏移范围。 | `C120:180` |
 
-Full example: `R001-DOC042-P3-S2-C120:180`
+完整示例：`R001-DOC042-P3-S2-C120:180`
 
-When a rule draws evidence from multiple locations, generate one trace ID per location and store them as an array in the result.
+当一条规则的证据来自多个位置时，每个位置生成一条 trace ID，并以数组形式存放在结果中。
 
-## Generation
+## 生成规则
 
-Trace ID generation is **deterministic**: the same rule applied to the same document at the same location always produces the same trace ID. This is achieved by deriving every segment from stable inputs:
+Trace ID 的生成是**确定性的**：同一规则作用于同一文档的同一位置，永远生成相同的 trace ID。这是通过让每一段都来自稳定输入实现的：
 
-- `rule_id` comes from the rule catalog.
-- `document_id` comes from the document's filename or a developer-user-assigned identifier.
-- Page, section, and character range come from the extraction step.
+- `rule_id` 来自规则目录。
+- `document_id` 来自文档文件名或开发者用户指派的标识。
+- 页码、小节、字符范围来自抽取环节。
 
-Trace IDs are generated at verification time, immediately after entity extraction identifies the source location. They are never modified after creation. Re-verifying the same document produces new result records with new timestamps but identical trace IDs (because the source location has not changed). If the document is modified, the new version gets a new `document_id`, producing different trace IDs.
+Trace ID 在核查时生成，紧接实体抽取定位到来源位置之后。生成后永不修改。再次核查同一文档会产出带新时间戳的新结果记录，但 trace ID 不变（因为源位置没变）。如果文档被修改过，新版本应获得新的 `document_id`，从而产生不同的 trace ID。
 
-## Collision Avoidance
+## 避免冲突
 
-The combination of rule ID + document ID + page + section + character range makes collisions astronomically unlikely in practice. Two different pieces of evidence would need to match on all five segments simultaneously.
+规则 ID + 文档 ID + 页 + 节 + 字符范围的组合，使得现实中的冲突概率小到几乎可以忽略。两份不同的证据要在所有五段上同时一致才会冲突。
 
-If document IDs are not guaranteed unique across batches (e.g., multiple batches contain files named `report.pdf`), prefix the document ID with the batch identifier: `B003-DOC042`. This extends the trace ID format to `R001-B003-DOC042-P3-S2-C120:180`.
+如果文档 ID 在跨批次时不能保证唯一（例如多个批次都包含名为 `report.pdf` 的文件），就给文档 ID 加批次前缀：`B003-DOC042`。trace ID 格式因此扩展为 `R001-B003-DOC042-P3-S2-C120:180`。
 
-Do not use random UUIDs. Deterministic trace IDs allow deduplication and comparison across verification runs.
+不要使用随机 UUID。确定性的 trace ID 才能支持跨核查运行的去重与比较。
 
-## Storage Overhead
+## 存储开销
 
-A single trace ID string is approximately 30-50 bytes. The full trace ID object (including `source_location`, `rule_version`, `workflow_version`, and `model_tier`) is approximately 100-200 bytes in JSON.
+单条 trace ID 字符串约 30-50 字节。完整 trace ID 对象（含 `source_location`、`rule_version`、`workflow_version`、`model_tier`）的 JSON 表示约 100-200 字节。
 
-For a typical batch of 1000 verification results, trace IDs add roughly 100-200 KB of storage. This is negligible relative to the result data itself and the source documents.
+按 1000 条核查结果一个批次估算，trace ID 占用大约 100-200 KB 存储——相对于结果数据本身和源文档而言，可以忽略不计。
 
-## Surviving Export/Re-Import
+## 经得起导出与重导入
 
-Trace IDs are embedded in the result JSON structure, not stored in external metadata, sidecar files, or database columns that might be lost during export.
+Trace ID 嵌入在结果 JSON 结构内，而非外部元数据、附属文件、或可能在导出时丢失的数据库列。
 
-Any system that consumes the verification result JSON automatically receives the trace IDs. Specific scenarios:
+任何消费核查结果 JSON 的系统都会自动获得 trace ID。具体场景：
 
-- **CSV export**: The `trace_id` field becomes a column. A developer user reviewing results in a spreadsheet can copy a trace ID and paste it back to locate the source evidence.
-- **Aggregation**: When results from multiple batches are merged, trace IDs remain attached to their individual results. No re-linking is needed.
-- **Downstream APIs**: Systems consuming verification results via API receive trace IDs as part of the payload. They can store, index, or display them without any awareness of the trace ID format.
-- **Archival**: Archived results retain full traceability years later, even if the original verification system has evolved.
+- **CSV 导出**：`trace_id` 字段成为一列。开发者用户在电子表格中复查时，可复制一条 trace ID 并粘贴回工具中以定位证据来源。
+- **聚合**：当多批次结果被合并时，trace ID 仍附着在各自结果上，无需重新关联。
+- **下游 API**：通过 API 消费核查结果的系统会在 payload 中收到 trace ID。它们可以无视格式细节地存储、索引或展示这些 ID。
+- **归档**：归档后的结果在多年之后仍保留完整的可追溯性，即使原核查系统已经演进。
 
-## Integration with Cross-Document Verification
+## 与跨文档核查的集成
 
-When `cross-document-verification` detects a contradiction between two documents, reference trace IDs from both sides:
+当 `cross-document-verification` 在两份文档之间检测到矛盾时，将两侧的 trace ID 同时引用：
 
 ```json
 {
@@ -76,4 +76,4 @@ When `cross-document-verification` detects a contradiction between two documents
 }
 ```
 
-This creates a linked evidence chain: auditors can follow both trace IDs to the exact locations in both documents, verify the extracted values, and determine which document (if either) is correct. Without trace IDs, cross-document contradictions require manual search through both documents to find the relevant passages.
+这构成一条连贯的证据链：审计人员可循两条 trace ID 分别跳到两份文档的精确位置，核对所抽取的值，并判断哪份（若有）文档是正确的。若没有 trace ID，跨文档矛盾就需要在两份文档中手工搜索相关段落。

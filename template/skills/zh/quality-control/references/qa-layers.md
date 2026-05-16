@@ -1,92 +1,92 @@
-# QA Layer Specifications
+# QA 层级规格
 
-Detailed specifications for the five-layer QA architecture. Each layer builds on the one below it.
+五层质量保障架构的详细规格。每一层都建立在下一层之上。
 
-## Layer Details
+## 层级细节
 
-### L1: Text Integrity
+### L1：文本完整性
 
-- **Description**: Verify that source files exist, are readable, and that text content is preserved correctly after any processing (parsing, OCR, conversion).
-- **Input**: Raw document files and their processed text output.
-- **Output**: Pass/fail per file with error details.
-- **Example checks**: File exists and is non-empty. Encoding is UTF-8 (or declared encoding). No null bytes in text output. Character count is within expected range for document type.
-- **Common failures**: File path changed after processing. OCR produced empty output. Encoding mismatch causes garbled characters.
-- **Escalation**: If L1 fails, do not proceed to higher layers. Log the failure and flag for reprocessing.
+- **描述**：核查源文件存在、可读，且在经过任何处理（解析、OCR、转换）之后文本内容保持正确。
+- **输入**：原始文档文件及其处理后的文本输出。
+- **输出**：每个文件一份通过/不通过结论，附错误细节。
+- **示例检查**：文件存在且非空；编码为 UTF-8（或声明的编码）；文本输出中无空字节；字符数在该文档类型的预期范围内。
+- **常见失败**：处理后文件路径变了；OCR 输出为空；编码不匹配导致乱码。
+- **升级处理**：若 L1 不通过，不要进入更高层级。记录失败原因并标记需重新处理。
 
-### L2: Syntax
+### L2：语法
 
-- **Description**: Verify that output files conform to their declared format and schema.
-- **Input**: Output files (JSON, CSV, etc.) from workflows.
-- **Output**: Pass/fail per file with parse errors or schema violations.
-- **Example checks**: JSON is valid (parses without error). Required top-level keys exist. Array fields are arrays, not strings. Date fields match ISO 8601 format.
-- **Common failures**: Trailing comma in JSON. Missing closing bracket. CSV with inconsistent column count. Unexpected null where value is required.
-- **Escalation**: Syntax failures indicate a bug in the output generation code. Fix the code, not the data.
+- **描述**：核查输出文件是否符合声明的格式和 schema。
+- **输入**：工作流产出的输出文件（JSON、CSV 等）。
+- **输出**：每个文件一份通过/不通过结论，附解析错误或 schema 违例。
+- **示例检查**：JSON 合法（解析无错）；必填的顶层键存在；数组字段确为数组而非字符串；日期字段符合 ISO 8601 格式。
+- **常见失败**：JSON 末尾多余的逗号；缺少右括号；CSV 列数不一致；本应有值的字段出现意外的 null。
+- **升级处理**：语法失败说明输出生成代码存在 bug。改代码，不要改数据。
 
-### L3: Data Completeness
+### L3：数据完备性
 
-- **Description**: Verify that required data fields are populated with values in their valid domain.
-- **Input**: Parsed output records.
-- **Output**: Per-field validation results with reasons for any failures.
-- **Example checks**: Invoice date is a valid date (not "N/A" or empty). Amount is a positive number. Entity name is non-empty and does not contain only whitespace. Enum fields contain allowed values.
-- **Common failures**: Extraction returned "unable to determine" as a value. Amount includes currency symbol (string instead of number). Date extracted as partial (month and day but no year).
-- **Escalation**: Completeness failures feed back to extraction prompt improvement. If a field is consistently incomplete, the extraction logic needs work.
+- **描述**：核查必填数据字段已被填充且取值在有效域内。
+- **输入**：解析后的输出记录。
+- **输出**：每个字段一份校验结果，失败时附原因。
+- **示例检查**：发票日期是合法日期（不是 "N/A" 或空）；金额是正数；实体名称非空且不仅包含空白；枚举字段取值在允许范围内。
+- **常见失败**：抽取返回了 "unable to determine" 作为值；金额包含币种符号（字符串而非数字）；日期抽取不完整（有月日但没有年）。
+- **升级处理**：完备性失败应反馈到抽取提示词的改进中。若某字段持续不完整，则抽取逻辑需要打磨。
 
-### L4: Business Logic
+### L4：业务逻辑
 
-- **Description**: Verify cross-field consistency and compliance with business rules.
-- **Input**: Complete, validated records from L3.
-- **Output**: Per-rule validation results with reasoning.
-- **Example checks**: Contract end date is after start date. Invoice date falls within contract validity period. Total amount equals sum of line items. Signatory name matches authorized personnel list.
-- **Common failures**: Date comparison fails due to timezone differences. Rounding errors in amount calculations. Cross-reference lookup fails because entity names differ slightly (e.g., "ABC Corp" vs "ABC Corporation").
-- **Escalation**: Business logic failures may indicate rule misunderstanding. Consult the developer user if the rule intent is ambiguous.
+- **描述**：核查跨字段一致性及对业务规则的合规性。
+- **输入**：L3 中已完整且通过校验的记录。
+- **输出**：每条规则一份校验结果，附推理过程。
+- **示例检查**：合同结束日期晚于开始日期；发票日期落在合同有效期内；总金额等于明细项之和；签约人姓名匹配授权人员名单。
+- **常见失败**：日期比较因时区差异而失败；金额计算出现舍入误差；交叉引用查找因实体名称细微差异（如 "ABC Corp" vs "ABC Corporation"）而失败。
+- **升级处理**：业务逻辑失败可能意味着对规则理解有误。如果规则意图含糊，应咨询开发者用户。
 
-### L5: Cross-Phase
+### L5：跨阶段
 
-- **Description**: Verify consistency across different phases of the verification pipeline.
-- **Input**: Outputs from multiple pipeline stages (extraction, verification, reporting).
-- **Output**: Cross-phase consistency report.
-- **Example checks**: Entities in final results match those in extraction output (nothing added or dropped). Rule IDs in results exist in the rule catalog. Workflow output for a skill matches the skill's own ground truth output. Confidence scores in results match those computed by the confidence system.
-- **Common failures**: A rule was added to the catalog but the workflow was not updated to include it. Extraction found 5 entities but results only report 4. Workflow output diverges from skill ground truth on edge cases.
-- **Escalation**: Cross-phase failures often indicate integration issues. Check the pipeline connections, not individual components.
+- **描述**：核查核查流水线不同阶段之间的一致性。
+- **输入**：流水线多个阶段的输出（抽取、核查、报告）。
+- **输出**：跨阶段一致性报告。
+- **示例检查**：最终结果中的实体与抽取输出一致（没有新增也没有遗漏）；结果中的规则 ID 存在于规则目录中；技能对应的工作流输出与该技能自身的基准真值一致；结果中的置信度分数与置信度系统所计算的一致。
+- **常见失败**：规则被加入目录但工作流未同步更新；抽取找到 5 个实体而结果中只报告 4 个；工作流输出在边界情况上与技能基准真值出现分歧。
+- **升级处理**：跨阶段失败通常意味着集成问题。检查流水线的连接，而非单个组件。
 
-## Script Naming Convention
+## 脚本命名规范
 
-| Prefix | Layer | Purpose | Examples |
+| 前缀 | 层级 | 用途 | 示例 |
 |--------|-------|---------|----------|
-| `lint_` | L1-L2 | Fast, syntactic checks | `lint_json.py`, `lint_encoding.py`, `lint_schema.py` |
-| `validate_` | L3-L4 | Domain and logic validation | `validate_fields.py`, `validate_dates.py`, `validate_amounts.py` |
-| `cross_validate_` | L5 | Cross-phase consistency | `cross_validate_extraction.py`, `cross_validate_rules.py` |
+| `lint_` | L1-L2 | 快速的语法层检查 | `lint_json.py`、`lint_encoding.py`、`lint_schema.py` |
+| `validate_` | L3-L4 | 领域与逻辑校验 | `validate_fields.py`、`validate_dates.py`、`validate_amounts.py` |
+| `cross_validate_` | L5 | 跨阶段一致性 | `cross_validate_extraction.py`、`cross_validate_rules.py` |
 
-Scripts should:
-- Accept a file or directory path as input.
-- Output structured JSON results (pass/fail per check, with reasons).
-- Return exit code 0 if all checks pass, non-zero otherwise.
-- Be idempotent — running twice produces the same result.
+脚本应当：
+- 接受文件或目录路径作为输入。
+- 输出结构化的 JSON 结果（每项检查的通过/不通过及原因）。
+- 全部检查通过时退出码为 0，否则非零。
+- 幂等——多次运行结果一致。
 
-## QC vs Reflection
+## 质控 vs 反思
 
-| Dimension | QC (this skill) | Reflection (evolution-loop) |
+| 维度 | 质控（本技能） | 反思（evolution-loop） |
 |-----------|-----------------|---------------------------|
-| **Who runs it** | Coding agent or automated scripts | Coding agent |
-| **What triggers it** | Every batch, on schedule | QC failures, accuracy drops |
-| **Input** | Workflow outputs | QC reports, failure logs, iteration history |
-| **Output** | Pass/fail verdicts, accuracy metrics | Root cause diagnosis, fix proposals |
-| **Cost** | Low (mostly scripts, some LLM at L4-L5) | Higher (deep analysis, prompt rewriting) |
-| **When to use** | Always — every production batch | Only when QC reveals problems |
-| **Goal** | Detect problems | Fix problems |
+| **谁来运行** | 编程智能体或自动化脚本 | 编程智能体 |
+| **触发条件** | 每批次、按时调度 | 质控失败、准确率下降 |
+| **输入** | 工作流的输出 | 质控报告、失败日志、迭代历史 |
+| **输出** | 通过/不通过结论、准确率指标 | 根因诊断、修复方案 |
+| **成本** | 低（多为脚本，L4-L5 涉及部分 LLM） | 较高（深度分析、提示词改写） |
+| **使用时机** | 始终运行——每个生产批次都跑 | 仅在质控发现问题时启动 |
+| **目标** | 发现问题 | 修复问题 |
 
-QC without Reflection detects issues but cannot fix them. Reflection without QC has no data to work from. They are complementary, not alternatives.
+只做质控而不反思，能发现问题但无法修复；只做反思而不做质控，则没有可供分析的数据。两者互补，并非替代关系。
 
-## Integration Points
+## 集成点
 
-### With `data-sensibility`
+### 与 `data-sensibility`
 
-The `data-sensibility` skill provides input validation that feeds L1-L3. If data-sensibility checks flag a document as anomalous before processing, QC can prioritize reviewing that document's outputs. Data-sensibility operates on inputs; QC operates on outputs. Together they bracket the pipeline.
+`data-sensibility` 技能提供输入侧的校验，为 L1-L3 喂数据。如果 data-sensibility 在处理前就将某文档标记为异常，质控可以优先复核该文档的输出。data-sensibility 关注输入；质控关注输出。两者首尾呼应，把整条流水线夹在中间。
 
-### With `cross-document-verification`
+### 与 `cross-document-verification`
 
-Cross-document verification enables L5 cross-doc consistency checks. When multiple documents reference the same entity (e.g., same contract number across invoice and purchase order), L5 can verify that extracted values are consistent across documents. Without cross-document verification, L5 is limited to single-document cross-phase checks.
+跨文档核查使 L5 的跨文档一致性检查成为可能。当多个文档引用同一实体（例如发票和采购订单中的同一合同号），L5 可以核查跨文档抽取值是否一致。没有跨文档核查时，L5 仅能进行单文档内的跨阶段检查。
 
-### With `confidence-system`
+### 与 `confidence-system`
 
-QC results calibrate the confidence system. When QC reveals that high-confidence results are sometimes wrong, the confidence thresholds need adjustment. Conversely, confidence scores drive QC sampling — low-confidence results get more review. This creates a feedback loop: QC improves confidence calibration, better calibration improves QC efficiency.
+质控结果用来校准置信度系统。当质控发现高置信度结果有时是错的，就需要调整置信度阈值。反过来，置信度分数也驱动质控抽样——低置信度结果获得更多复核。这形成一个反馈环：质控改进置信度校准，更好的校准又提升质控效率。

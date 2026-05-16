@@ -1,81 +1,81 @@
-# Decision Matrix for Method Selection
+# 方法选择决策矩阵
 
-This reference provides the detailed decision matrix for assigning methods to sub-tasks during task decomposition. Read `task-decomposition` SKILL.md first for the philosophy; this document is the operational reference.
+本文档是任务分解阶段为各子任务分配方法时使用的详细决策矩阵。先阅读 `task-decomposition` SKILL.md 了解方法论；本文档是操作层面的参考。
 
-## The Four Dimensions
+## 四个维度
 
-| Dimension | Definition | 1 (Low) | 3 (Medium) | 5 (High) |
+| 维度 | 定义 | 1（低） | 3（中） | 5（高） |
 |---|---|---|---|---|
-| **Certainty** | Predictability of input format and location | Free-form prose, no fixed structure | Semi-structured with known sections but variable formatting | Fixed template, exact field positions |
-| **Scale** | Number of items to process per document | 1-5 items | 10-100 items | 1,000+ items |
-| **Semantic Depth** | Language understanding required | None — pure pattern or numeric | Moderate — entity recognition, simple context | Deep — judgment, adequacy assessment, intent interpretation |
-| **Cost Sensitivity** | Budget constraint per document | Unlimited (one-off audit) | Moderate (monthly batch of hundreds) | Tight (daily batch of thousands) |
+| **确定性** | 输入格式与位置的可预测程度 | 自由散文，无固定结构 | 半结构化，章节已知但格式多变 | 固定模板，字段位置精确 |
+| **规模** | 每份文档需处理的条目数 | 1-5 项 | 10-100 项 | 1,000+ 项 |
+| **语义深度** | 所需的语言理解程度 | 无——纯模式或数值 | 中等——实体识别、简单上下文 | 深——判断、充分性评估、意图解释 |
+| **成本敏感度** | 每份文档的预算约束 | 无限（一次性审计） | 中等（每月数百件批处理） | 紧（每日数千件批处理） |
 
-## Method Assignment Rules
+## 方法分配规则
 
-Use the highest-priority method whose requirements are met. Priority order: Rule/Regex > Code > LLM > Manual.
+挑选满足条件中优先级最高的方法。优先级顺序：规则/正则 > 代码 > LLM > 人工。
 
-| Certainty | Scale | Semantic Depth | Cost Sensitivity | Assigned Method | Rationale |
+| 确定性 | 规模 | 语义深度 | 成本敏感度 | 分配方法 | 原因 |
 |---|---|---|---|---|---|
-| High (4-5) | Any | Low (1-2) | Any | **Rule / Regex** | Predictable input + no language understanding = deterministic pattern matching |
-| High (4-5) | Any | Low (1-2) | Any | **Code / Python** | Calculations, comparisons, transformations on structured data |
-| Medium (3) | High (4-5) | Low (1-2) | High (4-5) | **Code + Regex** | Volume demands speed; invest in parsing code to avoid per-item LLM cost |
-| Medium (3) | Low (1-2) | Medium (3) | Low (1-2) | **LLM** | Moderate understanding needed, low volume makes LLM cost acceptable |
-| Low (1-2) | Any | High (4-5) | Any | **LLM** | Deep semantic understanding has no cheaper alternative |
-| Low (1-2) | High (4-5) | High (4-5) | High (4-5) | **LLM (low tier) + sampling** | Volume + semantics + budget = use cheapest LLM, sample-verify with higher tier |
-| Any | Any | Any | — | **Manual** | Last resort when automated methods fail accuracy threshold |
+| 高 (4-5) | 任意 | 低 (1-2) | 任意 | **规则 / 正则** | 输入可预测 + 不需语言理解 = 确定性模式匹配 |
+| 高 (4-5) | 任意 | 低 (1-2) | 任意 | **代码 / Python** | 在结构化数据上做计算、比较、转换 |
+| 中 (3) | 高 (4-5) | 低 (1-2) | 高 (4-5) | **代码 + 正则** | 高吞吐要求速度；投入解析代码以避免逐条调 LLM 的成本 |
+| 中 (3) | 低 (1-2) | 中 (3) | 低 (1-2) | **LLM** | 需要中等程度的理解，低吞吐使 LLM 成本可接受 |
+| 低 (1-2) | 任意 | 高 (4-5) | 任意 | **LLM** | 深层语义理解没有更便宜的替代方案 |
+| 低 (1-2) | 高 (4-5) | 高 (4-5) | 高 (4-5) | **低层 LLM + 抽样** | 吞吐 + 语义 + 预算 = 用最便宜的 LLM 跑、用更高层模型抽样校验 |
+| 任意 | 任意 | 任意 | — | **人工** | 自动方法均无法达标时的兜底 |
 
-The table covers common patterns, not every combination. When a sub-task falls between categories, test both candidate methods on a sample and measure accuracy and cost. Let data decide.
+该表覆盖常见情况，并非穷举。当子任务介于两类之间，请在样本上同时测试候选方法，量化准确率与成本，让数据来定。
 
-## Worked Example: Cross-Field Validation
+## 实例：跨字段校验
 
-**Rule**: "The loan amount must not exceed 70% of the appraised collateral value."
+**规则**："贷款金额不得超过资产评估值的 70%。"
 
-Decomposition into sub-tasks with method assignments:
+分解为子任务并分配方法：
 
-| # | Sub-task | Input | Output | Method | Rationale |
+| # | 子任务 | 输入 | 输出 | 方法 | 原因 |
 |---|---|---|---|---|---|
-| 1 | Locate loan amount field | Full document text | Page/section reference | LLM (Tier 3) | Field position varies across document types |
-| 2 | Extract loan amount | Located section text | Numeric value (float) | Regex | Amount follows pattern: ¥/$/digits with commas |
-| 3 | Locate collateral section | Full document text | Page/section reference | LLM (Tier 3) | Section name varies: "Collateral", "Security", "Pledged Assets" |
-| 4 | Extract appraised value | Located section text | Numeric value (float) | Regex + Code | Regex extracts; code handles unit conversion (万/亿) |
-| 5 | Calculate threshold | Loan amount, collateral value | 70% threshold value | Code | Pure arithmetic: `collateral * 0.70` |
-| 6 | Compare | Loan amount, threshold | Pass/Fail | Code | Simple comparison: `loan_amount <= threshold` |
-| 7 | Generate comment | All extracted values | Comment string | Code (template) | Template: "Loan amount {X} is {above/within} 70% of collateral value {Y} (threshold: {Z})" |
+| 1 | 定位贷款金额字段 | 全文 | 页/节定位 | LLM (Tier 3) | 字段位置因文档类型而异 |
+| 2 | 抽取贷款金额 | 已定位段落文本 | 数值 (float) | 正则 | 金额遵循模式：¥/$/带逗号数字 |
+| 3 | 定位抵押物章节 | 全文 | 页/节定位 | LLM (Tier 3) | 章节名称多变："Collateral"、"Security"、"Pledged Assets" |
+| 4 | 抽取评估价值 | 已定位段落文本 | 数值 (float) | 正则 + 代码 | 正则负责抽取；代码处理单位换算（万/亿） |
+| 5 | 计算阈值 | 贷款金额、抵押价值 | 70% 阈值 | 代码 | 纯算术：`collateral * 0.70` |
+| 6 | 比较 | 贷款金额、阈值 | 通过/不通过 | 代码 | 简单比较：`loan_amount <= threshold` |
+| 7 | 生成批注 | 所有抽取值 | 批注字符串 | 代码（模板） | 模板："Loan amount {X} is {above/within} 70% of collateral value {Y} (threshold: {Z})" |
 
-LLM calls: 2 (locate steps only). Everything else is regex or code. Total LLM cost per document: ~0.002 USD at Tier 3 pricing.
+LLM 调用次数：2 次（仅定位环节）。其余全部用正则或代码。每份文档的 LLM 总成本：约 0.002 USD（Tier 3 价格）。
 
-## Worked Example: Large-Scale Filtering
+## 实例：大规模筛选
 
-**Task**: Match 31,800 invoices against 15,940 contracts to find which invoices belong to which contracts.
+**任务**：把 31,800 张发票与 15,940 份合同进行匹配，找出每张发票归属哪份合同。
 
-Naive approach: 507M pairwise LLM comparisons. Estimated cost: $50,000+. Time: weeks.
+朴素做法：5.07 亿次成对 LLM 比较。预估成本：5 万美元以上。耗时：以周计。
 
-Layered decomposition:
+分层分解：
 
-| Layer | Method | Input Size | Output Size | Reduction | Cost |
+| 层 | 方法 | 输入规模 | 输出规模 | 削减比例 | 成本 |
 |---|---|---|---|---|---|
-| 1. Exact match on supplier name + contract number | Rule/Regex | 507M pairs | 25,200 matches | 99.5% eliminated | ~$0 |
-| 2. Fuzzy match on amount range (±5%) + date overlap | Code | Remaining unmatched pairs | 12,400 candidates | 97.6% of remainder eliminated | ~$0 |
-| 3. Semantic comparison of line-item descriptions | LLM (Tier 3) | 12,400 candidates | 7,652 confirmed | Final precision filter | ~$25 |
-| 4. Manual review of low-confidence matches | Manual | ~200 uncertain | ~200 resolved | Edge cases | ~$100 (labor) |
+| 1. 按供应商名 + 合同号精确匹配 | 规则/正则 | 5.07 亿组 | 25,200 组匹配 | 削减 99.5% | 约 $0 |
+| 2. 按金额范围（±5%）+ 日期重叠做模糊匹配 | 代码 | 剩余未匹配组 | 12,400 组候选 | 在剩余中再削减 97.6% | 约 $0 |
+| 3. 对明细项描述做语义对比 | LLM (Tier 3) | 12,400 组候选 | 7,652 组确认匹配 | 最终精度过滤 | 约 $25 |
+| 4. 低置信度匹配的人工复核 | 人工 | 约 200 条不确定 | 约 200 条裁决 | 边界情况 | 约 $100（人力） |
 
-Total cost: ~$125. Time: hours. Same accuracy as the naive approach.
+总成本：约 $125。耗时：以小时计。准确率与朴素做法相当。
 
-The key insight: each layer's method is chosen because it is the cheapest method that can reliably make the distinctions required at that stage.
+关键洞察：每一层使用的方法，都是该阶段能可靠完成区分任务的最便宜方法。
 
-## Cost Estimation Template
+## 成本估算模板
 
-Use this template during decomposition planning to estimate per-document cost.
+在分解规划阶段用此模板估算每份文档的成本。
 
-| Sub-task | Method | Est. Cost/Call | Calls/Document | Subtotal |
+| 子任务 | 方法 | 单次成本估算 | 每文档调用次数 | 小计 |
 |---|---|---|---|---|
-| Locate section | LLM Tier 3 | $0.001 | 2 | $0.002 |
-| Extract fields | Regex | $0.000 | 5 | $0.000 |
-| Normalize values | Python | $0.000 | 5 | $0.000 |
-| Cross-field comparison | Python | $0.000 | 1 | $0.000 |
-| Semantic judgment | LLM Tier 2 | $0.003 | 1 | $0.003 |
-| Comment generation | Template | $0.000 | 1 | $0.000 |
-| **Total per document** | | | | **$0.005** |
+| 定位章节 | LLM Tier 3 | $0.001 | 2 | $0.002 |
+| 抽取字段 | 正则 | $0.000 | 5 | $0.000 |
+| 规范化数值 | Python | $0.000 | 5 | $0.000 |
+| 跨字段比较 | Python | $0.000 | 1 | $0.000 |
+| 语义判定 | LLM Tier 2 | $0.003 | 1 | $0.003 |
+| 生成批注 | 模板 | $0.000 | 1 | $0.000 |
+| **每文档合计** | | | | **$0.005** |
 
-Multiply by expected document volume to get batch cost. Compare against the developer user's budget. If total exceeds budget, optimize the most expensive sub-tasks first — usually the LLM calls with the highest per-call cost or the highest call count.
+乘以预期文档量得到批次成本。与开发者用户的预算对比。若总成本超预算，优先优化最贵的子任务——通常是每次调用单价最高、或调用次数最多的 LLM 环节。

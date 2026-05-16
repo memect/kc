@@ -1,54 +1,54 @@
-# Contradiction Taxonomy
+# 矛盾分类法
 
-Field-level reference for cross-document contradiction detection. Use this taxonomy to configure comparison rules per field type.
+跨文档矛盾检测的字段级参考。使用本分类法按字段类型配置比对规则。
 
-## Identity Fields
+## 身份字段
 
-| Field | Match Type | Tolerance | Severity | Notes |
+| 字段 | 匹配类型 | 容忍度 | 严重级别 | 备注 |
 |-------|-----------|-----------|----------|-------|
-| Full name | Fuzzy | Abbreviation, spacing, honorifics | Critical | "Zhang Wei" vs "Zhang W." is fuzzy match; "Zhang Wei" vs "Li Ming" is hard fail |
-| ID number | Exact | None (zero tolerance) | Critical | Single-digit difference = different person or transcription error — both critical |
-| Date of birth | Exact | None | Critical | Cross-check against ID number encoding where applicable |
-| Address | Fuzzy | Abbreviation, floor/unit formatting | Medium | "Rm 1201, Bldg A" vs "Room 1201, Building A" is acceptable |
-| Phone number | Exact | Country code prefix | Medium | +86 prefix presence/absence is tolerated |
-| Company name | Fuzzy | Ltd/Co/Inc suffix, punctuation | High | Must match on core name; suffix variation tolerated |
+| 姓名 | 模糊 | 缩写、空格、敬称 | Critical | "Zhang Wei" 与 "Zhang W." 属于模糊匹配；"Zhang Wei" 与 "Li Ming" 则为硬不通过 |
+| 身份证号 | 精确 | 无（零容忍） | Critical | 一位数字之差 = 不同的人或誊抄错误——两者都是 critical |
+| 出生日期 | 精确 | 无 | Critical | 在适用情况下与身份证号编码进行交叉核对 |
+| 地址 | 模糊 | 缩写、楼层/单元的格式差异 | Medium | "Rm 1201, Bldg A" 与 "Room 1201, Building A" 可接受 |
+| 电话号码 | 精确 | 国家代码前缀 | Medium | +86 前缀的有无可容忍 |
+| 公司名称 | 模糊 | Ltd/Co/Inc 等后缀、标点 | High | 核心名称必须匹配；后缀差异可容忍 |
 
-## Financial Fields
+## 金融字段
 
-| Field | Comparison Method | Tolerance | Severity | Notes |
+| 字段 | 比对方法 | 容忍度 | 严重级别 | 备注 |
 |-------|------------------|-----------|----------|-------|
-| Stated income | Cross-document | 10% relative | High | Application vs income certificate vs credit report |
-| Bank avg deposits | Income plausibility | 50% of stated income (floor) | High | If avg deposits < 50% of claimed income, flag |
-| Loan amount | Exact across docs | 0.1% relative | Critical | Must be identical in application and contract |
-| Property value | Appraisal consistency | 5% relative | High | Application estimate vs formal appraisal |
-| Existing debt | Cross-source | 20% relative | Medium | Self-reported vs credit report |
-| Net assets | Calculated consistency | Sum of components vs stated total | High | Assets - liabilities must equal stated net |
-| Contract total vs line items | Sum check | 0.01 absolute | Critical | Main contract total must equal appendix line item sum |
+| 申报收入 | 跨文档 | 10% 相对值 | High | 申请表 vs 收入证明 vs 征信报告 |
+| 银行平均存款 | 收入可信度 | 申报收入的 50%（下限） | High | 若平均存款 < 申报收入的 50%，则标记 |
+| 贷款金额 | 跨文档精确比对 | 0.1% 相对值 | Critical | 申请表与合同中必须完全一致 |
+| 资产估值 | 评估一致性 | 5% 相对值 | High | 申请表估值 vs 正式评估报告 |
+| 现有负债 | 跨来源 | 20% 相对值 | Medium | 自报 vs 征信报告 |
+| 净资产 | 计算一致性 | 各部分之和 vs 申报总额 | High | 资产 - 负债必须等于申报的净值 |
+| 合同总额 vs 明细项 | 求和核对 | 0.01 绝对值 | Critical | 主合同总额必须等于附件明细项之和 |
 
-## Temporal Fields
+## 时间字段
 
-| Field | Consistency Check | Tolerance | Severity | Notes |
+| 字段 | 一致性核查 | 容忍度 | 严重级别 | 备注 |
 |-------|------------------|-----------|----------|-------|
-| Employment start date | Cross-document match | 90 days | Medium | Application vs income cert vs credit report |
-| Contract signing date | Sequence plausibility | Must be after application date | High | Cannot sign before applying |
-| Document issuance date | Freshness and sequence | Per business rule (typically 30-90 days) | Medium | Income cert issued 6 months ago may be stale |
-| Loan maturity date | Contract consistency | Exact match across docs | High | Application vs contract vs amortization schedule |
-| Appraisal date | Sequence plausibility | Must precede loan approval | Medium | Appraisal after disbursement is a red flag |
+| 入职日期 | 跨文档匹配 | 90 天 | Medium | 申请表 vs 收入证明 vs 征信报告 |
+| 合同签订日期 | 序列合理性 | 必须晚于申请日期 | High | 不能在申请前签约 |
+| 文档出具日期 | 时效与序列 | 按业务规则（通常 30-90 天） | Medium | 6 个月前出具的收入证明可能已失效 |
+| 贷款到期日 | 合同一致性 | 跨文档精确匹配 | High | 申请表 vs 合同 vs 还款计划表 |
+| 评估日期 | 序列合理性 | 必须早于贷款审批 | Medium | 放款之后才做评估属于红旗信号 |
 
-## Logical Consistency Checks
+## 逻辑一致性核查
 
-These are not single-field comparisons but cross-field logical validations:
+这些不是单字段比对，而是跨字段的逻辑校验：
 
-- **LTV ratio consistency**: Property value x LTV % should equal or exceed loan amount. Check across appraisal, application, and contract.
-- **DTI ratio reasonableness**: Monthly debt payments (from credit report) + proposed payment / monthly income (from income cert) should not exceed the stated DTI or regulatory limit.
-- **Timeline plausibility**: Employment start < income cert issuance < application date < contract signing < disbursement. Any violation of this sequence is a finding.
-- **Appendix completeness**: Every appendix referenced in the main contract must be present in the case file. Every appendix present must be referenced in the main contract.
-- **Guarantor cross-check**: If a guarantor is listed, their identity fields must also pass cross-document verification against any guarantor-specific documents.
-- **Amount decomposition**: If the contract specifies principal + interest + fees, these must sum to the total obligation stated elsewhere.
+- **LTV 比率一致性**：资产价值 × LTV % 应等于或大于贷款金额。在评估报告、申请表与合同之间交叉核查。
+- **DTI 比率合理性**：月负债（来自征信报告）+ 拟议月供）/ 月收入（来自收入证明）不应超过申报的 DTI 或监管上限。
+- **时间线合理性**：入职日期 < 收入证明出具日期 < 申请日期 < 合同签订日期 < 放款日期。任何违反此序列的情况都是一项发现。
+- **附件完整性**：主合同中引用的每一份附件都必须出现在案件资料中；案件中每一份附件也都必须被主合同引用。
+- **担保人交叉核查**：若列有担保人，其身份字段也必须与担保人专项材料进行跨文档核查通过。
+- **金额分解**：若合同规定本金 + 利息 + 费用，三者之和必须等于其他位置列出的总义务金额。
 
-## Comparison Matrix Template
+## 比对矩阵模板
 
-Output schema for the case-level comparison matrix:
+案件级比对矩阵的输出 schema：
 
 ```json
 {

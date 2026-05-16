@@ -1,48 +1,48 @@
-# Lightweight Output Format Specification
+# 轻量输出格式规范
 
-This document defines the compact text markup format for verification results, its grammar, JSON conversion rules, and edge case handling.
+本文档定义核查结果的紧凑文本标注格式、其语法、JSON 转换规则以及边界情况处理。
 
-## Grammar
+## 语法
 
 ```
 [RESULT] field_name <- value (constraint) | conf:score | src:location | note:text
 ```
 
-| Component | Required | Format | Description | Example |
+| 组成 | 是否必填 | 格式 | 说明 | 示例 |
 |-----------|----------|--------|-------------|---------|
-| `[RESULT]` | Yes | One of: PASS, FAIL, MISSING, ERROR, UNCERTAIN | The judgment outcome. | `[FAIL]` |
-| `field_name` | Yes | snake_case identifier | The rule or field being checked. | `capital_adequacy` |
-| `<- value` | No (omit for MISSING) | Free text, no pipes | The extracted value from the document. | `<- 12.5%` |
-| `(constraint)` | No (omit if no constraint) | Parenthesized expression | The expected value or condition. | `(>= 8.0%)` |
-| `conf:score` | Yes | Decimal 0.00-1.00 | Confidence score of the judgment. | `conf:0.95` |
-| `src:location` | No | Page-section reference or trace ID prefix | Source location in the document. | `src:p3-s2` |
-| `note:text` | No | Free text to end of line | Human-readable comment. | `note:Signing overdue by 45 days` |
+| `[RESULT]` | 是 | 取值之一：PASS、FAIL、MISSING、ERROR、UNCERTAIN | 判定结果。 | `[FAIL]` |
+| `field_name` | 是 | snake_case 标识符 | 被核查的规则或字段。 | `capital_adequacy` |
+| `<- value` | 否（MISSING 时省略） | 自由文本，不含竖线 | 从文档中抽取出的值。 | `<- 12.5%` |
+| `(constraint)` | 否（无约束时省略） | 括号表达式 | 期望值或条件。 | `(>= 8.0%)` |
+| `conf:score` | 是 | 0.00-1.00 的小数 | 判定的置信度分数。 | `conf:0.95` |
+| `src:location` | 否 | 页-节引用或 trace ID 前缀 | 文档中的来源位置。 | `src:p3-s2` |
+| `note:text` | 否 | 至行末的自由文本 | 人类可读的注释。 | `note:Signing overdue by 45 days` |
 
-Components after `field_name` are separated by ` | ` (space-pipe-space). The `<- value` and `(constraint)` components appear before the first pipe, space-separated.
+`field_name` 之后的各个组成部分以 ` | `（空格-竖线-空格）分隔。`<- value` 和 `(constraint)` 出现在第一个竖线之前，彼此以空格分隔。
 
-## Field Definitions
+## 字段定义
 
-### Result Values
+### 结果取值
 
-| Value | Meaning | When to Use |
+| 取值 | 含义 | 使用时机 |
 |-------|---------|-------------|
-| `PASS` | Entity complies with the rule. | Deterministic or semantic check confirms compliance. |
-| `FAIL` | Entity does not comply. | Clear non-compliance detected. Note is strongly recommended. |
-| `MISSING` | Entity not found in document. | Extraction could not locate the required field. |
-| `ERROR` | Processing failure. | Parsing error, API timeout, unexpected format. |
-| `UNCERTAIN` | Ambiguous judgment. | Borderline values, conflicting evidence, low confidence. |
+| `PASS` | 实体符合规则。 | 确定性检查或语义检查确认合规。 |
+| `FAIL` | 实体不符合规则。 | 明确检测到不合规。强烈建议填写 note。 |
+| `MISSING` | 文档中未找到该实体。 | 抽取过程无法定位到所需字段。 |
+| `ERROR` | 处理过程出错。 | 解析错误、API 超时、非预期格式。 |
+| `UNCERTAIN` | 判定存在歧义。 | 临界值、证据冲突、置信度偏低。 |
 
-### Confidence Score
+### 置信度分数
 
-A decimal between 0.00 and 1.00 representing the system's confidence in the result. For deterministic Python checks, confidence is typically 0.95-1.00. For LLM semantic judgments, confidence reflects the model's self-assessed certainty. Scores below the configured threshold in `.env` trigger human review.
+介于 0.00 与 1.00 之间的小数，表示系统对该结果的把握程度。对于确定性 Python 检查，置信度通常为 0.95-1.00。对于 LLM 语义判定，置信度反映模型自评的确定性。低于 `.env` 中配置阈值的分数会触发人工复核。
 
-### Source Location
+### 来源位置
 
-The `src:` component uses a compact reference format: `p{page}-s{section}`. Example: `src:p3-s2` means page 3, section 2. For trace ID integration, use the trace ID prefix: `src:R001-DOC042-P3-S2` (see Integration with Trace IDs below).
+`src:` 部分使用紧凑引用格式 `p{page}-s{section}`。示例：`src:p3-s2` 表示第 3 页第 2 节。如需与 trace ID 集成，使用 trace ID 前缀：`src:R001-DOC042-P3-S2`（详见下文"与 Trace ID 的集成"）。
 
-## JSON Conversion
+## JSON 转换
 
-### Markup to JSON
+### 标注 → JSON
 
 ```
 Input:  [FAIL] sign_date_gap <- 75d (<= 30d) | conf:0.90 | src:p1-s4 | note:Signing overdue by 45 days
@@ -59,31 +59,31 @@ Output:
 }
 ```
 
-Pseudocode:
-1. Parse `[RESULT]` -> lowercase -> `result` field.
-2. Parse next token -> `field` field.
-3. If `<-` follows, parse until `(` or `|` -> `extracted_value`.
-4. If `(...)` follows, parse contents -> `expected`.
-5. Split remaining by ` | `. For each segment:
-   - `conf:X` -> `confidence` (parse as float).
-   - `src:X` -> `source`.
-   - `note:X` -> `comment`.
+伪代码：
+1. 解析 `[RESULT]`，转小写，赋值给 `result` 字段。
+2. 解析下一个 token，赋值给 `field` 字段。
+3. 若后随 `<-`，解析到 `(` 或 `|` 为止，赋值给 `extracted_value`。
+4. 若后随 `(...)`，解析括号内容，赋值给 `expected`。
+5. 将剩余部分按 ` | ` 拆分。对每一段：
+   - `conf:X` → `confidence`（按浮点数解析）。
+   - `src:X` → `source`。
+   - `note:X` → `comment`。
 
-### JSON to Markup
+### JSON → 标注
 
-Pseudocode:
-1. `[` + uppercase(`result`) + `] ` + `field`.
-2. If `extracted_value` exists: ` <- ` + `extracted_value`.
-3. If `expected` exists: ` (` + `expected` + `)`.
-4. ` | conf:` + format(`confidence`, 2 decimal places).
-5. If `source` exists: ` | src:` + `source`.
-6. If `comment` exists: ` | note:` + `comment`.
+伪代码：
+1. `[` + 大写(`result`) + `] ` + `field`。
+2. 若存在 `extracted_value`：` <- ` + `extracted_value`。
+3. 若存在 `expected`：` (` + `expected` + `)`。
+4. ` | conf:` + 格式化(`confidence`, 保留 2 位小数)。
+5. 若存在 `source`：` | src:` + `source`。
+6. 若存在 `comment`：` | note:` + `comment`。
 
-## Diff Example
+## Diff 示例
 
-Comparing two verification runs is where markup shines.
+对比两次核查运行，正是标注格式最能发挥优势的场景。
 
-**Markup diff** (clean, scannable):
+**标注 diff**（干净、易扫读）：
 ```
   [PASS] capital_adequacy <- 12.5% (>= 8.0%) | conf:0.95 | src:p3-s2
 - [PASS] sign_date_gap <- 28d (<= 30d) | conf:0.92 | src:p1-s4
@@ -91,7 +91,7 @@ Comparing two verification runs is where markup shines.
   [MISSING] collateral_value | conf:0.60 | note:Collateral valuation not found
 ```
 
-**JSON diff** (noisy, hard to scan):
+**JSON diff**（噪声大、难以扫读）：
 ```json
   {
     "field": "sign_date_gap",
@@ -108,44 +108,44 @@ Comparing two verification runs is where markup shines.
   }
 ```
 
-The markup diff communicates the same information in one changed line vs. five changed lines.
+同样的信息，标注 diff 只需要一行变更，而 JSON diff 需要五行。
 
-## Edge Cases
+## 边界情况
 
-### Multi-Value Fields
-When a field has multiple extracted values (e.g., the same metric appears in two places with different values), separate values with semicolons:
+### 多值字段
+当一个字段抽取出多个值（例如同一个指标在两处出现且数值不一致），用分号分隔多个值：
 ```
 [UNCERTAIN] total_assets <- 1,234,567;1,234,590 | conf:0.50 | src:p3-s1;p7-s2 | note:Conflicting values found
 ```
 
-### Long Notes
-In markup, truncate notes longer than 80 characters with `...`. The full text is preserved in JSON. Example:
+### 长注释
+在标注格式中，超过 80 字符的 note 截断为 `...`。完整文本保留在 JSON 中。示例：
 ```
 [FAIL] risk_disclosure <- (see detail) | conf:0.85 | note:Missing discussion of liquidity risk, market risk, and operational ri...
 ```
 
-### Special Characters
-If a value or note contains the pipe character `|`, escape it with a backslash: `\|`. During JSON conversion, unescape back to `|`.
+### 特殊字符
+如果值或 note 中包含竖线 `|`，用反斜杠转义：`\|`。转换为 JSON 时再反转义回 `|`。
 
-### Fields with No Constraint
-Omit the parenthetical entirely:
+### 没有约束条件的字段
+完全省略括号部分：
 ```
 [MISSING] collateral_value | conf:0.60 | note:Collateral valuation not found in document
 ```
 
-### Fields with No Extracted Value
-Omit the `<-` component (common for MISSING and ERROR results):
+### 没有抽取值的字段
+省略 `<-` 部分（在 MISSING 和 ERROR 结果中很常见）：
 ```
 [ERROR] capital_adequacy | conf:0.00 | note:PDF parsing failed on page 3
 ```
 
-## Integration with Trace IDs
+## 与 Trace ID 的集成
 
-The `src:` component can encode trace ID prefixes, linking each result line to the full trace ID defined by `version-control`. Use the trace ID format directly:
+`src:` 部分可以编码 trace ID 前缀，将每一行结果与 `version-control` 定义的完整 trace ID 关联。直接采用 trace ID 格式即可：
 
 ```
 [PASS] capital_adequacy <- 12.5% (>= 8.0%) | conf:0.95 | src:R001-DOC042-P3-S2
 [FAIL] sign_date_gap <- 75d (<= 30d) | conf:0.90 | src:R003-DOC042-P1-S4 | note:Signing overdue by 45 days
 ```
 
-When converting to JSON, the `src:` value maps to the `trace_id` field in the full result object. The character range (`C{start}:{end}`) can be appended when full precision is needed: `src:R001-DOC042-P3-S2-C120:180`.
+转换为 JSON 时，`src:` 的值映射为完整结果对象中的 `trace_id` 字段。当需要更高精度时，可在末尾追加字符范围 (`C{start}:{end}`)：`src:R001-DOC042-P3-S2-C120:180`。

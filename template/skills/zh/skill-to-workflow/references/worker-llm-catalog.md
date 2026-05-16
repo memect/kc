@@ -1,36 +1,36 @@
-# Worker LLM Catalog
+# Worker LLM 目录
 
-Models available via SiliconFlow API for worker LLM tasks. Update this catalog as models change.
+通过 SiliconFlow API 可调用的 worker LLM 模型。模型有更新时同步维护此目录。
 
-## Text Models
+## 文本模型
 
-| Tier | Model | Context Window | Strengths | Notes |
+| 等级 | 模型 | 上下文窗口 | 优势 | 备注 |
 |------|-------|---------------|-----------|-------|
-| TIER1 | Pro/zai-org/GLM-5 | 128K | Strong reasoning, Chinese language | Top tier for complex judgment |
-| TIER1 | Pro/moonshotai/Kimi-K2.5 | 128K | Long context, strong extraction | Good for full-document processing |
-| TIER2 | Pro/deepseek-ai/DeepSeek-V3.2 | 64K | Balanced capability/cost | Good general purpose |
-| TIER2 | Pro/MiniMaxAI/MiniMax-M2.5 | 64K | Strong Chinese, fast | Good for Chinese documents |
-| TIER2 | Qwen/Qwen3.5-397B-A17B | 32K | Large MoE, strong reasoning | Cost-effective for complex tasks |
-| TIER3 | Qwen/Qwen3.5-122B-A10B | 32K | Good accuracy, lower cost | Sweet spot for many tasks |
-| TIER4 | Qwen/Qwen3.5-35B-A3B | 16K | Fast, cheap | Best for simple extraction |
+| TIER1 | Pro/zai-org/GLM-5 | 128K | 推理能力强、中文好 | 用于复杂判定的顶级选项 |
+| TIER1 | Pro/moonshotai/Kimi-K2.5 | 128K | 长上下文、抽取能力强 | 适合整篇文档处理 |
+| TIER2 | Pro/deepseek-ai/DeepSeek-V3.2 | 64K | 性价比均衡 | 通用场景表现良好 |
+| TIER2 | Pro/MiniMaxAI/MiniMax-M2.5 | 64K | 中文强、速度快 | 适合中文文档 |
+| TIER2 | Qwen/Qwen3.5-397B-A17B | 32K | 大型 MoE，推理力强 | 复杂任务的高性价比选项 |
+| TIER3 | Qwen/Qwen3.5-122B-A10B | 32K | 准确率良好、成本较低 | 多数任务的甜点位 |
+| TIER4 | Qwen/Qwen3.5-35B-A3B | 16K | 快、便宜 | 简单抽取首选 |
 
-## Vision/OCR Models
+## 视觉 / OCR 模型
 
-| Tier | Model | Strengths | Notes |
+| 等级 | 模型 | 优势 | 备注 |
 |------|-------|-----------|-------|
-| OCR_TIER1 | zai-org/GLM-4.6V | Best OCR accuracy | Use for complex tables/charts |
-| OCR_TIER2 | Qwen/Qwen3.5-397B-A17B | Good general vision | Multimodal version |
-| OCR_TIER3 | PaddlePaddle/PaddleOCR-VL-1.5 | Fast, lightweight OCR | Best for standard text |
+| OCR_TIER1 | zai-org/GLM-4.6V | OCR 准确率最高 | 用于复杂表格/图表 |
+| OCR_TIER2 | Qwen/Qwen3.5-397B-A17B | 通用视觉好 | 多模态版本 |
+| OCR_TIER3 | PaddlePaddle/PaddleOCR-VL-1.5 | 快、轻量 OCR | 标准文本首选 |
 
-## Selection Guidelines
+## 选型要点
 
-- Start with the highest tier that fits your context window needs.
-- For extraction of simple entities (dates, amounts, names): TIER3-4 often sufficient.
-- For semantic judgment (adequacy, compliance): TIER1-2 usually needed.
-- For Chinese financial documents: prefer GLM and Qwen models over DeepSeek for domain terminology.
-- Context window constraint: if the section to process exceeds the model's window, either narrow the context further (tree processing) or use a model with a larger window.
+- 在能满足上下文窗口需求的前提下，优先选择最高等级的模型。
+- 抽取简单实体（日期、金额、姓名）：TIER3-4 通常够用。
+- 语义判定（充分性、合规性）：通常需要 TIER1-2。
+- 中文金融文档：优先选择 GLM 与 Qwen 系列，而非 DeepSeek，以更好处理行业术语。
+- 上下文窗口约束：若待处理段落超出模型窗口，要么进一步收窄上下文（采用树状处理），要么换上下文更大的模型。
 
-## API Configuration
+## API 配置
 
 ```python
 import openai
@@ -47,4 +47,4 @@ response = client.chat.completions.create(
 )
 ```
 
-This catalog should be maintained by the coding agent. Add new models as they become available, remove deprecated models, and update capability assessments based on testing experience.
+本目录由编程智能体负责维护。有新模型时及时加入，模型停服时移除，并基于测试经验更新能力评估。
