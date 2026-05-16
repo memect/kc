@@ -716,12 +716,27 @@ function App({ engine, config }) {
     }
 
     if (streamingRef.current) {
-      queueRef.current.push(trimmed);
-      setQueueSize(queueRef.current.length); // F2
-      addMessage({
-        role: "system",
-        content: `⏳ Queued (${queueRef.current.length} waiting). Will be sent to KC on next turn boundary.`,
-      });
+      // v0.8.2 P12-B: in marathon mode, hand off to engine's input queue
+      // instead of the TUI-local queueRef. The engine's marathon decision
+      // loop drains it FIRST at each turn boundary, so the user's nudge
+      // wins over the driver's continuation. Outside marathon, keep the
+      // existing TUI-local queue (drained after runTurn returns).
+      const marathonActive = engineRef.current?.isMarathonActive?.() ?? false;
+      if (marathonActive && engineRef.current?.queueUserInput) {
+        engineRef.current.queueUserInput(trimmed);
+        const depth = engineRef.current.getQueueDepth?.() ?? 1;
+        addMessage({
+          role: "system",
+          content: `⏳ Queued for marathon (${depth} waiting). Will be sent before the next driver continuation.`,
+        });
+      } else {
+        queueRef.current.push(trimmed);
+        setQueueSize(queueRef.current.length); // F2
+        addMessage({
+          role: "system",
+          content: `⏳ Queued (${queueRef.current.length} waiting). Will be sent to KC on next turn boundary.`,
+        });
+      }
     } else {
       runTurn(trimmed);
     }
