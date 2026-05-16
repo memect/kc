@@ -43,9 +43,9 @@ When grouping, name the file with the explicit range so downstream consumers (wo
 
 ### Anti-pattern: the unified runner
 
-If you find yourself writing a single `unified_qc.py` (or `batch_runner.py`, or `master_check.py`) that handles all 110 rules in one Python file, **stop**. That means your per-rule skills are wrong, not that the architecture is wrong. Fix the skills.
+If you find yourself writing a single `unified_qc.py` (or `batch_runner.py`, or `master_check.py`) that handles all rules in one Python file, **stop**. That means your per-rule skills are wrong, not that the architecture is wrong. Fix the skills.
 
-E2E #4 demonstrated the cost: an agent wrote `unified_qc.py` to bypass 110 individual skills it didn't trust. Result was 1,150 errors out of 6,930 production checks (16.6%) and a phase counter stuck in `production_qc` while real work happened in skill_authoring. The unified runner felt productive locally and was a global mistake.
+A failure pattern worth flagging: an agent writes a unified runner like `unified_qc.py` to bypass individual skills it doesn't trust. The result is cascading errors — a single rule's failure corrupts every other rule's verdict, easily producing 15%+ error rates across thousands of production checks. The unified runner feels productive locally and is a global mistake. It also stalls the phase model: with no individual `check.py` files landing on disk, the engine can't credit the work toward milestone completion.
 
 If individual skills aren't running cleanly, the right response is to identify which ones break and fix them, not consolidate. The whole pipeline (extraction → skill_testing → distillation → production_qc) assumes one rule = one verifiable artifact.
 
@@ -53,20 +53,20 @@ If individual skills aren't running cleanly, the right response is to identify w
 
 Each rule_skill folder MUST have BOTH a substantive `SKILL.md` AND a substantive `check.py` (or `check.py` that imports + calls a workflow that does the real work). One side being a stub breaks the contract.
 
-**Variant 1 (v0.7.5 贷款 audit § 9.1)**: stub `SKILL.md` (templated 19 lines with `检查逻辑: N/A`) paired with real `check.py` (44-131 LOC of regex methodology). SKILL.md is supposed to be the human-readable methodology document. A reader scanning the rule folder for "what does this verify and why" gets nothing. The agent put all the methodology into `check.py` comments, which works for the engine but loses the deliverable framing.
+**Variant 1**: stub `SKILL.md` (a templated ~20-line scaffold with `检查逻辑: N/A` or equivalent) paired with a real `check.py` (regex methodology embedded in code). SKILL.md is supposed to be the human-readable methodology document. A reader scanning the rule folder for "what does this verify and why" gets nothing. The methodology has been pushed entirely into `check.py` comments — works for the engine, loses the deliverable framing.
 
-**Variant 2 (v0.7.5 资管 audit § 3.4)**: substantive `SKILL.md` (real methodology, PASS/FAIL criteria, regulation cross-refs) paired with stub `check.py` (29-line scaffold returning `{"verdict": "NOT_APPLICABLE", "evidence": "Check requires worker LLM execution"}`). The real check logic lives in `workflows/<rule_id>/workflow.py` — but `check.py` doesn't import or call it. A user running `python rule_skills/R01-01/check.py document.txt` gets `NOT_APPLICABLE` on every input, which is misleading.
+**Variant 2**: substantive `SKILL.md` (real methodology, PASS/FAIL criteria, source cross-refs) paired with stub `check.py` (a thin scaffold returning `{"verdict": "NOT_APPLICABLE", "evidence": "Check requires worker LLM execution"}`). The real check logic lives in `workflows/<rule_id>/workflow.py` — but `check.py` doesn't import or call it. A user running `python rule_skills/R01-01/check.py document.txt` gets `NOT_APPLICABLE` on every input, which is misleading.
 
-**Variant 3 (legacy v0.7.0)**: stub `check.py` returning `{"pass": null, "method": "stub"}` paired with otherwise-real SKILL.md. Methodology described but never executable.
+**Variant 3 (legacy)**: stub `check.py` returning `{"pass": null, "method": "stub"}` paired with an otherwise-real SKILL.md. Methodology described but never executable.
 
 **The contract**:
-- ✓ DO: SKILL.md describes WHAT to check + WHY + WHEN to flag it. Substantive — typically 50-300 lines, not 19.
+- ✓ DO: SKILL.md describes WHAT to check + WHY + WHEN to flag it. Substantive — typically 50-300 lines, not a 20-line template.
 - ✓ DO: check.py implements the check. EITHER substantive direct logic OR `from workflows.<rule_id>.workflow_v1 import verify` + delegate. Returns concrete verdicts.
 - ✗ DON'T: stub SKILL.md with methodology in check.py comments (variant 1).
 - ✗ DON'T: substantive SKILL.md with check.py that returns NOT_APPLICABLE without delegating to a workflow (variant 2).
 - ✗ DON'T: stub check.py returning null verdict (variant 3, legacy).
 
-A future engine milestone check (v0.8 P2-F) may refuse phase advance if too many check.py files are stub-shaped. Better to author them substantively now.
+The engine may refuse phase advance if too many check.py files are stub-shaped. Better to author them substantively now.
 
 ## Writing SKILL.md
 
@@ -139,7 +139,7 @@ def check(document_text):
 
 Recognized prefixes (Chinese + English variants): 预期命中点, 预期结果, 预期判定, 预期验证, 标注, 审核标注, Expected, expected, EXPECTED, Annotation, annotation. Pass `extra_prefixes=("..."、"...")` if your project uses different labels.
 
-E2E #11 贷款 v0.8 audit: 4/14 rules had standalone check.py false-positive PASS on violation samples because they matched the `预期命中点: ...年化利率` footer instead of the document body. v0.8.1 ships the helper as a template file so this trap is one import away from being avoided.
+A recurring failure mode worth flagging: a non-trivial fraction of rules have standalone check.py false-positive PASS on violation samples because the regex matches the `预期命中点: ...` annotation footer instead of the document body. KC ships the helper as a template file so this trap is one import away from being avoided.
 
 ## Writing References
 
@@ -156,6 +156,50 @@ Keep references factual and sourced. They are evidence, not instructions.
 
 - **samples.json**: Annotated examples. Each entry: the input (extracted text or entity), the expected result (pass/fail/missing), and the expected comment. Build this incrementally as you test.
 - **corner_cases.json**: Edge cases that the standard logic does not handle. Each entry: description, detection pattern, resolution, and confidence threshold. See the `corner-case-management` skill for the methodology.
+
+## Authoring methodology (from skill-creator core)
+
+This section folds in the universal authoring patterns from Anthropic's
+upstream `skill-creator`. Apply them on top of the KC-specific layout
+above when drafting any new rule skill.
+
+### Capture intent before drafting
+
+Before writing any skill, get clear on four questions:
+
+1. **What should this skill enable Claude (or check.py) to do?** — A single concrete capability, not a category.
+2. **When should it trigger?** — What user phrases / document contexts should match its description.
+3. **What's the expected output format?** — verdict + comment + evidence shape; or for non-check skills, the deliverable shape.
+4. **Do we need test samples?** — If the rule has objective pass/fail criteria (almost all KC rules do), yes. Build `assets/samples.json` incrementally as edge cases appear.
+
+If the conversation already contains worked examples (a user pointed at a passage and said "this is non-compliant"), extract answers from history first — don't ask the user to repeat themselves.
+
+### Frontmatter and progressive disclosure
+
+Skills load in three tiers; budget each tier for what it has to carry:
+
+1. **Metadata (name + description)** — always in the agent's context. ~100 words. This is the *primary triggering mechanism* — make it specific and slightly "pushy" (Claude tends to under-trigger skills). Include trigger keywords, rule ID, the regulation it derives from, and the document location it expects to find evidence in.
+2. **SKILL.md body** — loaded when the skill triggers. Target 100–300 lines for typical rules, hard ceiling 500. Explain the WHY behind the rule, not just the mechanics.
+3. **Bundled resources** (scripts/, references/, assets/) — loaded only when the body explicitly points to them. Big regulation excerpts and sample corpora belong here, not inline.
+
+If SKILL.md is approaching 500 lines, that's the cue to push detail down into `references/` and leave a pointer like "See references/edge-cases.md for the full enumeration of corner cases."
+
+### Writing style
+
+- **Imperative over passive.** "Extract the ratio" not "the ratio should be extracted."
+- **Explain why, not just what.** Today's LLMs have good theory of mind — a one-line "the regulation flags this to protect retail investors" makes a downstream agent generalize correctly to a case you didn't enumerate.
+- **Be wary of all-caps MUSTs and NEVERs.** If you find yourself reaching for them, that's usually a sign the underlying reasoning hasn't been made explicit. Reframe and explain.
+- **Be specific about location.** "Look in Chapter 2, Section 'Key Regulatory Metrics' or the summary table on page 1" beats "look in the financial disclosures somewhere."
+
+### Test samples before scripts
+
+After drafting SKILL.md, write 2–3 realistic sample inputs into `assets/samples.json` with their expected verdicts BEFORE you finalise `check.py`. The samples ground the script: every regex or keyword you add should be there to make a specific sample produce its expected verdict. Writing scripts in the abstract — without samples — almost always produces over-fitted code that fails on the first real document.
+
+### Iterate, don't perfect
+
+A rule skill rarely lands correctly on the first draft. Plan for at least one revision after testing surfaces problems. Don't pile on defensive MUSTs to handle every edge case — generalize the methodology. If three samples each needed a different one-off fix, that's a signal the underlying rule statement is too narrow.
+
+If your skill needs more sophisticated methodology than this section covers — formal eval loops with quantitative benchmarks, blind A/B comparison between skill versions, or description-optimization runs — consult `skill-creator`.
 
 ## Iteration
 

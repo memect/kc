@@ -6,7 +6,7 @@ description: Decide how to decompose the rule set into TaskBoard tasks during ru
 
 # Work Decomposition
 
-KC's main agent is the conductor. The conductor decides what work to do next — and that decision is upstream of every other choice that follows. Wrong decomposition makes the rest of the run expensive: if rules are processed in the wrong order, the agent re-designs the same shape three times. If unrelated rules are bundled into one skill, the resulting check.py becomes the unified-runner anti-pattern from E2E #4. If related rules are split across separate skills, the agent re-derives the shared chunker logic 17 times.
+KC's main agent is the conductor. The conductor decides what work to do next — and that decision is upstream of every other choice that follows. Wrong decomposition makes the rest of the run expensive: if rules are processed in the wrong order, the agent re-designs the same shape three times. If unrelated rules are bundled into one skill, the resulting check.py drifts into the unified-runner anti-pattern. If related rules are split across separate skills, the agent re-derives the shared chunker logic many times over.
 
 This skill is the conductor's playbook for that decision. It's tagged `tier: meta-meta` because work decomposition is a system-level discipline, not a per-rule technique. The complementary `task-decomposition` skill (also `tier: meta-meta`) covers the *internal* structure of one rule's check — locate, extract, normalize, judge, comment. This skill covers how the rule **set** should be split into TaskBoard items.
 
@@ -15,7 +15,7 @@ This skill is the conductor's playbook for that decision. It's tagged `tier: met
 - **Entering rule_extraction.** Read the regulation, decompose into rules, then decide how those rules will be ordered and grouped before declaring the phase done. Coverage audit + chunk refs are downstream of these decisions.
 - **Entering skill_authoring.** TaskBoard is empty (engine no longer auto-populates per-rule tasks). Read the rule list from `describeState`, decide grouping + order, then call `TaskCreate` for each unit of work.
 - **Mid-run re-decomposition.** If the TaskBoard feels wrong (rules accumulating in the wrong order, an obviously-bundled pair across two tasks), stop adding work and re-decompose. The cost of pausing 5 minutes to re-plan is recovered within 2 rules of better-shaped work.
-- **Any phase with 3+ parallel sub-goals.** If you find yourself juggling multiple parallel sub-goals in working memory (3+ rules × docs, multiple deliverable-prep items in finalization, several QC batches in production_qc), drop them into the TaskBoard and work serially. v0.7.5 audits showed distillation + production_qc benefit from explicit tasks even when the registry didn't expose this skill there — v0.8 P2-E makes the skill available in every phase.
+- **Any phase with 3+ parallel sub-goals.** If you find yourself juggling multiple parallel sub-goals in working memory (3+ rules × docs, multiple deliverable-prep items in finalization, several QC batches in production_qc), drop them into the TaskBoard and work serially. Every phase from rule_extraction through finalization benefits from explicit tasks once parallel sub-goals appear — distillation and production_qc included.
 
 ## Quick rule: when does the TaskBoard belong?
 
@@ -40,7 +40,7 @@ Pick one explicitly and write it into your first PATTERNS.md entry. "I'm going S
 
 Process the **hardest** rule first. Use the chunker, verdict shape, and worker tier that hard rule demands as the design floor. Process subsequent rules in descending difficulty, each one a degenerate case of the machinery already built.
 
-**When to pick:** the rule set has uneven complexity and you suspect a few hard rules will dictate the shape (almost always true for compliance / regulatory work). E2E #5 GLM accidentally followed this path and produced 0.6% ERROR on real LLM-driven workflows; DS started bottom-up and shipped 78% NOT_APPLICABLE.
+**When to pick:** the rule set has uneven complexity and you suspect a few hard rules will dictate the shape (almost always true for compliance / regulatory work). When this method is followed correctly it tends to produce sub-1% ERROR rates on real LLM-driven workflows; the bottom-up alternative typically over-produces NOT_APPLICABLE verdicts because the easy rules' machinery can't handle the hard cases at the end.
 
 **Why "Huffman" not "Shannon" for the analogy:** Huffman builds optimal prefix codes by processing low-frequency symbols first. KC's analogue is the high-cost-per-rule, low-frequency rules — the R028s that dominate the design space even though there are few of them. Touch them first. The easy rules inherit the framework cheaply.
 
@@ -105,10 +105,10 @@ Keep separate when ANY of:
 - Rules apply to different document types (one applies only to public-fund reports, another only to private-fund reports)
 - One rule's failure mode is a specific failure mode of another (don't bundle parent + child rules — the child's check redundantly re-runs the parent's)
 
-The v0.6.2 D2 anti-pattern wording captures the failure case clearly:
+The anti-pattern wording captures the failure case clearly:
 > If you find yourself writing a unified_qc.py-style monolith that bypasses individual skills, your per-rule skills are wrong. Fix them, don't replace them.
 
-That came from E2E #4 where one conductor wrote a 2,400-line `unified_qc.py` that ran all rules at once. It produced 1,150 ERROR verdicts (16.6%) because every rule's failure cascaded into every other rule's verdict. Per-rule skills are KC's unit of granularity for a reason.
+A failure mode worth flagging: a conductor writes a 2,000+ line `unified_qc.py` that runs all rules at once. The result is cascading errors — every rule's failure corrupts every other rule's verdict, easily producing 15%+ ERROR rates on production checks. Per-rule skills are KC's unit of granularity for a reason.
 
 ### Anti-pattern: stub check.py + real workflow.py
 
@@ -152,23 +152,13 @@ iterations of the skill (changes to regulation interpretation, edge
 cases discovered in production) need a single canonical place to
 update — the skill — not N workflows that have drifted independently.
 
-E2E #6 v070 surfaced this pattern (DS bundled-skill check.py files
-all returned `{"pass": null, "method": "stub"}` deferring to
-workflows/). v0.7.1 added this anti-pattern explicitly.
+Two failure modes worth flagging:
 
-E2E #7 v071 showed the teaching prevented the stub anti-pattern in
-both conductors (no `{"pass": null}` patterns in either run), but
-**DS still inverted the canonical-vs-distilled relationship**: DS's
-6 thematic skill folders had SKILL.md only (no check.py), with the
-real verification code living in `workflows/<skill>/check.py`. The
-absence of stubs is good; the inversion is not — editing a rule then
-requires touching both SKILL.md (the doc) and the workflow check.py
-(the code). Single source of truth is lost.
+**The pure-stub failure:** bundled-skill check.py files all return `{"pass": null, "method": "stub"}` deferring to `workflows/`. Methodology is described in SKILL.md but never executable from the skill folder.
 
-GLM v071 by contrast landed the canonical pattern: 97/97 skills had
-both SKILL.md AND a real `check.py` (median 143 LOC of regex +
-applicability logic), and `workflows/<id>/workflow_v1.py` was a
-50-line thin wrapper that imported and called it:
+**The inverted-canonical failure:** the agent avoids stubs (good) but inverts the canonical-vs-distilled relationship — thematic skill folders have only SKILL.md (no check.py), with the real verification code living inside `workflows/<skill>/check.py`. The absence of stubs is good; the inversion is not — editing a rule then requires touching both SKILL.md (the doc) and the workflow check.py (the code). Single source of truth is lost.
+
+The canonical landing looks like this: every skill has BOTH a substantive SKILL.md AND a real `check.py` (regex + applicability logic), and `workflows/<id>/workflow_v1.py` is a thin wrapper (~50 LOC) that imports and calls it:
 
 ```python
 # workflows/D01-01/workflow_v1.py — thin wrapper, 52 LOC
@@ -185,11 +175,7 @@ def run(doc_text: str, meta: dict = None) -> dict:
     return result
 ```
 
-This is the v0.7.2+ canonical pattern: workflow is a shim that
-points at the skill's check.py. To iterate on a rule's verification,
-edit `rule_skills/<id>/check.py`. The workflow doesn't change. v0.7.2
-clarifies the teaching: avoid stubs AND keep the canonical
-relationship (skill is canonical, workflow is distilled wrapper).
+This is the canonical pattern: workflow is a shim that points at the skill's check.py. To iterate on a rule's verification, edit `rule_skills/<id>/check.py`. The workflow doesn't change. The teaching has two parts: avoid stubs AND keep the canonical relationship (skill is canonical, workflow is distilled wrapper).
 
 ### Naming convention for grouped checks
 
@@ -355,7 +341,7 @@ When entering skill_authoring with an empty TaskBoard:
 
 ### Calling TaskCreate / TaskUpdate / TaskComplete
 
-The engine registers three task-board tools (v0.7.4):
+The engine registers three task-board tools:
 
 - `TaskCreate({id, title, phase, ruleId?})` — adds a task to `tasks.json`. `id` must be unique within the session; pick a stable shape like `<rule_id>-<phase>` for per-rule tasks or `<group-name>-<phase>` for grouped / non-rule tasks. `phase` is the current phase the task belongs to. `ruleId` is optional — set it for per-rule tasks so the engine can credit the rule_id in milestone derivation.
 - `TaskUpdate({id, status?, summary?})` — change a task's status (`pending` / `in_progress` / `completed` / `failed`), optionally with a short summary.
@@ -363,7 +349,7 @@ The engine registers three task-board tools (v0.7.4):
 
 ### Ralph loop scope — within a phase only
 
-Important contract (changed in v0.7.4 after team feedback):
+Important contract:
 
 - **Loop scope = current phase only.** TaskCreate populates tasks for the CURRENT phase. The Ralph loop processes them one by one within the phase.
 - **Loop exits at phase boundaries.** When all current-phase tasks complete OR the phase advances (you call `phase_advance`, or anything else changes `currentPhase`), the loop exits cleanly. Control returns to the user.
@@ -395,9 +381,9 @@ Three formats, each defensible. Pick one and stick with it:
 
 - **`rules/PATTERNS.md`** — concise, framework-only, updated as the project progresses. Best for greenfield projects with clear hypothesis-up-front structure. Capped at ~5 KB; entries are transferable shapes / project constraints / anti-patterns with rationale (see "What to write" above).
 
-- **`logs/phase_<name>_complete.md` per phase** — incremental, captures what each phase produced + decisions made + what the next phase inherits. Best for iterative discovery work where the framework crystallizes mid-run. E2E #7 GLM used this pattern across 6 phase docs and an `evolution_summary_v1.2.md`; the methodology was captured even though PATTERNS.md was never written.
+- **`logs/phase_<name>_complete.md` per phase** — incremental, captures what each phase produced + decisions made + what the next phase inherits. Best for iterative discovery work where the framework crystallizes mid-run. A real example pattern: six phase docs plus an `evolution_summary_vN.md` capture the methodology even when PATTERNS.md is never written.
 
-- **`AGENT.md` decisions section + domain notes** — narrative-style, living document of "what we know" and "why". Best for projects with rich domain context to capture (regulations, edge cases, thresholds, sample format distributions). E2E #7 GLM's AGENT.md included regulation enforcement dates, product type taxonomies, threshold values, and sample format counts — this is fine; it's a different idiom for the same goal.
+- **`AGENT.md` decisions section + domain notes** — narrative-style, living document of "what we know" and "why". Best for projects with rich domain context to capture (regulations, edge cases, thresholds, sample format distributions). An AGENT.md that records regulation enforcement dates, product type taxonomies, threshold values, and sample format counts works perfectly — it's a different idiom for the same goal.
 
 What you should NOT do: skip persistence and rely only on the live conversation context. By the time you have N skills authored without any persisted methodology, you've made N implicit decisions about verdict shape, chunker boundaries, and worker tier. Each rule re-derives from scratch. Refactoring requires touching N files instead of one.
 
@@ -405,15 +391,15 @@ What you should NOT do: skip persistence and rely only on the live conversation 
 
 ✅ "Before each phase advance, write what I learned to whichever persistence file matches this project's idiom — even if it's tentative."
 
-E2E history:
-- E2E #6 v070 DS wrote PATTERNS.md only after a rollback. Per-skill decisions before that point had to be re-touched. v0.7.1 added "PATTERNS.md FIRST" reinforcement.
-- E2E #7 v071 neither DS nor GLM wrote PATTERNS.md, but GLM wrote 6 rich phase-completion logs and a comprehensive AGENT.md — the methodology WAS captured, just in different files. v0.7.2 blesses the broader principle: persist before you advance, format flexible.
+Failure modes worth flagging:
+- An agent writes PATTERNS.md only after a rollback. All the per-skill decisions made before that point have to be re-touched. "PATTERNS.md FIRST" exists because of this cost.
+- An agent skips PATTERNS.md entirely but writes rich phase-completion logs and a comprehensive AGENT.md. The methodology IS captured, just in different files — which is fine. The broader principle: persist before you advance, format flexible.
 
-The engine's filesystem-derived milestones (Group A v0.7.0) verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract; the persistence file is your project's memory.
+The engine's filesystem-derived milestones verify coverage on disk regardless of how you split the work. The TaskBoard is your scratchpad; the disk is the contract; the persistence file is your project's memory.
 
 ## Subagent batch work: rolling-window writes
 
-When you dispatch N subagents to do batch work (regression tests, batch verification, parallel rule processing), DO NOT have them write to a shared coordination file. v0.7.5 audits found subagents racing on `tasks.json` / `rules/catalog.json` / `output/results/summary.json` — one took the workspace lock for 5+ minutes while others waited silently.
+When you dispatch N subagents to do batch work (regression tests, batch verification, parallel rule processing), DO NOT have them write to a shared coordination file. A failure mode worth flagging: subagents race on `tasks.json` / `rules/catalog.json` / `output/results/summary.json` — one takes the workspace lock for several minutes while the others wait silently.
 
 The right pattern: each subagent writes to its OWN file under a known prefix. The parent aggregates after all subagents finish.
 
@@ -433,6 +419,6 @@ output/
 # Parent agent reads all batch_regression_*.json and writes the aggregate.
 ```
 
-Engine signal: if you see `lock_blocked` events in events.jsonl during subagent work, that's the symptom. v0.8 P4-C added the event emission so the parent has visibility into contention before the subagent times out. If the pattern shows up, refactor to rolling-window writes.
+Engine signal: if you see `lock_blocked` events in events.jsonl during subagent work, that's the symptom — the engine emits this event so the parent has visibility into contention before the subagent times out. If the pattern shows up, refactor to rolling-window writes.
 
 Don't write a "coordinate via file locking" subagent batch. The locking primitives exist for safety against accidental concurrent writes, not as a queue. Use the filesystem layout as the coordination mechanism.

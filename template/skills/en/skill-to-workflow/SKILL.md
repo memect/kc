@@ -70,7 +70,7 @@ If you do escalate to LLM:
 - **tier2-3**: bulk extraction with simple semantic checks
 - **tier4** (cheapest): high-volume keyword-spotting that regex can't handle. Note: tier4 models on SiliconFlow are Qwen3.5 thinking-mode — `content` can return empty if `reasoning_content` consumes max_tokens. Test with realistic prompts before relying. If you see empty responses, either bump max_tokens to ≥8192, shorten your prompt, or fall back to tier1-2.
 
-Both v0.7.1 audit conductors (DS and GLM) defaulted to all-regex distillation and only added LLM escalation when the human user explicitly asked for "V2 with worker LLM". If your rule catalog has any rules where the verification is genuinely semantic, you should reach for `worker_llm_call` yourself — don't wait to be asked.
+A recurring failure pattern worth flagging: agents default to all-regex distillation and only add LLM escalation when the human user explicitly asks for a "V2 with worker LLM". If your rule catalog has any rules where the verification is genuinely semantic, you should reach for `worker_llm_call` yourself — don't wait to be asked.
 
 ## Workflow Structure
 
@@ -148,6 +148,34 @@ All numbers here (10 documents, 5 percentage points, etc.) are recommended start
 
 This follows the same tier-transition framework as parser escalation in `document-parsing`: a quality/accuracy score drives the decision to stay, escalate, or skip.
 
+### Picking the model inside a tier — quick reference
+
+The tier framework above answers "which tier is right for this step?".
+Inside a tier slot, "which specific model?" still matters. A few
+heuristics that hold today (refresh from `auto-model-selection` —
+specifics change in months, not years):
+
+- **Tier 1 / Tier 2 worker workhorse**: the current-generation
+  flagship MoE LLMs (200-400B total / ~20B activated experts) are a
+  reasonable starting baseline. Qwen's family flagship and DeepSeek's
+  current premium model are both in this shape; either works.
+- **Tier 3 / Tier 4 small model**: prefer Qwen family for sub-30B
+  options — many cheap, reliable choices. Skip the `coder` /
+  `code` named variants at small sizes (unreliable for general
+  worker tasks). Prefer no-thinking-mode variants when available;
+  these tasks don't benefit from reflection.
+- **Provider stacking**: routing conductor and worker through
+  different providers can isolate per-model throttle / rate-limit
+  exposure (e.g., DeepSeek for workers, SiliconFlow for conductor).
+- **VLM / OCR**: characters / handwriting / seals → dedicated OCR
+  model (Paddle-OCR, GLM-OCR, DeepSeek-OCR or their successors).
+  Complex graphs / tables → larger general VLM.
+
+For up-to-date facts (exact model names, context windows, pricing),
+consult `auto-model-selection` and use Context7. The heuristics above
+go stale fast — the *shape* (MoE flagship for workhorse, sub-30B
+non-thinking for cheap bulk, OCR-specific for chars) is what stays.
+
 ## Testing Against Ground Truth
 
 The coding agent's skill-based results are the ground truth. For each document in Samples/:
@@ -190,7 +218,7 @@ See `references/worker-llm-catalog.md` for current model capabilities and contex
 
 ## Two access paths: `worker_llm_call` tool (preferred) vs direct HTTP
 
-KC ships a `worker_llm_call` tool. Use it whenever possible — the engine sees every call, can track cost + token spend, applies rate limiting, and surfaces in audit. v0.8 P2-B added a batch mode:
+KC ships a `worker_llm_call` tool. Use it whenever possible — the engine sees every call, can track cost + token spend, applies rate limiting, and surfaces in audit. A batch mode is supported:
 
 ```
 worker_llm_call({
@@ -203,7 +231,7 @@ worker_llm_call({
 
 Returns a `{n_total, n_succeeded, n_failed, total_tokens_in, total_tokens_out, results: [...]}` summary. Partial failures don't fail the whole batch.
 
-### The canonical `workflows/common/llm_client.py` (v0.8.1 — ship from template)
+### The canonical `workflows/common/llm_client.py` (shipped from template)
 
 For a workflow that runs **standalone** (no KC session — e.g., a customer deploys the release bundle and runs `python run.py doc.pdf`), the workflow has no access to `worker_llm_call`. The canonical HTTP client shim ships as a template file and is auto-populated into every workspace's `workflows/common/llm_client.py` at engine init. **Do not write your own.** Use the file that's already there:
 
@@ -226,7 +254,7 @@ What the shim does:
 - Writes a line to `output/llm_ledger.jsonl` per call so KC audits can reconstruct cost even when worker_llm_call wasn't used
 - Raises an explicit error if `LLM_BASE_URL` is missing (no silent fallback to a hardcoded vendor)
 
-**Don't write your own llm_client.py from scratch.** Three v0.7.x/v0.8 sessions in a row had agents roll their own shim — buggy (stale model IDs, hardcoded SiliconFlow URL, no ledger) and invisible to the engine. Use the canonical shim; if it's missing for some reason, copy it from `template/workflows/common/llm_client.py` in the kc-beta install (the engine also auto-populates at init — check `workflows_common_populated` event in events.jsonl).
+**Don't write your own llm_client.py from scratch.** A recurring failure mode worth flagging: agents repeatedly roll their own shim — buggy (stale model IDs, hardcoded vendor URL, no ledger) and invisible to the engine. Use the canonical shim; if it's missing for some reason, copy it from `template/workflows/common/llm_client.py` in the kc-beta install (the engine also auto-populates at init — check `workflows_common_populated` event in events.jsonl).
 
 ## sandbox_exec timeout for known-slow commands
 
