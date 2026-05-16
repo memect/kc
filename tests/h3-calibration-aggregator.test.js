@@ -123,7 +123,74 @@ console.log("\nShape 4 (v0.8.1 P9-A): top-level fail_by_rule + pass_by_rule maps
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
-console.log("\nShape 5 (fallback): unfamiliar filename with rule-keyed verdicts");
+console.log("\nShape 5 (v0.8.2 P13-A): doc-keyed → rules-keyed nested (贷款 v0.8.1 shape)");
+{
+  const ws = makeTempWorkspace();
+  // 贷款 v0.8.1 wrote skill_test_v*_results.json + v2_hybrid_results.json
+  // + run_all_checks.json all with this shape. Previously none of the
+  // four shape recognizers matched and calibration shipped empty.
+  fs.writeFileSync(path.join(ws, "output", "skill_test_v2_results.json"), JSON.stringify({
+    "合规样本_001.md": {
+      channel: "贷款产品介绍页",
+      expected: "PASS",
+      actual: "PASS",
+      match: true,
+      rules: {
+        R01: { rule_id: "R01", verdict: "PASS", confidence: 0.95, method: "regex" },
+        R02: { rule_id: "R02", verdict: "PASS", confidence: 0.90, method: "regex" },
+        R03: { rule_id: "R03", verdict: "PASS", confidence: 0.85, method: "regex" },
+      },
+    },
+    "违规样本_001.md": {
+      channel: "贷款话术",
+      expected: "FAIL",
+      actual: "FAIL",
+      match: true,
+      rules: {
+        R01: { rule_id: "R01", verdict: "FAIL", confidence: 0.98, method: "regex" },
+        R02: { rule_id: "R02", verdict: "PASS", confidence: 0.80, method: "regex" },
+        R03: { rule_id: "R03", verdict: "FAIL", confidence: 0.95, method: "regex" },
+      },
+    },
+    "_meta": "not a doc — should be skipped (no rules field)",
+  }));
+  const result = runAggregator(ws);
+  assert(result !== null, "Shape 5 detected");
+  assert(result?.historical_accuracy?.R01?.n_passed === 1, "R01 sees 1 pass across docs");
+  assert(result?.historical_accuracy?.R01?.n_failed === 1, "R01 sees 1 fail across docs");
+  assert(result?.historical_accuracy?.R02?.n_passed === 2, "R02 sees 2 passes across docs");
+  assert(result?.historical_accuracy?.R03?.n_passed === 1 && result?.historical_accuracy?.R03?.n_failed === 1, "R03 split 1/1");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 5 (v0.8.2 P13-A): with outer results wrapper");
+{
+  const ws = makeTempWorkspace();
+  // v2_full_regression.json style — wrapped in {combined, engine, results...}
+  // where the actual doc-keyed map is under a nested key
+  fs.writeFileSync(path.join(ws, "output", "v2_regression_test.json"), JSON.stringify({
+    results: {
+      "doc1.md": {
+        rules: {
+          R01: { verdict: "PASS" },
+          R02: { verdict: "FAIL" },
+        },
+      },
+      "doc2.md": {
+        rules: {
+          R01: { verdict: "PASS" },
+        },
+      },
+    },
+  }));
+  const result = runAggregator(ws);
+  assert(result !== null, "Shape 5 with outer wrapper detected");
+  assert(result?.historical_accuracy?.R01?.n_passed === 2, "R01 sees 2 passes through wrapper");
+  assert(result?.historical_accuracy?.R02?.n_failed === 1, "R02 sees 1 fail through wrapper");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 6 (fallback): unfamiliar filename with rule-keyed verdicts");
 {
   const ws = makeTempWorkspace();
   // Future schema we haven't enumerated explicitly

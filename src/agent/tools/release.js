@@ -763,7 +763,53 @@ export class ReleaseTool extends BaseTool {
       }
     }
 
-    // 5) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
+    // 5) v0.8.2 P13-A: doc-keyed → rules-keyed nested shape.
+    // 贷款 v0.8.1 wrote skill_test_v*_results.json + v2_hybrid_results.json
+    // + run_all_checks.json all with this shape:
+    //   {
+    //     "<doc_filename>": {
+    //       "channel": "...", "expected": "PASS"|"FAIL",
+    //       "rules": {
+    //         "R01": {"rule_id": "R01", "verdict": "PASS", "confidence": 0.95, "method": "regex"},
+    //         "R02": {...}
+    //       }
+    //     },
+    //     ...
+    //   }
+    // The optional outer "results" wrapper from v2_full_regression.json
+    // (which nests this further) is unwrapped via d.results || d.
+    if (tally.size === 0) {
+      for (const f of files) {
+        if (!/qc|verdict|result|test/i.test(f.name)) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          const root = d?.results || d;
+          if (!root || typeof root !== "object" || Array.isArray(root)) continue;
+          let matched = false;
+          for (const docKey of Object.keys(root)) {
+            const docEntry = root[docKey];
+            if (!docEntry || typeof docEntry !== "object") continue;
+            const rulesMap = docEntry.rules;
+            if (!rulesMap || typeof rulesMap !== "object" || Array.isArray(rulesMap)) continue;
+            for (const rid of Object.keys(rulesMap)) {
+              if (!isRuleId(rid)) continue;
+              const r = rulesMap[rid];
+              if (!r || typeof r !== "object") continue;
+              const verdict = (r.verdict || r.result_type || r.status || "").toString().toUpperCase();
+              if (verdict === "PASS") { bump(rid, "pass"); matched = true; }
+              else if (verdict === "FAIL") { bump(rid, "fail"); matched = true; }
+              else if (verdict === "NOT_APPLICABLE" || verdict === "NA") { bump(rid, "na"); matched = true; }
+            }
+          }
+          if (matched) {
+            sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+            break;
+          }
+        } catch { /* skip non-JSON */ }
+      }
+    }
+
+    // 6) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
     // walk any output/*.json with a top-level rule_id-keyed shape that has
     // verdict-like leaf objects. Catches future schema drift before the
     // next audit cycle.
