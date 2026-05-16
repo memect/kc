@@ -107,7 +107,7 @@ def generate_html(summary: dict, per_rule: dict, failed_cases: list[dict]) -> st
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KC Reborn — Verification Dashboard</title>
+<title>KC — Verification Dashboard</title>
 <style>
     :root {{ --bg: #1a1a2e; --surface: #16213e; --text: #e0e0e0; --accent: #4caf50; --warn: #ff9800; --err: #f44336; }}
     @media (prefers-color-scheme: light) {{

@@ -126,7 +126,7 @@ Five failure modes recur across projects. Learn to recognize them early.
 
 ## Integration
 
-Task decomposition sits between rule extraction and skill authoring in the KC Reborn lifecycle. It is the bridge that translates abstract rules into concrete implementation plans.
+Task decomposition sits between rule extraction and skill authoring in the KC lifecycle. It is the bridge that translates abstract rules into concrete implementation plans.
 
 **Input**: A rule catalog from `rule-extraction`. Each rule is an atomic, testable verification requirement. If a rule is not yet atomic, send it back to rule extraction for further decomposition before attempting task decomposition.
 

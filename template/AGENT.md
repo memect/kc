@@ -15,7 +15,7 @@ update as you learn about this specific business scenario.
 
 ---
 
-# KC Reborn — Document Verification Workspace
+# KC — Document Verification Workspace
 
 ## What This Workspace Is
 
@@ -93,7 +93,7 @@ The skill body is the methodology. Skills convey philosophy and decision framewo
 
 ---
 
-# KC Reborn — 文档核查工作区
+# KC — 文档核查工作区
 
 > **技能优先级**: meta-meta 技能是架构层面 —— 当指导冲突时，
 > meta-meta 凌驾于 meta (技法层面) 之上。架构师的框架约束技法。
