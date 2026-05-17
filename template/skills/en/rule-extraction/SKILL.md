@@ -282,6 +282,14 @@ You have unlimited tool access to samples — KC does not cap you. The disciplin
 - A jargon term in the source needs example resolution
 - Sanity-check that a rule's `description` field reads coherently when applied to a real document
 
+## Primary vs auxiliary sources — iteration order, NOT coverage breadth
+
+When the developer user labels some source documents "primary" and others "auxiliary" (or "supplementary", or "secondary"), that distinction is about **iteration order**: do the primary regs deeply first, then come back to the auxiliary ones. It is **NOT** a license to skip the auxiliary regs entirely.
+
+A recurring failure mode worth flagging: agent reads "primary 01-02 are the main basis, the rest is auxiliary" and produces 13 rules from regs 01-02 + 2 rules from regs 03-04 + zero rules from regs 05-10. The auxiliary regulations (often 60-90 articles each in compliance domains) almost always contain core obligations the primary regs reference or assume. Extracting nothing from them produces a thin catalog that misses real compliance requirements.
+
+The right interpretation: primary regs get the first deep pass, the auxiliary regs get a structural-survey pass at minimum — identify their core obligations and extract those, even if not at the same density as primary. Skipping a 80-article regulation entirely should require an explicit reason in `coverage_audit.md` (e.g., "regulation 05 covers fund operations outside our case scope; explicitly out-of-scope per user discussion"). Silent skipping is the failure mode.
+
 ## Coverage trace (recommended deliverable)
 
 After extraction, walk the source document paragraph-by-paragraph and tag each as either:

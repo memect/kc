@@ -150,31 +150,14 @@ This follows the same tier-transition framework as parser escalation in `documen
 
 ### Picking the model inside a tier — quick reference
 
-The tier framework above answers "which tier is right for this step?".
-Inside a tier slot, "which specific model?" still matters. A few
-heuristics that hold today (refresh from `auto-model-selection` —
-specifics change in months, not years):
+The tier framework above answers "which tier is right for this step?". Inside a tier slot, "which specific model?" still matters. A few heuristics that hold today (refresh from `auto-model-selection` — specifics change in months, not years):
 
-- **Tier 1 / Tier 2 worker workhorse**: the current-generation
-  flagship MoE LLMs (200-400B total / ~20B activated experts) are a
-  reasonable starting baseline. Qwen's family flagship and DeepSeek's
-  current premium model are both in this shape; either works.
-- **Tier 3 / Tier 4 small model**: prefer Qwen family for sub-30B
-  options — many cheap, reliable choices. Skip the `coder` /
-  `code` named variants at small sizes (unreliable for general
-  worker tasks). Prefer no-thinking-mode variants when available;
-  these tasks don't benefit from reflection.
-- **Provider stacking**: routing conductor and worker through
-  different providers can isolate per-model throttle / rate-limit
-  exposure (e.g., DeepSeek for workers, SiliconFlow for conductor).
-- **VLM / OCR**: characters / handwriting / seals → dedicated OCR
-  model (Paddle-OCR, GLM-OCR, DeepSeek-OCR or their successors).
-  Complex graphs / tables → larger general VLM.
+- **Tier 1 / Tier 2 worker workhorse**: the current-generation flagship MoE LLMs (200-400B total / ~20B activated experts) are a reasonable starting baseline. Qwen's family flagship and DeepSeek's current premium model are both in this shape; either works.
+- **Tier 3 / Tier 4 small model**: prefer Qwen family for sub-30B options — many cheap, reliable choices. Skip the `coder` / `code` named variants at small sizes (unreliable for general worker tasks). Prefer no-thinking-mode variants when available; these tasks don't benefit from reflection.
+- **Provider stacking**: routing conductor and worker through different providers can isolate per-model throttle / rate-limit exposure (e.g., DeepSeek for workers, SiliconFlow for conductor).
+- **VLM / OCR**: characters / handwriting / seals → dedicated OCR model (Paddle-OCR, GLM-OCR, DeepSeek-OCR or their successors). Complex graphs / tables → larger general VLM.
 
-For up-to-date facts (exact model names, context windows, pricing),
-consult `auto-model-selection` and use Context7. The heuristics above
-go stale fast — the *shape* (MoE flagship for workhorse, sub-30B
-non-thinking for cheap bulk, OCR-specific for chars) is what stays.
+For up-to-date facts (exact model names, context windows, pricing), consult `auto-model-selection` and use Context7. The heuristics above go stale fast — the *shape* (MoE flagship for workhorse, sub-30B non-thinking for cheap bulk, OCR-specific for chars) is what stays.
 
 ## Testing Against Ground Truth
 
@@ -255,6 +238,14 @@ What the shim does:
 - Raises an explicit error if `LLM_BASE_URL` is missing (no silent fallback to a hardcoded vendor)
 
 **Don't write your own llm_client.py from scratch.** A recurring failure mode worth flagging: agents repeatedly roll their own shim — buggy (stale model IDs, hardcoded vendor URL, no ledger) and invisible to the engine. Use the canonical shim; if it's missing for some reason, copy it from `template/workflows/common/llm_client.py` in the kc-beta install (the engine also auto-populates at init — check `workflows_common_populated` event in events.jsonl).
+
+### Worse anti-pattern: writing a parallel hand-rolled client AT THE SAME TIME as the canonical one
+
+A persistent failure pattern across runs: the canonical `workflows/common/llm_client.py` is present (engine auto-populated it at init), AND the agent ALSO writes its own `workflows/llm_client.py` or `verify_engine_v2.py` with a `requests.post(...)` HTTP call. The agent then uses the hand-rolled one for all the real LLM work. Both files sit in the workspace. Engine cost-tracking sees nothing.
+
+When this happens, three things go wrong: (1) Provider routing breaks. The hand-rolled client typically reads `LLM_BASE_URL` from workspace `.env` — which is the **conductor**'s endpoint. KC's worker routing (via `worker_llm_call` and the engine's worker_* config) gets bypassed entirely. If the operator configured workers to a separate provider (say, DeepSeek workers + SiliconFlow conductor), the hand-rolled client wrongly hits the conductor's provider with the worker's model names — produces 400s or worse, silent wrong-model results. (2) Cost / audit visibility is lost. Engine doesn't see the calls; neither does `output/llm_ledger.jsonl` (the canonical client's ledger isn't written by the hand-rolled one). The session looks like it did zero LLM work, but the actual LLM bill exists. (3) Rate-limit / retry / timeout behavior diverges. The canonical client + worker_llm_call inherit engine-level resilience patterns (AbortSignal.timeout, withRetry on 429/5xx, etc.). A hand-rolled `requests.post` has none of that — it stalls, throws ad-hoc errors, or silently corrupts the run.
+
+**Rule of thumb**: if the verification rule needs an LLM judgment, your two valid options are `worker_llm_call` (when running inside a KC session) or `from workflows.common.llm_client import call` (when running standalone from a release bundle). If you find yourself typing `import requests` or `urllib.request.urlopen` for an LLM call, stop. That code path will be flagged in audit as a recurring adoption miss and rewritten — save the round trip and use the right tool the first time.
 
 ## sandbox_exec timeout for known-slow commands
 

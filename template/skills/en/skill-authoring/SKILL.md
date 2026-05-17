@@ -59,6 +59,8 @@ Each rule_skill folder MUST have BOTH a substantive `SKILL.md` AND a substantive
 
 **Variant 3 (legacy)**: stub `check.py` returning `{"pass": null, "method": "stub"}` paired with an otherwise-real SKILL.md. Methodology described but never executable.
 
+**Variant 4 (the "monolithic verify engine" stub)**: per-rule SKILL.md is a thin 20-35 line scaffold ("see verify_engine.py"), per-rule check.py is a thin shim that imports + calls a single monolithic `rule_skills/verify_engine.py` (or similar root-level file) that holds all 15-20 rules' verification logic in one ~750-LOC file. Each per-rule check.py looks like `from rule_skills.verify_engine import check_R01_01; return check_R01_01(doc)`. This passes the "check.py is not literally a stub" surface check but inverts the canonical per-rule granularity: per-rule files contain no rule-specific reasoning, the monolith holds everything, and the read-this-skill-to-understand-this-rule workflow fails for everyone (developer user, future auditor, downstream agent). The contract says skills are KC's unit of per-rule granularity for a reason. Centralizing all check logic into one big file may look efficient but loses the per-rule auditability that's the whole point. If you find yourself writing `verify_engine.py` with 15+ check functions and stub SKILL.md/check.py per rule, stop — keep the methodology in each rule's SKILL.md (substantive) and either inline the check logic or use the canonical per-rule check.py + workflow_v1.py pattern.
+
 **The contract**:
 - ✓ DO: SKILL.md describes WHAT to check + WHY + WHEN to flag it. Substantive — typically 50-300 lines, not a 20-line template.
 - ✓ DO: check.py implements the check. EITHER substantive direct logic OR `from workflows.<rule_id>.workflow_v1 import verify` + delegate. Returns concrete verdicts.
@@ -159,9 +161,7 @@ Keep references factual and sourced. They are evidence, not instructions.
 
 ## Authoring methodology (from skill-creator core)
 
-This section folds in the universal authoring patterns from Anthropic's
-upstream `skill-creator`. Apply them on top of the KC-specific layout
-above when drafting any new rule skill.
+This section folds in the universal authoring patterns from Anthropic's upstream `skill-creator`. Apply them on top of the KC-specific layout above when drafting any new rule skill.
 
 ### Capture intent before drafting
 

@@ -59,6 +59,8 @@ rule-skills/
 
 **变体 3（历史遗留）**：桩 `check.py` 返回 `{"pass": null, "method": "stub"}`，SKILL.md 写得还行。方法论描述出来了，但没有可执行实现。
 
+**变体 4（"单体 verify_engine 桩"）**：每条规则的 SKILL.md 都是一份 20-35 行的薄脚手架（"详见 verify_engine.py"），每条规则的 check.py 都是一段薄 shim，import 并调用一个根目录下的单体 `rule_skills/verify_engine.py`（或类似文件）—— 后者把全部 15-20 条规则的核查逻辑塞在一个 ~750 行的大文件里。每条规则的 check.py 都长这样：`from rule_skills.verify_engine import check_R01_01; return check_R01_01(doc)`。这能通过"check.py 不是字面意义上的桩"这道表面检查，但它颠倒了规范的"每规则一个粒度单元"的设计：每条规则的文件不含规则特定的推理，单体文件持有一切，"读这条 skill 就能理解这条规则"的工作流对所有人（开发者用户、未来审计者、下游 agent）都失效了。契约里之所以把 skill 定义为 KC 每条规则的粒度单元，是有原因的。把所有核查逻辑集中到一个大文件里看上去高效，实质上失去了"按规则审计"这个本意。如果你发现自己在写一个 `verify_engine.py`，里面有 15 个以上的 check 函数，而每条规则只有桩 SKILL.md / 桩 check.py，停下 —— 把方法论留在每条规则的 SKILL.md 里（要有内容），check 逻辑要么内联到每条规则的 check.py，要么走规范的"per-rule check.py + workflow_v1.py"模式。
+
 **契约**：
 - ✓ DO：SKILL.md 描述「核查什么」「为什么核查」「什么时候触发」。要有内容 —— 通常 50-300 行，不是一份 20 行的模板。
 - ✓ DO：check.py 实现核查。**要么** 直接写有实质的逻辑，**要么** `from workflows.<rule_id>.workflow_v1 import verify` 然后委托给它。返回具体的判定。
