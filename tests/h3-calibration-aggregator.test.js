@@ -190,7 +190,52 @@ console.log("\nShape 5 (v0.8.2 P13-A): with outer results wrapper");
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
-console.log("\nShape 6 (fallback): unfamiliar filename with rule-keyed verdicts");
+console.log("\nShape 6 (v0.8.3 P22-B6): array-of-{doc_id, results: [{rule_id, status}]} (资管 v0.8.2 shape)");
+{
+  const ws = makeTempWorkspace();
+  // 资管 v0.8.2 wrote skill_test_v*.json with this shape — top-level
+  // array, per-doc object with results array.
+  fs.writeFileSync(path.join(ws, "output", "skill_test_v1.json"), JSON.stringify([
+    {
+      doc_id: "doc1",
+      results: [
+        { rule_id: "R01-01", status: "PASS", evidence: "..." },
+        { rule_id: "R01-02", status: "FAIL", evidence: "..." },
+        { rule_id: "R02-01", status: "WARNING", evidence: "5/7 fields" },
+      ],
+    },
+    {
+      doc_id: "doc2",
+      results: [
+        { rule_id: "R01-01", status: "PASS" },
+        { rule_id: "R02-01", status: "NOT_APPLICABLE" },
+      ],
+    },
+  ]));
+  const result = runAggregator(ws);
+  assert(result !== null, "Shape 6 (top-level array) detected");
+  assert(result?.historical_accuracy?.["R01-01"]?.n_passed === 2, "R01-01 sees 2 passes across docs");
+  assert(result?.historical_accuracy?.["R01-02"]?.n_failed === 1, "R01-02 sees 1 fail");
+  // WARNING counts as PASS per Shape 6 convention
+  assert(result?.historical_accuracy?.["R02-01"]?.n_passed === 1, "R02-01 WARNING tallied as pass");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 6: alternative rule-id field name (ruleId, id)");
+{
+  const ws = makeTempWorkspace();
+  fs.writeFileSync(path.join(ws, "output", "workflow_v3_results.json"), JSON.stringify([
+    { doc_id: "d1", results: [{ ruleId: "R01", verdict: "PASS" }] },
+    { doc_id: "d2", results: [{ id: "R02", status: "FAIL" }] },
+  ]));
+  const result = runAggregator(ws);
+  assert(result !== null, "alternative field names accepted");
+  assert(result?.historical_accuracy?.["R01"]?.n_passed === 1, "ruleId field works");
+  assert(result?.historical_accuracy?.["R02"]?.n_failed === 1, "id field works");
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
+console.log("\nShape 7 (fallback): unfamiliar filename with rule-keyed verdicts");
 {
   const ws = makeTempWorkspace();
   // Future schema we haven't enumerated explicitly

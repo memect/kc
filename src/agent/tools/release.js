@@ -809,7 +809,54 @@ export class ReleaseTool extends BaseTool {
       }
     }
 
-    // 6) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
+    // 6) v0.8.3 P22-B6: top-level array of {doc_id, results: [{rule_id, status}]}.
+    // 资管 v0.8.2 wrote `output/skill_test_v*.json` + `workflow_v*_results.json`
+    // + `evolution_round*.json` all with this shape:
+    //   [
+    //     {
+    //       "doc_id": "<doc-filename>",
+    //       "results": [
+    //         {"rule_id": "R01-01", "status": "WARNING", "found_fields": {...}},
+    //         {"rule_id": "R01-02", "status": "PASS", ...},
+    //         ...
+    //       ]
+    //     },
+    //     ...
+    //   ]
+    // Distinct from Shape 5: top-level is an ARRAY (not object), and the
+    // per-rule data lives in `results: [...]` (an array of rule outcomes)
+    // rather than `rules: {<rule>: ...}` (object keyed by rule).
+    if (tally.size === 0) {
+      for (const f of files) {
+        if (!/qc|verdict|result|test|evolution|workflow/i.test(f.name)) continue;
+        try {
+          const d = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+          if (!Array.isArray(d)) continue;
+          let matched = false;
+          for (const docEntry of d) {
+            if (!docEntry || typeof docEntry !== "object") continue;
+            const results = docEntry.results;
+            if (!Array.isArray(results)) continue;
+            for (const r of results) {
+              if (!r || typeof r !== "object") continue;
+              const rid = r.rule_id || r.ruleId || r.id;
+              if (!isRuleId(rid)) continue;
+              const verdict = (r.status || r.verdict || r.result_type || "").toString().toUpperCase();
+              if (verdict === "PASS") { bump(rid, "pass"); matched = true; }
+              else if (verdict === "FAIL") { bump(rid, "fail"); matched = true; }
+              else if (verdict === "WARNING") { bump(rid, "pass"); matched = true; } // WARNING counts as pass (per existing shape conventions)
+              else if (verdict === "NOT_APPLICABLE" || verdict === "NA") { bump(rid, "na"); matched = true; }
+            }
+          }
+          if (matched) {
+            sourceFiles.push(path.relative(this._workspace.cwd, f.path));
+            break;
+          }
+        } catch { /* skip non-JSON */ }
+      }
+    }
+
+    // 7) Fallback (belt-and-suspenders per v0.8 plan Risk #7):
     // walk any output/*.json with a top-level rule_id-keyed shape that has
     // verdict-like leaf objects. Catches future schema drift before the
     // next audit cycle.
