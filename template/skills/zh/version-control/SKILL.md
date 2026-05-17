@@ -299,9 +299,7 @@ extract_dates_v2.md   # 优化后的提示词
 
 ## 每条规则的 check.py —— 改写 v2 之前先保留 v1
 
-当你要把某条规则的验证逻辑从 v1（通常是纯 regex）迭代到 v2
-（通常引入 LLM 判断或混合方案）时，**改写之前先把 v1 复制为同目录下
-的同级文件**：
+当你要把某条规则的验证逻辑从 v1（通常是纯 regex）迭代到 v2 （通常引入 LLM 判断或混合方案）时，**改写之前先把 v1 复制为同目录下的同级文件**：
 
 ```bash
 cp rule_skills/Rxx/check.py rule_skills/Rxx/check_v1.py
@@ -312,7 +310,4 @@ cp rule_skills/Rxx/check.py rule_skills/Rxx/check_v1.py
 - `check.py` 永远指向当前最优版本
 - `check_v1.py`、`check_v2.py`、…… 保留各代历史
 
-这样 v1 就和 v2 并排放在同一个目录里，不必再依赖 workspace 的 git
-历史去翻找（`git log -- check.py` 能恢复，但每次都翻阅本身就是
-摩擦）。引擎级别的 `verify_engine_v1.py` / `verify_engine_v2.py`
-分别保留各代编排器；每条规则的 check.py 需要自己的命名约定来配合。
+这样 v1 就和 v2 并排放在同一个目录里，不必再依赖 workspace 的 git 历史去翻找（`git log -- check.py` 能恢复，但每次都翻阅本身就是摩擦）。引擎级别的 `verify_engine_v1.py` / `verify_engine_v2.py` 分别保留各代编排器；每条规则的 check.py 需要自己的命名约定来配合。

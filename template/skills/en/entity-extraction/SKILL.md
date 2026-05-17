@@ -38,11 +38,9 @@ Extraction method selection is a cost-accuracy search. The goal is finding the c
 
 ### Available Methods
 
-**Regex / Python** — Cost: zero. Speed: instant. Deterministic.
-Works well for: dates, monetary amounts, percentages, identifiers, fixed phrases, any value with a predictable format.
+**Regex / Python** — Cost: zero. Speed: instant. Deterministic. Works well for: dates, monetary amounts, percentages, identifiers, fixed phrases, any value with a predictable format.
 
-**Worker LLM** — Cost: API tokens. Speed: seconds. Semantic understanding.
-Works well for: contextual interpretation, conditional values, semantic matching, ambiguous structures, suggestive or misleading language detection, table interpretation, anything requiring understanding rather than pattern matching.
+**Worker LLM** — Cost: API tokens. Speed: seconds. Semantic understanding. Works well for: contextual interpretation, conditional values, semantic matching, ambiguous structures, suggestive or misleading language detection, table interpretation, anything requiring understanding rather than pattern matching.
 
 Many real verification tasks require semantic understanding — "is this description misleading?", "does this clause adequately disclose risk?", "is this guarantor's business description consistent with their stated industry?" — regex cannot handle these. Use worker LLM without hesitation for such tasks.
 
@@ -122,32 +120,12 @@ When designing extraction for worker LLM workflows:
 
 ## Extraction has corner cases too
 
-Extraction is **as important as judgment** for final accuracy. A
-common observation across projects: more than half of the final
-errors trace back to extraction problems, not judgment — the
-extractor returned the wrong value, the wrong unit, or pulled from
-the wrong section, and the judge faithfully concluded the wrong
-verdict from the wrong input.
+Extraction is **as important as judgment** for final accuracy. A common observation across projects: more than half of the final errors trace back to extraction problems, not judgment — the extractor returned the wrong value, the wrong unit, or pulled from the wrong section, and the judge faithfully concluded the wrong verdict from the wrong input.
 
 Treat extraction with the same iteration discipline as judgment:
 
-- **Reflection / iteration**: after running an extractor on the sample
-  set, look at the cases where it failed. Is the failure a missing
-  pattern (add to the prompt or regex)? A format quirk (unit
-  conversion, locale)? A document-class issue (extractor right for
-  class A but wrong for class B)?
-- **Corner-case registration**: when an extraction failure can't be
-  fixed without disproportionate cost to the standard extractor, log
-  it as a corner case in `corner-case-management` — same registry
-  shape as a judgment corner case, just resolution typed as `code` /
-  `prompt` / `parser`-class transformation.
-- **Validate the extractor independently of the judge**: an
-  end-to-end test that fails only on the judgment side may hide a
-  bad extractor whose outputs happen to verdict correctly *most* of
-  the time. Use QC review to spot-check extracted values, not just
-  final verdicts.
+- **Reflection / iteration**: after running an extractor on the sample set, look at the cases where it failed. Is the failure a missing pattern (add to the prompt or regex)? A format quirk (unit conversion, locale)? A document-class issue (extractor right for class A but wrong for class B)?
+- **Corner-case registration**: when an extraction failure can't be fixed without disproportionate cost to the standard extractor, log it as a corner case in `corner-case-management` — same registry shape as a judgment corner case, just resolution typed as `code` / `prompt` / `parser`-class transformation.
+- **Validate the extractor independently of the judge**: an end-to-end test that fails only on the judgment side may hide a bad extractor whose outputs happen to verdict correctly *most* of the time. Use QC review to spot-check extracted values, not just final verdicts.
 
-When you're tempted to fix accuracy by tuning the judge's prompt,
-first check whether the extractor is giving the judge the right
-input. The cheaper, more durable fix is almost always in the
-extractor.
+When you're tempted to fix accuracy by tuning the judge's prompt, first check whether the extractor is giving the judge the right input. The cheaper, more durable fix is almost always in the extractor.

@@ -27,23 +27,17 @@ Do this for each new document type. Do it again when document sources change. 30
 
 After reading, answer these questions explicitly — write the answers down, not just think them:
 
-**What is consistent across all documents?**
-Header structure, field positions, terminology, date formats. These are your anchors. Design extraction around them.
+**What is consistent across all documents?** Header structure, field positions, terminology, date formats. These are your anchors. Design extraction around them.
 
-**What varies?**
-Table layouts, section ordering, field presence, formatting conventions. These are your risk points. Every variant needs a test case.
+**What varies?** Table layouts, section ordering, field presence, formatting conventions. These are your risk points. Every variant needs a test case.
 
-**What is surprising?**
-Anything you did not expect. A field that is sometimes missing. A value expressed in different units across documents. A section that appears in some templates but not others.
+**What is surprising?** Anything you did not expect. A field that is sometimes missing. A value expressed in different units across documents. A section that appears in some templates but not others.
 
-**Document subtypes?**
-Are there different templates, issuers, or time periods represented? A "loan contract" from Bank A may look nothing like one from Bank B. Identify subtypes early — they often need separate extraction paths.
+**Document subtypes?** Are there different templates, issuers, or time periods represented? A "loan contract" from Bank A may look nothing like one from Bank B. Identify subtypes early — they often need separate extraction paths.
 
-**Section lengths?**
-Measure them. A section that averages 200 tokens is fine for any model. A section that occasionally runs to 8,000 tokens will blow your context window budget. Plan accordingly.
+**Section lengths?** Measure them. A section that averages 200 tokens is fine for any model. A section that occasionally runs to 8,000 tokens will blow your context window budget. Plan accordingly.
 
-**Encoding issues?**
-Full-width vs half-width characters (１２.５% vs 12.5%). Unicode normalization problems. OCR artifacts. These cause silent extraction failures because the text looks correct to human eyes but does not match regex patterns.
+**Encoding issues?** Full-width vs half-width characters (１２.５% vs 12.5%). Unicode normalization problems. OCR artifacts. These cause silent extraction failures because the text looks correct to human eyes but does not match regex patterns.
 
 ## Spot-Check Protocol
 
@@ -107,41 +101,16 @@ Keep intermediates for at least the current iteration. Delete old iterations onl
 
 ## Looking at the corpus when it doesn't fit in your head
 
-A foundational constraint to plan around: you have a finite context
-window. Reading dozens of sample documents in a row will push earlier
-observations out of your working memory before you finish, leaving
-you with the impression of having seen the corpus but not the
-ability to actually generalize from it.
+A foundational constraint to plan around: you have a finite context window. Reading dozens of sample documents in a row will push earlier observations out of your working memory before you finish, leaving you with the impression of having seen the corpus but not the ability to actually generalize from it.
 
-Treat the corpus the way a statistician would treat a population:
-sample, summarize, and don't try to keep the population in your head.
-A few approaches that work in practice:
+Treat the corpus the way a statistician would treat a population: sample, summarize, and don't try to keep the population in your head. A few approaches that work in practice:
 
-- **Use the file system as memory.** Write a `notes/data_observations.md`
-  (or per-rule `notes/<rule_id>_observations.md`) as you scan. Note
-  field name variants, format quirks, missing-section patterns,
-  surprising values. Re-read the notes file next session instead of
-  re-scanning the docs.
-- **Per-rule notepads / memory.md.** For each rule, keep a short
-  `memory.md` that captures "what I've seen across the sample set
-  for this rule" — which documents trigger it, what values appear,
-  what edge cases exist. Update incrementally rather than re-deriving
-  it each time you look at the rule.
-- **Dispatch subagents to explore samples.** When the corpus is
-  large, send a subagent (via the `agent_tool`) to scan a directory
-  and return summary statistics or a short markdown report. The
-  subagent's full reads stay in its own context; you receive only
-  the digest. This is the right tool when you'd otherwise spend
-  context budget reading dozens of files for a single observation.
-- **Statistical / meta views over individual reads.** Instead of
-  reading 20 income certificates, run a regex over all of them and
-  count format variants. Instead of opening every annual report,
-  list filenames and group by issuer / year. Build the meta view
-  first, then dive into representatives.
+- **Use the file system as memory.** Write a `notes/data_observations.md` (or per-rule `notes/<rule_id>_observations.md`) as you scan. Note field name variants, format quirks, missing-section patterns, surprising values. Re-read the notes file next session instead of re-scanning the docs.
+- **Per-rule notepads / memory.md.** For each rule, keep a short `memory.md` that captures "what I've seen across the sample set for this rule" — which documents trigger it, what values appear, what edge cases exist. Update incrementally rather than re-deriving it each time you look at the rule.
+- **Dispatch subagents to explore samples.** When the corpus is large, send a subagent (via the `agent_tool`) to scan a directory and return summary statistics or a short markdown report. The subagent's full reads stay in its own context; you receive only the digest. This is the right tool when you'd otherwise spend context budget reading dozens of files for a single observation.
+- **Statistical / meta views over individual reads.** Instead of reading 20 income certificates, run a regex over all of them and count format variants. Instead of opening every annual report, list filenames and group by issuer / year. Build the meta view first, then dive into representatives.
 
-The principle: aim for **enough samples to characterize the
-distribution**, not enough samples to memorize the corpus. The
-former fits in your head and in your notes. The latter doesn't.
+The principle: aim for **enough samples to characterize the distribution**, not enough samples to memorize the corpus. The former fits in your head and in your notes. The latter doesn't.
 
 ## Integration
 
