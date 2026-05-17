@@ -472,12 +472,16 @@ export class AgentEngine {
       } catch { /* never fatal */ }
     };
 
-    // v0.8 P1-C: self-rescheduling setTimeout instead of setInterval. The
-    // 资管 v0.7.5 session shows only 2 heap.jsonl entries (12:39:40 start
-    // + 12:40:40 first tick) across an 18-hour run — the unref'd
-    // setInterval was somehow dropped between event-loop idle phases.
-    // setTimeout reschedules from inside the sample callback, so the
-    // timer is re-registered every tick. unref'd so we don't block exit.
+    // v0.8 P1-C: self-rescheduling setTimeout instead of setInterval.
+    // v0.8.3 P21-B4: removed .unref() — both 资管 + 贷款 v0.8.2 sessions
+    // showed only 1 line in heap.jsonl across 7+ hour runs even with
+    // self-rescheduling setTimeout. The .unref'd timer was apparently
+    // being dropped by Node's event-loop housekeeping despite the
+    // process being kept alive by stdin / React render loop / other
+    // refs. The cost of dropping .unref() is that on a graceful exit
+    // path that doesn't call engine.stop(), the timer can delay exit
+    // by up to 60s. We accept this — engine.stop() is the canonical
+    // shutdown path and it clears the timer via clearTimeout.
     let timeoutHandle = null;
     const scheduleNext = () => {
       if (stopped) return;
@@ -485,7 +489,6 @@ export class AgentEngine {
         sample();
         scheduleNext();
       }, 60_000);
-      timeoutHandle.unref?.();
     };
 
     // Record one sample at startup so we have a baseline even on short runs.
