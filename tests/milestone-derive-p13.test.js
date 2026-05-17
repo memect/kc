@@ -137,12 +137,12 @@ console.log("\nP13-D: rule_mapping.json credits rule_ids in thematic overlay dir
   const m = deriveSkillAuthoringMilestones({ cwd: ws });
   assert(m.skillsAuthored.includes("R01_periodic_report"),
     "overlay dir counted as authored (has SKILL.md)");
-  // The overlay dir's rule_mapping.json should credit R01-05/06/07
-  // (these are also credited by the leaf dirs themselves, so Set semantics
-  // deduplicate — but the credit must include them)
-  assert(m.ruleIdsCovered.includes("R01-05"), "rule_mapping.json credited R01-05");
-  assert(m.ruleIdsCovered.includes("R01-06"), "rule_mapping.json credited R01-06");
-  assert(m.ruleIdsCovered.includes("R01-07"), "rule_mapping.json credited R01-07");
+  // The overlay dir's rule_mapping.json should credit R01-05/06/07.
+  // v0.8.3 P20-B2: canonicalRuleId now normalizes compound IDs to
+  // 3-digit-major form (R01-05 → R001-05), so check the canonical form.
+  assert(m.ruleIdsCovered.includes("R001-05"), "rule_mapping.json credited R001-05 (canonical of R01-05)");
+  assert(m.ruleIdsCovered.includes("R001-06"), "rule_mapping.json credited R001-06 (canonical of R01-06)");
+  assert(m.ruleIdsCovered.includes("R001-07"), "rule_mapping.json credited R001-07 (canonical of R01-07)");
 
   fs.rmSync(ws, { recursive: true, force: true });
 }
@@ -157,8 +157,9 @@ console.log("\nP13-D: rule_mapping.json works even without SKILL.md (overlay-onl
   );
 
   const m = deriveSkillAuthoringMilestones({ cwd: ws });
-  assert(m.ruleIdsCovered.includes("R02-01"), "R02-01 credited via mapping (no SKILL.md)");
-  assert(m.ruleIdsCovered.includes("R02-02"), "R02-02 credited via mapping (no SKILL.md)");
+  // v0.8.3 P20-B2: canonicalized
+  assert(m.ruleIdsCovered.includes("R002-01"), "R002-01 (canonical of R02-01) credited via mapping (no SKILL.md)");
+  assert(m.ruleIdsCovered.includes("R002-02"), "R002-02 (canonical of R02-02) credited via mapping (no SKILL.md)");
   fs.rmSync(ws, { recursive: true, force: true });
 }
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import { Phase, PipelineEvent } from "./index.js";
 import { Pipeline } from "./base.js";
 import { SkillValidator } from "../skill-validator.js";
-import { deriveSkillAuthoringMilestones } from "./_milestone-derive.js";
+import { deriveSkillAuthoringMilestones, canonicalRuleId } from "./_milestone-derive.js";
 
 export class SkillAuthoringPipeline extends Pipeline {
   /**
@@ -37,14 +37,31 @@ export class SkillAuthoringPipeline extends Pipeline {
   }
 
   _loadRules() {
+    // v0.8.3 P20-B1+B2: dedup rule IDs across all rules/*.json files AND
+    // canonicalize them so the rulesCovered comparison against
+    // ruleIdsCovered (which now goes through canonicalRuleId) works for
+    // BOTH bare-numeric (R14) AND compound (R01-01, R02-03) forms.
+    // E2E #13 资管 used compound IDs + wrote a sibling difficulty.json;
+    // the raw-string + no-dedup pre-v0.8.3 path produced rulesCovered:
+    // 0/30 (compound IDs unmatched + double-counted).
     this.totalRules = [];
+    const seen = new Set();
     const rulesDir = path.join(this._workspace.cwd, "rules");
     if (!fs.existsSync(rulesDir)) return;
     for (const f of fs.readdirSync(rulesDir).filter((f) => f.endsWith(".json"))) {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(rulesDir, f), "utf-8"));
         const rules = Array.isArray(data) ? data : (data.rules || []);
-        for (const r of rules) { if (r.id) this.totalRules.push(r.id); }
+        for (const r of rules) {
+          if (!r || !r.id) continue;
+          // Canonicalize to match ruleIdsCovered which is built from
+          // canonicalRuleId() output. If canonicalRuleId returns null
+          // (non-rule-shaped string), preserve the raw trimmed string.
+          const canon = canonicalRuleId(r.id) || String(r.id).trim();
+          if (seen.has(canon)) continue;
+          seen.add(canon);
+          this.totalRules.push(canon);
+        }
       } catch { /* skip */ }
     }
   }

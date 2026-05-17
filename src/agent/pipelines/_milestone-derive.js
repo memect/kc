@@ -156,13 +156,33 @@ function sha256OfFile(p) {
   } catch { return null; }
 }
 
-// Normalize a rule id like "R14" / "r014" / "R0014" to canonical "R014".
+// Normalize a rule id to a canonical form for dedup + comparison.
+// Accepts two shapes:
+//   Bare-numeric: "R14" / "r014" / "R0014" → "R014"
+//   Compound:    "R01-01" / "R01_01" / "R001-005" → "R001-005"
+//                (zero-pads the major part to 3 digits; preserves the
+//                 minor part numerically; uses dash separator canonically)
 // Returns null for non-matching strings (e.g., thematic skill names like
-// "account_identity" — those stay as-is via the second branch).
-function canonicalRuleId(s) {
+// "account_identity" — those stay as-is and don't get credited via this
+// path; their credit comes from frontmatter `source_rules:` instead).
+//
+// v0.8.3 P20-B2: compound form added. E2E #13 资管 used `R01-01`..`R07-01`
+// naturally following the regulation's subsection numbering; v0.8.2's
+// bare-only regex returned null for all 15 dirs → `rulesCovered: 0/15`
+// → engine refused natural skill_testing advance.
+export function canonicalRuleId(s) {
   if (typeof s !== "string") return null;
-  const m = s.match(/^R0*(\d+)$/i);
-  if (m) return `R${String(parseInt(m[1], 10)).padStart(3, "0")}`;
+  const trimmed = s.trim();
+  // Compound form: R01-01, R01_01, R001-005, etc.
+  const compound = trimmed.match(/^R0*(\d+)[-_](\d+)$/i);
+  if (compound) {
+    const major = String(parseInt(compound[1], 10)).padStart(3, "0");
+    const minor = String(parseInt(compound[2], 10)).padStart(2, "0");
+    return `R${major}-${minor}`;
+  }
+  // Bare-numeric form
+  const bare = trimmed.match(/^R0*(\d+)$/i);
+  if (bare) return `R${String(parseInt(bare[1], 10)).padStart(3, "0")}`;
   return null;
 }
 
@@ -193,9 +213,16 @@ export function deriveRuleExtractionMilestones(workspace) {
 
   // rulesExtracted: every rule object across every JSON file in rules/
   // that has a non-empty `id` field. catalog.json is canonical but agents
-  // sometimes fan out to per-rule files (E2E #5 DS).
+  // sometimes fan out to per-rule files (E2E #5 DS) — or write SIBLING
+  // files with the same IDs plus additional metadata (E2E #13 资管's
+  // `rules/difficulty.json` added judgment-type classifications and
+  // doubled the count from 15 → 30 because the engine pushed IDs without
+  // dedup). v0.8.3 P20-B1: dedup by ID across all rules/*.json files.
+  // First-seen wins for chunk-ref counting (catalog.json is read first
+  // by alphabetical / fs order in most cases).
   const rulesExtracted = [];
   const rulesWithChunkRefs = [];
+  const seenIds = new Set();
   if (dirExists(rulesDir)) {
     for (const e of listChildFiles(rulesDir)) {
       if (!e.name.endsWith(".json")) continue;
@@ -204,6 +231,8 @@ export function deriveRuleExtractionMilestones(workspace) {
       const items = Array.isArray(data) ? data : (data.rules || []);
       for (const r of items) {
         if (r && typeof r.id === "string" && r.id.length) {
+          if (seenIds.has(r.id)) continue; // v0.8.3 P20-B1 dedup
+          seenIds.add(r.id);
           rulesExtracted.push(r.id);
           // v0.8.2 P13-C: accept any of three field names for chunk
           // references. Engine historically looked only for
