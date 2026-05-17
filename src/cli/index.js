@@ -865,9 +865,15 @@ export async function main({ languageOverride } = {}) {
   // Capture user's project directory (CWD at launch)
   config.projectDir = process.cwd();
 
-  // Session-only language override (does NOT persist to config)
+  // Session-only language override (does NOT persist to config).
+  // v0.8.3 P20-B3 (Task #218): also set process.env.LANGUAGE so the
+  // engine's _overlayWorkspaceEnv() penvWon check honors the CLI flag.
+  // Pre-v0.8.3, workspace .env LANGUAGE=en would overwrite a CLI --zh
+  // override during engine construction because the overlay only
+  // checked process.env, not in-memory config.language.
   if (languageOverride) {
     config.language = languageOverride;
+    process.env.LANGUAGE = languageOverride;
   }
 
   if (!config.llmApiKey) {
